@@ -42,8 +42,8 @@ export function AuditLogsView({ audits, chainStatus, onVerifyChain }: AuditLogsV
     <div className="flex-1 space-y-5 overflow-y-auto p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-white">全链路可回溯审计 · Tamper-Evident Trace</h2>
-          <p className="text-xs text-slate-400">
+          <h2 className="text-xl font-semibold text-foreground">全链路可回溯审计 · Tamper-Evident Trace</h2>
+          <p className="text-xs text-muted-foreground">
             每条记录通过 SHA-256 哈希链串联，完整回溯 Trace ID、L1 AST、L2 AI 评分、人工审批与脱敏输出。
           </p>
         </div>
@@ -52,12 +52,12 @@ export function AuditLogsView({ audits, chainStatus, onVerifyChain }: AuditLogsV
             value={auditSearch}
             onChange={(e) => setAuditSearch(e.target.value)}
             placeholder="过滤 Trace ID / 命令 / 意图 / 主机..."
-            className="w-64 border-white/10 bg-[#141824] text-sm"
+            className="w-64 border-border bg-card text-sm"
           />
           <Button
             size="sm"
             variant="outline"
-            className="border-white/10 bg-[#141824]"
+            className="border-border bg-card"
             onClick={onVerifyChain}
           >
             <ShieldCheck className="mr-1.5 size-4 text-emerald-400" /> 校验哈希链
@@ -65,7 +65,7 @@ export function AuditLogsView({ audits, chainStatus, onVerifyChain }: AuditLogsV
           <Button
             size="sm"
             variant="outline"
-            className="border-white/10 bg-[#141824]"
+            className="border-border bg-card"
             onClick={handleExportAudits}
           >
             <Download className="mr-1.5 size-4" /> 导出 JSON
@@ -94,20 +94,20 @@ export function AuditLogsView({ audits, chainStatus, onVerifyChain }: AuditLogsV
 
       <div className="space-y-3">
         {filteredAudits.length === 0 ? (
-          <Card className="border-white/[0.07] bg-[#141824]">
-            <CardContent className="py-12 text-center text-sm text-slate-500">
+          <Card className="border-border bg-card">
+            <CardContent className="py-12 text-center text-sm text-muted-foreground">
               暂无审计记录。
             </CardContent>
           </Card>
         ) : (
           filteredAudits.map((a) => (
-            <Card key={a.id} className="border-white/[0.07] bg-[#141824]">
+            <Card key={a.id} className="border-border bg-card">
               <CardContent className="space-y-2.5 p-4 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold text-white">{a.server_name}</span>
+                    <span className="font-semibold text-foreground">{a.server_name}</span>
                     <DecisionBadge decision={a.decision} />
-                    <Badge variant="outline" className="border-white/10 font-mono text-[10px] text-slate-400">
+                    <Badge variant="outline" className="border-border font-mono text-[10px] text-muted-foreground">
                       {a.actor}
                     </Badge>
                     {a.dry_run && <Badge variant="outline">DRY RUN</Badge>}
@@ -122,7 +122,7 @@ export function AuditLogsView({ audits, chainStatus, onVerifyChain }: AuditLogsV
                       </Badge>
                     )}
                   </div>
-                  <span className="text-xs text-slate-500">
+                  <span className="text-xs text-muted-foreground">
                     {new Date(a.timestamp).toLocaleString()}
                     {a.duration_ms != null ? ` · ${a.duration_ms}ms` : ""}
                     {a.exit_code != null ? ` · exit ${a.exit_code}` : ""}
@@ -130,7 +130,7 @@ export function AuditLogsView({ audits, chainStatus, onVerifyChain }: AuditLogsV
                 </div>
 
                 <div className="font-mono text-xs text-emerald-300">$ {a.command}</div>
-                <div className="text-xs text-slate-400">Intent: {a.intent}</div>
+                <div className="text-xs text-muted-foreground">Intent: {a.intent}</div>
 
                 {a.l2_verdict && (
                   <div className="rounded bg-indigo-500/10 px-2.5 py-1.5 text-xs text-indigo-200">
@@ -144,12 +144,12 @@ export function AuditLogsView({ audits, chainStatus, onVerifyChain }: AuditLogsV
                   </div>
                 )}
                 {a.stdout_preview && (
-                  <pre className="max-h-36 overflow-auto rounded bg-[#0D1017] p-2.5 font-mono text-xs text-slate-300">
+                  <pre className="max-h-36 overflow-auto rounded bg-muted/60 p-2.5 font-mono text-xs text-foreground/90">
                     {a.stdout_preview}
                   </pre>
                 )}
 
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-1 font-mono text-[10px] text-slate-500">
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1 font-mono text-[10px] text-muted-foreground">
                   <span>trace: {a.trace_id}</span>
                   <span>hash: {a.event_hash.slice(0, 16)}…</span>
                 </div>

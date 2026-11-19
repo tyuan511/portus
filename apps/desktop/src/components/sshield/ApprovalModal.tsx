@@ -22,7 +22,7 @@ export function ApprovalModal({ approval, onDecide }: ApprovalModalProps) {
     <Dialog open={Boolean(approval)} onOpenChange={() => {}}>
       <DialogContent
         showCloseButton={false}
-        className="border-amber-500/40 bg-[#141824] text-slate-100 sm:max-w-xl"
+        className="border-amber-500/40 bg-card text-foreground sm:max-w-xl"
       >
         {approval && (
           <>
@@ -43,14 +43,14 @@ export function ApprovalModal({ approval, onDecide }: ApprovalModalProps) {
 
             <div className="space-y-3 text-sm">
               <div>
-                <div className="text-xs text-slate-400">AI 声明意图 (Intent)</div>
-                <div className="mt-1 rounded-lg border border-white/[0.07] bg-[#0D1017] p-2.5 text-slate-200">
+                <div className="text-xs text-muted-foreground">AI 声明意图 (Intent)</div>
+                <div className="mt-1 rounded-lg border border-border bg-muted/60 p-2.5 text-foreground">
                   {approval.intent}
                 </div>
               </div>
               <div>
-                <div className="text-xs text-slate-400">待执行命令</div>
-                <pre className="mt-1 overflow-x-auto rounded-lg border border-white/[0.07] bg-[#0D1017] p-3 font-mono text-xs text-amber-300">
+                <div className="text-xs text-muted-foreground">待执行命令</div>
+                <pre className="mt-1 overflow-x-auto rounded-lg border border-border bg-muted/60 p-3 font-mono text-xs text-amber-300">
                   {approval.command}
                 </pre>
               </div>
@@ -63,17 +63,17 @@ export function ApprovalModal({ approval, onDecide }: ApprovalModalProps) {
                     </span>
                     <Badge variant="outline">Risk: {approval.l2_verdict.risk_score}/100</Badge>
                   </div>
-                  <p className="mt-1 text-slate-200">{approval.l2_verdict.reasoning}</p>
+                  <p className="mt-1 text-foreground">{approval.l2_verdict.reasoning}</p>
                 </div>
               )}
               {approval.verdict.parsed_commands.length > 0 && (
                 <div>
-                  <div className="text-xs text-slate-400">L1 AST 语法树拆解</div>
+                  <div className="text-xs text-muted-foreground">L1 AST 语法树拆解</div>
                   <div className="mt-1 space-y-1">
                     {approval.verdict.parsed_commands.map((c, idx) => (
                       <div
                         key={idx}
-                        className="flex items-center justify-between rounded bg-[#0D1017] px-2.5 py-1.5 font-mono text-xs"
+                        className="flex items-center justify-between rounded bg-muted/60 px-2.5 py-1.5 font-mono text-xs"
                       >
                         <span>
                           {c.program} {c.args.join(" ")}
@@ -95,7 +95,7 @@ export function ApprovalModal({ approval, onDecide }: ApprovalModalProps) {
                 拒绝执行
               </Button>
               <Button
-                className="bg-emerald-600 text-white hover:bg-emerald-500"
+                className="bg-emerald-600 text-foreground hover:bg-emerald-500"
                 onClick={() => onDecide(approval.id, true)}
               >
                 批准放行

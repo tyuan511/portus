@@ -47,37 +47,37 @@ export function SnippetsView({ snippets, onSaveSnippet, onDeleteSnippet }: Snipp
     <div className="flex-1 space-y-5 overflow-y-auto p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-white">Termius Snippets · 常用命令片段</h2>
-          <p className="text-xs text-slate-400">沉淀高频只读排查命令，供人工与 AI 代理复用。</p>
+          <h2 className="text-xl font-semibold text-foreground">Termius Snippets · 常用命令片段</h2>
+          <p className="text-xs text-muted-foreground">沉淀高频只读排查命令，供人工与 AI 代理复用。</p>
         </div>
-        <Button size="sm" className="bg-indigo-600 text-white hover:bg-indigo-500" onClick={() => setOpen(true)}>
+        <Button size="sm" className="bg-indigo-600 text-foreground hover:bg-indigo-500" onClick={() => setOpen(true)}>
           <Plus className="mr-1.5 size-4" /> New Snippet
         </Button>
       </div>
 
       {snippets.length === 0 ? (
-        <Card className="border-white/[0.07] bg-[#141824]">
+        <Card className="border-border bg-card">
           <CardContent className="flex flex-col items-center py-14 text-center">
-            <Code2 className="mb-3 size-9 text-slate-600" />
-            <div className="text-sm text-slate-300">暂无命令片段</div>
-            <p className="mt-1 text-xs text-slate-500">点击右上角 New Snippet 创建常用运维诊断脚本。</p>
+            <Code2 className="mb-3 size-9 text-muted-foreground" />
+            <div className="text-sm text-foreground/90">暂无命令片段</div>
+            <p className="mt-1 text-xs text-muted-foreground">点击右上角 New Snippet 创建常用运维诊断脚本。</p>
           </CardContent>
         </Card>
       ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           {snippets.map((s) => (
-            <Card key={s.id} className="border-white/[0.07] bg-[#141824]">
+            <Card key={s.id} className="border-border bg-card">
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between">
                   <div>
-                    <CardTitle className="text-sm text-white">{s.name}</CardTitle>
+                    <CardTitle className="text-sm text-foreground">{s.name}</CardTitle>
                     {s.description && <CardDescription className="text-xs">{s.description}</CardDescription>}
                   </div>
                   <div className="flex gap-1">
                     <Button
                       size="icon"
                       variant="ghost"
-                      className="size-7 text-slate-400 hover:text-white"
+                      className="size-7 text-muted-foreground hover:text-foreground"
                       onClick={() => {
                         void navigator.clipboard.writeText(s.command);
                         setCopiedId(s.id);
@@ -89,7 +89,7 @@ export function SnippetsView({ snippets, onSaveSnippet, onDeleteSnippet }: Snipp
                     <Button
                       size="icon"
                       variant="ghost"
-                      className="size-7 text-slate-400 hover:text-rose-300"
+                      className="size-7 text-muted-foreground hover:text-rose-300"
                       onClick={() => onDeleteSnippet(s.id)}
                     >
                       <Trash2 className="size-3.5" />
@@ -98,7 +98,7 @@ export function SnippetsView({ snippets, onSaveSnippet, onDeleteSnippet }: Snipp
                 </div>
               </CardHeader>
               <CardContent>
-                <pre className="overflow-x-auto rounded-lg bg-[#0D1017] p-2.5 font-mono text-xs text-emerald-300">
+                <pre className="overflow-x-auto rounded-lg bg-muted/60 p-2.5 font-mono text-xs text-emerald-300">
                   {s.command}
                 </pre>
               </CardContent>
@@ -108,7 +108,7 @@ export function SnippetsView({ snippets, onSaveSnippet, onDeleteSnippet }: Snipp
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="border-white/10 bg-[#141824] text-slate-100 sm:max-w-md">
+        <DialogContent className="border-border bg-card text-foreground sm:max-w-md">
           <DialogHeader>
             <DialogTitle>新建命令片段</DialogTitle>
             <DialogDescription>保存常用诊断命令到个人 Snippet 库。</DialogDescription>
@@ -137,7 +137,7 @@ export function SnippetsView({ snippets, onSaveSnippet, onDeleteSnippet }: Snipp
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 取消
               </Button>
-              <Button type="submit" className="bg-indigo-600 text-white hover:bg-indigo-500">
+              <Button type="submit" className="bg-indigo-600 text-foreground hover:bg-indigo-500">
                 保存片段
               </Button>
             </DialogFooter>

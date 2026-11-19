@@ -85,25 +85,25 @@ export function HostsVaultView({
       <div className="flex-1 overflow-y-auto p-6">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
           <div className="relative w-72">
-            <Search className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-slate-500" />
+            <Search className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
             <Input
               value={hostSearch}
               onChange={(e) => setHostSearch(e.target.value)}
               placeholder="Find a host or ssh user@host..."
-              className="border-white/10 bg-[#141824] pl-8 text-sm"
+              className="border-border bg-card pl-8 text-sm"
             />
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex rounded-lg border border-white/10 bg-[#141824] p-0.5">
+            <div className="flex rounded-lg border border-border bg-card p-0.5">
               <button
                 onClick={() => setViewMode("grid")}
-                className={`rounded-md p-1.5 ${viewMode === "grid" ? "bg-white/10 text-white" : "text-slate-400"}`}
+                className={`rounded-md p-1.5 ${viewMode === "grid" ? "bg-white/10 text-foreground" : "text-muted-foreground"}`}
               >
                 <LayoutGrid className="size-3.5" />
               </button>
               <button
                 onClick={() => setViewMode("list")}
-                className={`rounded-md p-1.5 ${viewMode === "list" ? "bg-white/10 text-white" : "text-slate-400"}`}
+                className={`rounded-md p-1.5 ${viewMode === "list" ? "bg-white/10 text-foreground" : "text-muted-foreground"}`}
               >
                 <List className="size-3.5" />
               </button>
@@ -111,14 +111,14 @@ export function HostsVaultView({
             <Button
               variant="outline"
               size="sm"
-              className="border-white/10 bg-[#141824] text-slate-200 hover:bg-white/[0.06]"
+              className="border-border bg-card text-foreground hover:bg-white/[0.06]"
               onClick={onOpenImport}
             >
               <FolderInput className="mr-1.5 size-4" /> Import SSH Config
             </Button>
             <Button
               size="sm"
-              className="bg-emerald-600 text-white hover:bg-emerald-500"
+              className="bg-emerald-600 text-foreground hover:bg-emerald-500"
               onClick={onOpenNewHost}
             >
               <Plus className="mr-1.5 size-4" /> NEW HOST
@@ -135,7 +135,7 @@ export function HostsVaultView({
               className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
                 activeGroup === grp
                   ? "bg-indigo-500/20 text-indigo-300 ring-1 ring-indigo-500/40"
-                  : "bg-white/[0.04] text-slate-400 hover:bg-white/[0.08] hover:text-slate-200"
+                  : "bg-white/[0.04] text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
               }`}
             >
               {grp === "all" ? "All Hosts" : grp}
@@ -144,11 +144,11 @@ export function HostsVaultView({
         </div>
 
         {filteredServers.length === 0 ? (
-          <Card className="border-white/[0.07] bg-[#141824]">
+          <Card className="border-border bg-card">
             <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-              <Server className="mb-3 size-10 text-slate-600" />
-              <div className="text-sm font-medium text-slate-300">No Hosts in Vault</div>
-              <p className="mt-1 max-w-sm text-xs text-slate-500">
+              <Server className="mb-3 size-10 text-muted-foreground" />
+              <div className="text-sm font-medium text-foreground/90">No Hosts in Vault</div>
+              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
                 Click &quot;Import SSH Config&quot; to parse ~/.ssh/config &amp; ProxyJump chains, or click &quot;NEW HOST&quot;.
               </p>
             </CardContent>
@@ -171,8 +171,8 @@ export function HostsVaultView({
                   onClick={() => onSelectHost(s.id)}
                   className={`group cursor-pointer border transition ${
                     isSelected
-                      ? "border-indigo-500/60 bg-[#1A2030] ring-1 ring-indigo-500/30"
-                      : "border-white/[0.07] bg-[#141824] hover:border-white/20 hover:bg-[#181D2B]"
+                      ? "border-indigo-500/60 bg-accent ring-1 ring-indigo-500/30"
+                      : "border-border bg-card hover:border-primary/40 hover:bg-accent/50"
                   }`}
                 >
                   <CardHeader className="pb-2">
@@ -182,8 +182,8 @@ export function HostsVaultView({
                           <Terminal className="size-4" />
                         </div>
                         <div>
-                          <CardTitle className="text-sm font-semibold text-white">{s.name}</CardTitle>
-                          <CardDescription className="font-mono text-xs text-slate-400">
+                          <CardTitle className="text-sm font-semibold text-foreground">{s.name}</CardTitle>
+                          <CardDescription className="font-mono text-xs text-muted-foreground">
                             {s.username}@{s.host}:{s.port}
                           </CardDescription>
                         </div>
@@ -227,15 +227,15 @@ export function HostsVaultView({
 
       {/* Termius-style Right Host Properties Drawer */}
       {selectedHost && (
-        <aside className="w-80 shrink-0 overflow-y-auto border-l border-white/[0.07] bg-[#10131C] p-5">
+        <aside className="w-80 shrink-0 overflow-y-auto border-l border-border bg-sidebar p-5">
           <div className="flex items-center justify-between">
-            <h3 className="text-base font-semibold text-white">{selectedHost.name}</h3>
+            <h3 className="text-base font-semibold text-foreground">{selectedHost.name}</h3>
             <Switch
               checked={selectedHost.enabled}
               onCheckedChange={(checked) => onToggleEnabled(selectedHost, checked)}
             />
           </div>
-          <p className="mt-0.5 font-mono text-xs text-slate-400">
+          <p className="mt-0.5 font-mono text-xs text-muted-foreground">
             {selectedHost.username}@{selectedHost.host}:{selectedHost.port}
           </p>
 
@@ -243,18 +243,18 @@ export function HostsVaultView({
 
           <div className="space-y-3 text-xs">
             <div>
-              <span className="text-slate-500">Asset ID (MCP Target)</span>
-              <div className="mt-1 rounded bg-[#161B28] px-2.5 py-1.5 font-mono text-slate-200">
+              <span className="text-muted-foreground">Asset ID (MCP Target)</span>
+              <div className="mt-1 rounded bg-muted px-2.5 py-1.5 font-mono text-foreground">
                 {selectedHost.id}
               </div>
             </div>
             <div>
-              <span className="text-slate-500">Group</span>
-              <div className="mt-1 text-slate-200">{selectedHost.group_name || "Ungrouped"}</div>
+              <span className="text-muted-foreground">Group</span>
+              <div className="mt-1 text-foreground">{selectedHost.group_name || "Ungrouped"}</div>
             </div>
             <div>
-              <span className="text-slate-500">Keychain Credential</span>
-              <div className="mt-1 text-slate-200">
+              <span className="text-muted-foreground">Keychain Credential</span>
+              <div className="mt-1 text-foreground">
                 {selectedHost.credential_id
                   ? credMap.get(selectedHost.credential_id)?.label ?? selectedHost.credential_id
                   : "SSH Agent / Default Key"}
@@ -262,15 +262,15 @@ export function HostsVaultView({
             </div>
             {selectedHost.identity_file && (
               <div>
-                <span className="text-slate-500">Identity File</span>
-                <div className="mt-1 truncate font-mono text-slate-300">
+                <span className="text-muted-foreground">Identity File</span>
+                <div className="mt-1 truncate font-mono text-foreground/90">
                   {selectedHost.identity_file}
                 </div>
               </div>
             )}
             {selectedHost.jump_host_id && (
               <div>
-                <span className="text-slate-500">ProxyJump Chain</span>
+                <span className="text-muted-foreground">ProxyJump Chain</span>
                 <div className="mt-1 flex items-center gap-1.5 text-cyan-300">
                   <GitBranch className="size-3.5" />
                   {serverMap.get(selectedHost.jump_host_id)?.name ?? selectedHost.jump_host_id}
@@ -284,7 +284,7 @@ export function HostsVaultView({
           <div className="mt-6 flex flex-col gap-2">
             <Button
               size="sm"
-              className="w-full bg-emerald-600 text-white hover:bg-emerald-500"
+              className="w-full bg-emerald-600 text-foreground hover:bg-emerald-500"
               onClick={() => onTestHost(selectedHost)}
             >
               <Wifi className="mr-1.5 size-4" /> Test Connection
@@ -292,7 +292,7 @@ export function HostsVaultView({
             <Button
               size="sm"
               variant="outline"
-              className="w-full border-white/10 bg-[#161B28]"
+              className="w-full border-border bg-muted"
               onClick={() => onOpenEditHost(selectedHost)}
             >
               Edit Host Properties

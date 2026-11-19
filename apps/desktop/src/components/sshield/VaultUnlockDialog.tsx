@@ -45,7 +45,7 @@ export function VaultUnlockDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="border-white/10 bg-[#141824] text-slate-100 sm:max-w-sm">
+      <DialogContent className="border-border bg-card text-foreground sm:max-w-sm">
         <DialogHeader>
           <div className="flex items-center gap-2.5">
             <div className="flex size-9 items-center justify-center rounded-lg bg-indigo-500/20 text-indigo-400">
@@ -79,7 +79,7 @@ export function VaultUnlockDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               取消
             </Button>
-            <Button type="submit" className="bg-indigo-600 text-white hover:bg-indigo-500">
+            <Button type="submit" className="bg-indigo-600 text-foreground hover:bg-indigo-500">
               {isInit ? "创建并解锁" : "解锁密库"}
             </Button>
           </DialogFooter>

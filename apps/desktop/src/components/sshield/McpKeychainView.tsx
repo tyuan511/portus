@@ -22,13 +22,13 @@ export function McpKeychainView() {
   return (
     <div className="flex-1 space-y-6 overflow-y-auto p-6">
       <div>
-        <h2 className="text-xl font-semibold text-white">MCP 接入与系统密钥链</h2>
-        <p className="text-xs text-slate-400">
+        <h2 className="text-xl font-semibold text-foreground">MCP 接入与系统密钥链</h2>
+        <p className="text-xs text-muted-foreground">
           在 Cursor / Claude Desktop 中配置 stdio MCP Server，共享同一本地 SQLite 资产与规则库。
         </p>
       </div>
 
-      <Card className="border-white/[0.07] bg-[#111622]">
+      <Card className="border-border bg-card">
         <CardHeader className="flex flex-row items-center justify-between">
           <div>
             <CardTitle className="text-sm">Cursor / Claude Desktop MCP 配置</CardTitle>
@@ -39,7 +39,7 @@ export function McpKeychainView() {
           <Button
             size="sm"
             variant="outline"
-            className="border-white/10"
+            className="border-border"
             onClick={() => {
               void navigator.clipboard.writeText(MCP_SNIPPET);
               setCopied(true);
@@ -58,7 +58,7 @@ export function McpKeychainView() {
           </Button>
         </CardHeader>
         <CardContent>
-          <pre className="overflow-x-auto rounded-lg bg-[#0B0E14] p-4 font-mono text-xs text-indigo-300">
+          <pre className="overflow-x-auto rounded-lg bg-muted/60 p-4 font-mono text-xs text-indigo-300">
             {MCP_SNIPPET}
           </pre>
         </CardContent>

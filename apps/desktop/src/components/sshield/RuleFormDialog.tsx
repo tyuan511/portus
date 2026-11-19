@@ -35,7 +35,7 @@ export function RuleFormDialog({
 }: RuleFormDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="border-white/10 bg-[#111622] text-slate-100 sm:max-w-md">
+      <DialogContent className="border-border bg-card text-foreground sm:max-w-md">
         <DialogHeader>
           <DialogTitle>新增 L1 AST 安全规则</DialogTitle>
           <DialogDescription>配置程序名、命令前缀或正则规则及对应放行策略。</DialogDescription>
@@ -100,7 +100,7 @@ export function RuleFormDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               取消
             </Button>
-            <Button type="submit" className="bg-indigo-600 text-white hover:bg-indigo-500">
+            <Button type="submit" className="bg-indigo-600 text-foreground hover:bg-indigo-500">
               保存规则
             </Button>
           </DialogFooter>

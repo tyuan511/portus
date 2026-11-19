@@ -4,12 +4,15 @@ import {
   Code2,
   KeyRound,
   Lock,
+  Moon,
+  Palette,
   Plug,
   RefreshCw,
   Server,
   Shield,
   ShieldAlert,
   ShieldCheck,
+  Sun,
   Unlock,
 } from "lucide-react";
 import { ApprovalModal } from "@/components/sshield/ApprovalModal";
@@ -22,9 +25,11 @@ import { KeychainVaultView } from "@/components/sshield/KeychainVaultView";
 import { McpKeychainView } from "@/components/sshield/McpKeychainView";
 import { RuleFormDialog } from "@/components/sshield/RuleFormDialog";
 import { SnippetsView } from "@/components/sshield/SnippetsView";
+import { ThemePickerDialog } from "@/components/sshield/ThemePickerDialog";
 import { VaultUnlockDialog } from "@/components/sshield/VaultUnlockDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { applyTheme, getSavedThemeId, SSHIELD_THEMES } from "@/lib/themes";
 import { transport } from "@/lib/transport";
 import type {
   ApprovalRequest,
@@ -100,6 +105,18 @@ export function App() {
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
   const [ruleForm, setRuleForm] = useState<Partial<SecurityRule>>(EMPTY_RULE_FORM);
   const [unlockDialogOpen, setUnlockDialogOpen] = useState(false);
+  const [themePickerOpen, setThemePickerOpen] = useState(false);
+  const [activeThemeId, setActiveThemeId] = useState<string>(() => getSavedThemeId());
+
+  const currentTheme = useMemo(
+    () => SSHIELD_THEMES.find((t) => t.id === activeThemeId) ?? SSHIELD_THEMES[0],
+    [activeThemeId]
+  );
+
+  const handleSelectTheme = (id: string) => {
+    const applied = applyTheme(id);
+    setActiveThemeId(applied.id);
+  };
 
   const serverMap = useMemo(() => {
     const map = new Map<string, ServerAsset>();
@@ -228,32 +245,54 @@ export function App() {
   ];
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[#0D1017] text-slate-100">
+    <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
       {/* Termius-style Top Tab Bar (macOS Overlay Drag Region) */}
       <header
         data-tauri-drag-region
-        className="flex h-11 shrink-0 items-center justify-between border-b border-white/[0.07] bg-[#10131C] px-4 pl-20 select-none"
+        className="flex h-11 shrink-0 items-center justify-between border-b border-border bg-sidebar px-4 pl-20 select-none"
       >
         <div className="flex items-center gap-2" data-tauri-drag-region>
-          <div className="flex items-center gap-2 rounded-md bg-[#181D2A] px-3 py-1 text-xs font-medium text-white ring-1 ring-white/10">
-            <Shield className="size-3.5 text-emerald-400" />
+          <div className="flex items-center gap-2 rounded-md bg-card px-3 py-1 text-xs font-medium text-card-foreground ring-1 ring-border">
+            <Shield className="size-3.5 text-primary" />
             <span>Sshield Vault</span>
           </div>
           {l2Config.enabled && (
-            <Badge variant="outline" className="border-indigo-500/30 bg-indigo-500/10 text-[10px] text-indigo-300">
+            <Badge variant="outline" className="text-[10px]">
               L2: {l2Config.model}
             </Badge>
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+            onClick={() =>
+              handleSelectTheme(
+                currentTheme.mode === "dark" ? "termius-light" : "termius-dark"
+              )
+            }
+            title="快速切换浅色 / 深色"
+          >
+            {currentTheme.mode === "dark" ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => setThemePickerOpen(true)}
+          >
+            <Palette className="size-3.5 text-primary" />
+            <span className="hidden sm:inline">{currentTheme.name}</span>
+          </Button>
           <Button
             size="sm"
             variant="ghost"
             className={`h-7 text-xs ${
               vaultStatus.state === "unlocked"
-                ? "text-emerald-300 hover:bg-emerald-500/10"
-                : "text-amber-300 hover:bg-amber-500/10"
+                ? "text-emerald-500 hover:bg-emerald-500/10"
+                : "text-amber-500 hover:bg-amber-500/10"
             }`}
             onClick={() => {
               if (vaultStatus.state === "unlocked") {
@@ -275,11 +314,11 @@ export function App() {
             )}
           </Button>
           {approvals.length > 0 && (
-            <Badge className="animate-pulse gap-1 border-amber-500/40 bg-amber-500/20 text-amber-300">
+            <Badge className="animate-pulse gap-1 border-amber-500/40 bg-amber-500/20 text-amber-400">
               <ShieldAlert className="size-3.5" /> {approvals.length} Pending
             </Badge>
           )}
-          <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-400 hover:text-white" onClick={loadAll}>
+          <Button size="sm" variant="ghost" className="h-7 text-xs text-muted-foreground hover:text-foreground" onClick={loadAll}>
             <RefreshCw className="mr-1 size-3.5" /> Sync
           </Button>
         </div>
@@ -287,7 +326,7 @@ export function App() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Termius-style Left Navigation Rail */}
-        <aside className="flex w-52 shrink-0 flex-col border-r border-white/[0.07] bg-[#141824] p-2.5">
+        <aside className="flex w-52 shrink-0 flex-col border-r border-border bg-sidebar p-2.5">
           <nav className="space-y-0.5">
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -297,13 +336,13 @@ export function App() {
                   onClick={() => setNav(item.id)}
                   className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium transition ${
                     nav === item.id
-                      ? "bg-[#1F2637] text-white ring-1 ring-white/10"
-                      : "text-slate-400 hover:bg-white/[0.04] hover:text-slate-200"
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground ring-1 ring-border"
+                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                   }`}
                 >
-                  <Icon className={`size-4 ${nav === item.id ? "text-emerald-400" : ""}`} />
+                  <Icon className={`size-4 ${nav === item.id ? "text-primary" : ""}`} />
                   <span>{item.label}</span>
-                  {item.count != null && <span className="ml-auto text-[11px] text-slate-500">{item.count}</span>}
+                  {item.count != null && <span className="ml-auto text-[11px] text-muted-foreground">{item.count}</span>}
                 </button>
               );
             })}
@@ -463,6 +502,12 @@ export function App() {
           setVaultStatus(next);
           setBanner({ kind: "ok", text: "Vault unlocked" });
         }}
+      />
+      <ThemePickerDialog
+        open={themePickerOpen}
+        onOpenChange={setThemePickerOpen}
+        activeThemeId={activeThemeId}
+        onSelectTheme={handleSelectTheme}
       />
       <ApprovalModal approval={approvals[0] ?? null} onDecide={handleDecideApproval} />
     </div>

@@ -79,8 +79,8 @@ export function KeychainVaultView({
     <div className="flex-1 space-y-5 overflow-y-auto p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-white">Termius Keychain · AES-256-GCM 密库</h2>
-          <p className="text-xs text-slate-400">
+          <h2 className="text-xl font-semibold text-foreground">Termius Keychain · AES-256-GCM 密库</h2>
+          <p className="text-xs text-muted-foreground">
             所有 SSH 密码、私钥 PEM 与 L2 大模型 API Key 均通过 Argon2id + AES-256-GCM 独立加密，SQLite 零明文落盘。
           </p>
         </div>
@@ -90,14 +90,14 @@ export function KeychainVaultView({
               <Button
                 size="sm"
                 variant="outline"
-                className="border-white/10 bg-[#141824]"
+                className="border-border bg-card"
                 onClick={onLockVault}
               >
                 <Lock className="mr-1.5 size-4 text-amber-400" /> 立即锁定密库
               </Button>
               <Button
                 size="sm"
-                className="bg-emerald-600 text-white hover:bg-emerald-500"
+                className="bg-emerald-600 text-foreground hover:bg-emerald-500"
                 onClick={() => setDialogOpen(true)}
               >
                 <Plus className="mr-1.5 size-4" /> 新增加密凭据
@@ -106,7 +106,7 @@ export function KeychainVaultView({
           ) : (
             <Button
               size="sm"
-              className="bg-indigo-600 text-white hover:bg-indigo-500"
+              className="bg-indigo-600 text-foreground hover:bg-indigo-500"
               onClick={onOpenUnlock}
             >
               <Unlock className="mr-1.5 size-4" />
@@ -116,7 +116,7 @@ export function KeychainVaultView({
         </div>
       </div>
 
-      <Card className="border-white/[0.07] bg-[#141824]">
+      <Card className="border-border bg-card">
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
@@ -149,10 +149,10 @@ export function KeychainVaultView({
         </CardHeader>
       </Card>
 
-      <Card className="border-white/[0.07] bg-[#141824]">
+      <Card className="border-border bg-card">
         <Table>
           <TableHeader>
-            <TableRow className="border-white/[0.07] hover:bg-transparent">
+            <TableRow className="border-border hover:bg-transparent">
               <TableHead>凭据名称</TableHead>
               <TableHead>类型</TableHead>
               <TableHead>Credential ID</TableHead>
@@ -163,32 +163,32 @@ export function KeychainVaultView({
           <TableBody>
             {credentials.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="py-10 text-center text-sm text-slate-500">
+                <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
                   暂无凭据。解锁密库后可添加 SSH 密码、私钥或 L2 LLM API Key。
                 </TableCell>
               </TableRow>
             ) : (
               credentials.map((c) => (
-                <TableRow key={c.id} className="border-white/[0.06]">
-                  <TableCell className="font-medium text-white">
+                <TableRow key={c.id} className="border-border">
+                  <TableCell className="font-medium text-foreground">
                     <div className="flex items-center gap-2">
                       <KeyRound className="size-3.5 text-indigo-400" />
                       {c.label}
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Badge variant="outline" className="border-white/10 text-xs text-slate-300">
+                    <Badge variant="outline" className="border-border text-xs text-foreground/90">
                       {c.kind}
                     </Badge>
                   </TableCell>
-                  <TableCell className="font-mono text-xs text-slate-400">{c.id}</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">{c.id}</TableCell>
                   <TableCell className="font-mono text-xs text-emerald-300">{c.preview}</TableCell>
                   <TableCell className="text-right">
                     <Button
                       size="icon"
                       variant="ghost"
                       disabled={!isUnlocked}
-                      className="size-7 text-slate-400 hover:text-rose-300"
+                      className="size-7 text-muted-foreground hover:text-rose-300"
                       onClick={() => onDeleteCredential(c.id)}
                     >
                       <Trash2 className="size-3.5" />
@@ -202,7 +202,7 @@ export function KeychainVaultView({
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="border-white/10 bg-[#141824] text-slate-100 sm:max-w-md">
+        <DialogContent className="border-border bg-card text-foreground sm:max-w-md">
           <DialogHeader>
             <DialogTitle>新增 AES-256-GCM 加密凭据</DialogTitle>
             <DialogDescription>明文仅在加密瞬间驻留内存并立即归零，前端永不回显。</DialogDescription>
@@ -265,7 +265,7 @@ export function KeychainVaultView({
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
                 取消
               </Button>
-              <Button type="submit" className="bg-emerald-600 text-white hover:bg-emerald-500">
+              <Button type="submit" className="bg-emerald-600 text-foreground hover:bg-emerald-500">
                 加密存入密库
               </Button>
             </DialogFooter>

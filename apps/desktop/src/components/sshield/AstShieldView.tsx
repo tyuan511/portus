@@ -72,28 +72,28 @@ export function AstShieldView({
     <div className="flex-1 space-y-6 overflow-y-auto p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-white">Dual-Layer Shield · L1 AST + L2 AI 语义审核</h2>
-          <p className="text-xs text-slate-400">
+          <h2 className="text-xl font-semibold text-foreground">Dual-Layer Shield · L1 AST + L2 AI 语义审核</h2>
+          <p className="text-xs text-muted-foreground">
             L1 基于 brush-parser 语法树硬拦截；L2 支持 Chat/Responses/Messages 协议与 SystemOne 快速决策模型。
           </p>
         </div>
-        <Button size="sm" className="bg-indigo-600 text-white hover:bg-indigo-500" onClick={onOpenNewRule}>
+        <Button size="sm" className="bg-indigo-600 text-foreground hover:bg-indigo-500" onClick={onOpenNewRule}>
           <Plus className="mr-1.5 size-4" /> 新增 L1 规则
         </Button>
       </div>
 
       <Tabs defaultValue="rules">
-        <TabsList className="bg-[#141824]">
+        <TabsList className="bg-card">
           <TabsTrigger value="rules">L1 AST 规则 ({rules.length})</TabsTrigger>
           <TabsTrigger value="l2">L2 语义策略引擎</TabsTrigger>
           <TabsTrigger value="sandbox">双层沙盒演练</TabsTrigger>
         </TabsList>
 
         <TabsContent value="rules" className="mt-4">
-          <Card className="border-white/[0.07] bg-[#141824]">
+          <Card className="border-border bg-card">
             <Table>
               <TableHeader>
-                <TableRow className="border-white/[0.07] hover:bg-transparent">
+                <TableRow className="border-border hover:bg-transparent">
                   <TableHead>启用</TableHead>
                   <TableHead>规则名称</TableHead>
                   <TableHead>匹配方式</TableHead>
@@ -104,15 +104,15 @@ export function AstShieldView({
               </TableHeader>
               <TableBody>
                 {rules.map((r) => (
-                  <TableRow key={r.id} className="border-white/[0.06]">
+                  <TableRow key={r.id} className="border-border">
                     <TableCell>
                       <Switch
                         checked={r.enabled}
                         onCheckedChange={(checked) => onToggleRule(r, checked)}
                       />
                     </TableCell>
-                    <TableCell className="font-medium text-white">{r.name}</TableCell>
-                    <TableCell className="text-xs text-slate-400">{r.match_kind}</TableCell>
+                    <TableCell className="font-medium text-foreground">{r.name}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{r.match_kind}</TableCell>
                     <TableCell className="font-mono text-xs text-indigo-300">{r.pattern}</TableCell>
                     <TableCell>
                       <DecisionBadge decision={r.decision} />
@@ -121,7 +121,7 @@ export function AstShieldView({
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="size-7 text-slate-400 hover:text-rose-300"
+                        className="size-7 text-muted-foreground hover:text-rose-300"
                         onClick={() => onDeleteRule(r.id)}
                       >
                         <Trash2 className="size-3.5" />
@@ -135,7 +135,7 @@ export function AstShieldView({
         </TabsContent>
 
         <TabsContent value="l2" className="mt-4">
-          <Card className="border-white/[0.07] bg-[#141824]">
+          <Card className="border-border bg-card">
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
@@ -148,7 +148,7 @@ export function AstShieldView({
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-400">{l2Form.enabled ? "已启用" : "已禁用"}</span>
+                  <span className="text-xs text-muted-foreground">{l2Form.enabled ? "已启用" : "已禁用"}</span>
                   <Switch
                     checked={l2Form.enabled}
                     onCheckedChange={(enabled) => setL2Form({ ...l2Form, enabled })}
@@ -251,7 +251,7 @@ export function AstShieldView({
                 </div>
               </div>
               <div className="flex justify-end">
-                <Button className="bg-indigo-600 text-white hover:bg-indigo-500" onClick={() => onSaveL2Config(l2Form)}>
+                <Button className="bg-indigo-600 text-foreground hover:bg-indigo-500" onClick={() => onSaveL2Config(l2Form)}>
                   保存 L2 策略配置
                 </Button>
               </div>
@@ -260,7 +260,7 @@ export function AstShieldView({
         </TabsContent>
 
         <TabsContent value="sandbox" className="mt-4">
-          <Card className="border-white/[0.07] bg-[#141824]">
+          <Card className="border-border bg-card">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-sm">
                 <Sparkles className="size-4 text-indigo-400" /> L1 AST + L2 AI 双层沙盒演练
@@ -273,36 +273,36 @@ export function AstShieldView({
                   value={sandboxIntent}
                   onChange={(e) => setSandboxIntent(e.target.value)}
                   placeholder="AI 声明意图 (Intent)"
-                  className="border-white/10 bg-[#0D1017] text-sm"
+                  className="border-border bg-muted/60 text-sm"
                 />
                 <div className="flex gap-2">
                   <Input
                     value={sandboxCmd}
                     onChange={(e) => setSandboxCmd(e.target.value)}
-                    className="border-white/10 bg-[#0D1017] font-mono text-sm"
+                    className="border-border bg-muted/60 font-mono text-sm"
                   />
                   <Button onClick={handleEvaluate}>双层评估</Button>
                 </div>
               </div>
 
               {verdict && (
-                <div className="space-y-3 rounded-xl border border-white/[0.07] bg-[#0D1017] p-4">
+                <div className="space-y-3 rounded-xl border border-border bg-muted/60 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-sm">
-                      <span className="text-slate-400">最终联合裁决:</span>
+                      <span className="text-muted-foreground">最终联合裁决:</span>
                       <DecisionBadge decision={verdict.final_decision} />
                     </div>
-                    <span className="text-xs text-slate-400">{verdict.l1.reason}</span>
+                    <span className="text-xs text-muted-foreground">{verdict.l1.reason}</span>
                   </div>
                   {verdict.l1.parsed_commands.map((c, idx) => (
                     <div
                       key={idx}
-                      className="flex items-center justify-between rounded-lg border border-white/[0.06] bg-[#141824] px-3 py-2 font-mono text-xs"
+                      className="flex items-center justify-between rounded-lg border border-border bg-card px-3 py-2 font-mono text-xs"
                     >
                       <div>
                         <span className="text-indigo-300">{c.program}</span>{" "}
-                        <span className="text-slate-400">{c.args.join(" ")}</span>
-                        <span className="ml-2 text-slate-500">[{c.context}]</span>
+                        <span className="text-muted-foreground">{c.args.join(" ")}</span>
+                        <span className="ml-2 text-muted-foreground">[{c.context}]</span>
                       </div>
                       <DecisionBadge decision={c.decision} />
                     </div>
@@ -318,7 +318,7 @@ export function AstShieldView({
                           <Badge variant="outline">{verdict.l2.latency_ms}ms</Badge>
                         </div>
                       </div>
-                      <p className="mt-1.5 text-slate-200">{verdict.l2.reasoning}</p>
+                      <p className="mt-1.5 text-foreground">{verdict.l2.reasoning}</p>
                     </div>
                   )}
                 </div>

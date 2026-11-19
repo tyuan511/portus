@@ -28,7 +28,7 @@ export function ImportSshConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="border-white/10 bg-[#111622] text-slate-100 sm:max-w-lg">
+      <DialogContent className="border-border bg-card text-foreground sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>导入 OpenSSH Config</DialogTitle>
           <DialogDescription>
@@ -37,7 +37,7 @@ export function ImportSshConfigDialog({
         </DialogHeader>
         <div className="space-y-3">
           <Button
-            className="w-full bg-indigo-600 text-white hover:bg-indigo-500"
+            className="w-full bg-indigo-600 text-foreground hover:bg-indigo-500"
             onClick={() => onImport(undefined)}
           >
             <FolderInput className="mr-1.5 size-4" /> 一键读取 ~/.ssh/config

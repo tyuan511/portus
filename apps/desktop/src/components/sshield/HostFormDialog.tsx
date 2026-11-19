@@ -43,7 +43,7 @@ export function HostFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="border-white/10 bg-[#141824] text-slate-100 sm:max-w-lg">
+      <DialogContent className="border-border bg-card text-foreground sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{form.id ? "Edit Host" : "New Host"}</DialogTitle>
           <DialogDescription>
@@ -160,7 +160,7 @@ export function HostFormDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               取消
             </Button>
-            <Button type="submit" className="bg-emerald-600 text-white hover:bg-emerald-500">
+            <Button type="submit" className="bg-emerald-600 text-foreground hover:bg-emerald-500">
               Save Host
             </Button>
           </DialogFooter>
