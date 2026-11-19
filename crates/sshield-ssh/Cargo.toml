@@ -1,0 +1,10 @@
+[package]
+name = "sshield-ssh"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sshield-core = { path = "../sshield-core" }
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

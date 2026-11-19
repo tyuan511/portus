@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sshield-core",
+    "crates/sshield-ssh",
+    "crates/sshield-security",
+    "crates/sshield-mcp",
+    "crates/sshield-storage",
+    "apps/server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"

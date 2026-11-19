@@ -1,0 +1,12 @@
+[package]
+name = "sshield-mcp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sshield-core = { path = "../sshield-core" }
+sshield-security = { path = "../sshield-security" }
+sshield-ssh = { path = "../sshield-ssh" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "sshield-security"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sshield-core = { path = "../sshield-core" }
+serde.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "sshield-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sshield-core = { path = "../../crates/sshield-core" }
+sshield-ssh = { path = "../../crates/sshield-ssh" }
+sshield-security = { path = "../../crates/sshield-security" }
+sshield-mcp = { path = "../../crates/sshield-mcp" }
+sshield-storage = { path = "../../crates/sshield-storage" }
+tokio.workspace = true
+tracing.workspace = true
