@@ -2,12 +2,25 @@
 name = "sshield-server"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 sshield-core = { path = "../../crates/sshield-core" }
+sshield-vault = { path = "../../crates/sshield-vault" }
 sshield-ssh = { path = "../../crates/sshield-ssh" }
 sshield-security = { path = "../../crates/sshield-security" }
 sshield-mcp = { path = "../../crates/sshield-mcp" }
 sshield-storage = { path = "../../crates/sshield-storage" }
+axum.workspace = true
+tower-http.workspace = true
 tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+rmcp.workspace = true
+anyhow.workspace = true
+dirs.workspace = true

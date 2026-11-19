@@ -2,9 +2,15 @@
 name = "sshield-ssh"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 sshield-core = { path = "../sshield-core" }
+sshield-vault = { path = "../sshield-vault" }
+russh.workspace = true
+ssh2-config.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+dirs.workspace = true
+uuid.workspace = true

@@ -26,3 +26,7 @@
 - `apps/web`（待初始化）：React + TypeScript 前端工作台
 
 详细调研与产品规划见 [docs/ARCHITECTURE_AND_PLAN.md](docs/ARCHITECTURE_AND_PLAN.md)。
+
+## 开源协议
+
+本项目基于 [Apache-2.0](LICENSE) 协议开源。
