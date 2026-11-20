@@ -117,6 +117,12 @@ func StorageErr(cause error) *E {
 func VaultError(msg string) *E {
 	return New(CodeVaultError, http.StatusInternalServerError, msg)
 }
+func SSHErrorf(format string, a ...any) *E {
+	return New(CodeSSHError, http.StatusBadGateway, fmt.Sprintf(format, a...))
+}
+func SSHTimeoutf(format string, a ...any) *E {
+	return New(CodeSSHTimeout, http.StatusGatewayTimeout, fmt.Sprintf(format, a...))
+}
 
 func or(msg, fallback string) string {
 	if msg == "" {
