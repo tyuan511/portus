@@ -6,83 +6,24 @@ export interface SshieldTheme {
   swatches: [string, string, string, string];
 }
 
+// Supabaze-inspired brand system (see DESIGN.md): a white canvas with a
+// near-black ink ladder and a single emerald primary (#3ecf8e) as the only
+// chromatic event. Light is the brand default; night inverts the surface
+// ladder while keeping emerald untouched.
 export const SSHIELD_THEMES: SshieldTheme[] = [
   {
-    id: "termius-dark",
-    name: "Termius Dark",
-    mode: "dark",
-    description: "Signature Termius obsidian & emerald vault",
-    swatches: ["#0D1017", "#141824", "#10B981", "#6366F1"],
-  },
-  {
-    id: "termius-light",
-    name: "Termius Light",
+    id: "supabase-light",
+    name: "Daylight",
     mode: "light",
-    description: "Clean daylight workspace for bright environments",
-    swatches: ["#F6F8FB", "#FFFFFF", "#059669", "#4F46E5"],
+    description: "White canvas, near-black ink, emerald CTA",
+    swatches: ["#ffffff", "#fafafa", "#171717", "#3ecf8e"],
   },
   {
-    id: "dracula",
-    name: "Dracula",
+    id: "supabase-night",
+    name: "Night",
     mode: "dark",
-    description: "Iconic dark purple & vibrant pink/cyan accents",
-    swatches: ["#282A36", "#21222C", "#BD93F9", "#50FA7B"],
-  },
-  {
-    id: "nord",
-    name: "Nord",
-    mode: "dark",
-    description: "Arctic, north-bluish clean & calm palette",
-    swatches: ["#2E3440", "#3B4252", "#88C0D0", "#81A1C1"],
-  },
-  {
-    id: "tokyo-night",
-    name: "Tokyo Night",
-    mode: "dark",
-    description: "Deep midnight indigo & neon sky accents",
-    swatches: ["#1A1B26", "#24283B", "#7AA2F7", "#9ECE6A"],
-  },
-  {
-    id: "one-dark",
-    name: "One Dark",
-    mode: "dark",
-    description: "Balanced Atom-inspired slate & blue-green",
-    swatches: ["#282C34", "#21252B", "#61AFEF", "#98C379"],
-  },
-  {
-    id: "solarized-dark",
-    name: "Solarized Dark",
-    mode: "dark",
-    description: "Precision Ethan Schoonover deep teal dark",
-    swatches: ["#002B36", "#073642", "#268BD2", "#2AA198"],
-  },
-  {
-    id: "solarized-light",
-    name: "Solarized Light",
-    mode: "light",
-    description: "Warm paper-toned precision light theme",
-    swatches: ["#FDF6E3", "#EEE8D5", "#268BD2", "#2AA198"],
-  },
-  {
-    id: "monokai-pro",
-    name: "Monokai Pro",
-    mode: "dark",
-    description: "Warm charcoal with crisp amber & lime",
-    swatches: ["#2D2A2E", "#221F22", "#FFD866", "#A9DC76"],
-  },
-  {
-    id: "gruvbox-dark",
-    name: "Gruvbox Dark",
-    mode: "dark",
-    description: "Retro warm earthy dark with golden highlights",
-    swatches: ["#282828", "#1D2021", "#FABD2F", "#B8BB26"],
-  },
-  {
-    id: "catppuccin-mocha",
-    name: "Catppuccin Mocha",
-    mode: "dark",
-    description: "Soothing pastel-on-espresso modern dark",
-    swatches: ["#1E1E2E", "#181825", "#CBA6F7", "#A6E3A1"],
+    description: "Canvas-night surfaces, emerald untouched",
+    swatches: ["#1c1c1c", "#202020", "#ededed", "#3ecf8e"],
   },
 ];
 
@@ -97,7 +38,8 @@ export function getSavedThemeId(): string {
   } catch {
     // ignore storage errors
   }
-  return "termius-dark";
+  // Brand default follows the DESIGN.md white-canvas commitment.
+  return "supabase-light";
 }
 
 export function applyTheme(themeId: string): SshieldTheme {

@@ -17,6 +17,7 @@ import { useAuth } from "@/lib/auth";
 import { applyTheme, getSavedThemeId } from "@/lib/themes";
 import { Button } from "@/components/ui/button";
 import Login from "@/pages/Login";
+import Landing from "@/pages/Landing";
 import Hosts from "@/pages/Hosts";
 import Audit from "@/pages/Audit";
 import Snippets from "@/pages/Snippets";
@@ -47,7 +48,16 @@ export default function App() {
     );
   }
   if (!auth.identity) {
-    return <Routes><Route path="*" element={<Login />} /></Routes>;
+    // Anonymous visitors get the public landing page; everything else funnels
+    // through sign-in.
+    return (
+      <Routes>
+        <Route path="/" element={<Landing />} />
+        <Route path="/welcome" element={<Landing />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    );
   }
 
   const nav: { to: string; label: string; icon: typeof Server; show: boolean }[] = [
@@ -105,6 +115,7 @@ export default function App() {
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <Routes>
           <Route path="/login" element={<Navigate to="/" replace />} />
+          <Route path="/welcome" element={<Navigate to="/" replace />} />
           <Route path="/" element={<Hosts />} />
           <Route path="/terminal/:serverId" element={isTerminalRoute ? <TerminalPane /> : null} />
           <Route path="/audit" element={<Audit />} />

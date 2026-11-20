@@ -23,10 +23,10 @@ export default function TerminalPane() {
       fontSize: 13,
       fontFamily: "'Geist Mono', ui-monospace, SFMono-Regular, monospace",
       theme: {
-        background: "#0D1017",
-        foreground: "#E6EDF3",
-        cursor: "#10B981",
-        selectionBackground: "#10B98155",
+        background: "#1c1c1c", // canvas-night (DESIGN.md code-block surface)
+        foreground: "#ededed",
+        cursor: "#3ecf8e",
+        selectionBackground: "#3ecf8e55",
       },
     });
     const fit = new FitAddon();
