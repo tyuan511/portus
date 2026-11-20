@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -8,106 +9,217 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/yuantang/sshield/internal/domain"
+	"github.com/yuantang/sshield/internal/storage/db"
 )
 
 // GenesisHash is the prev_hash of the first audit record.
 const GenesisHash = "GENESIS"
 
-// auditRow mirrors the raw audit_logs row; string timestamps keep byte-level
-// compatibility with chains written by the legacy (Rust) implementation.
-type auditRow struct {
-	Seq          int64
-	ID           string
-	TraceID      string
-	Actor        string
-	Timestamp    string
-	ServerID     string
-	ServerName   string
-	SSHUser      string
-	ServerHost   string
-	Operator     string
-	UserID       string
-	Username     string
-	Command      string
-	Intent       string
-	DryRun       int
-	Decision     string
-	L1JSON       sql.NullString
-	L2JSON       sql.NullString
-	ApprovalID   sql.NullString
-	ApprovalStat sql.NullString
-	ExitCode     sql.NullInt64
-	DurationMs   sql.NullInt64
-	StdoutPrev   sql.NullString
-	StderrPrev   sql.NullString
-	Error        sql.NullString
-	PrevHash     string
-	EventHash    string
+// AppendAudit inserts an event into the hash chain (and optional JSONL mirror).
+func (h *DB) AppendAudit(ev *domain.AuditEvent) error {
+	if ev.TraceID == "" {
+		ev.TraceID = ev.ID
+	}
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = nowUTC()
+	}
+	tsStr := formatRFC3339(ev.Timestamp)
+
+	var prevHash string
+	tail, err := h.q.GetAuditTailHash(context.Background())
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		prevHash = GenesisHash
+	case err != nil:
+		return fmt.Errorf("audit tail: %w", err)
+	default:
+		prevHash = tail
+	}
+
+	ev.PrevHash = prevHash
+	ev.EventHash = computeEventHash(ev, tsStr)
+
+	err = h.q.InsertAudit(context.Background(), db.InsertAuditParams{
+		ID:             ev.ID,
+		TraceID:        ev.TraceID,
+		Actor:          ev.Actor,
+		Timestamp:      tsStr,
+		ServerID:       ev.ServerID,
+		ServerName:     ev.ServerName,
+		SshUser:        ev.SSHUser,
+		ServerHost:     ev.ServerHost,
+		Operator:       ev.Operator,
+		UserID:         ev.UserID,
+		Username:       ev.Username,
+		Command:        ev.Command,
+		Intent:         ev.Intent,
+		DryRun:         int32(boolToInt(ev.DryRun)),
+		Decision:       string(ev.Decision),
+		L1VerdictJson:  nullJSON(ev.L1Verdict),
+		L2VerdictJson:  nullJSON(ev.L2Verdict),
+		ApprovalID:     nullString(ev.ApprovalID),
+		ApprovalStatus: nullString(string(ev.ApprovalStatus)),
+		ExitCode:       nullInt32(ev.ExitCode),
+		DurationMs:     nullInt64FromPtr(ev.DurationMs),
+		StdoutPreview:  nullString(ev.StdoutPreview),
+		StderrPreview:  nullString(ev.StderrPreview),
+		Error:          nullString(ev.Error),
+		PrevHash:       ev.PrevHash,
+		EventHash:      ev.EventHash,
+	})
+	if err != nil {
+		return fmt.Errorf("audit insert: %w", err)
+	}
+
+	if h.auditJSONLPath != "" {
+		h.appendJSONL(ev)
+	}
+	return nil
 }
 
-const auditCols = `seq, id, trace_id, actor, timestamp, server_id, server_name, ssh_user,
-	server_host, operator, user_id, username, command, intent, dry_run, decision,
-	l1_verdict_json, l2_verdict_json, approval_id, approval_status, exit_code,
-	duration_ms, stdout_preview, stderr_preview, error, prev_hash, event_hash`
-
-func scanAuditRow(row interface{ Scan(...any) error }) (*auditRow, error) {
-	var r auditRow
-	err := row.Scan(&r.Seq, &r.ID, &r.TraceID, &r.Actor, &r.Timestamp, &r.ServerID, &r.ServerName,
-		&r.SSHUser, &r.ServerHost, &r.Operator, &r.UserID, &r.Username, &r.Command, &r.Intent,
-		&r.DryRun, &r.Decision, &r.L1JSON, &r.L2JSON, &r.ApprovalID, &r.ApprovalStat,
-		&r.ExitCode, &r.DurationMs, &r.StdoutPrev, &r.StderrPrev, &r.Error, &r.PrevHash, &r.EventHash)
-	return &r, err
+func (h *DB) appendJSONL(ev *domain.AuditEvent) {
+	f, err := os.OpenFile(h.auditJSONLPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 -- configured path
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if b, err := json.Marshal(ev); err == nil {
+		_, _ = f.Write(append(b, '\n'))
+	}
 }
 
-func (r *auditRow) toEvent() (*domain.AuditEvent, error) {
+// QueryAudits filters the audit log. The UserID dimension scopes results to
+// one user (used for the audit.view_self permission level).
+func (h *DB) QueryAudits(q *domain.AuditQuery) ([]*domain.AuditEvent, error) {
+	params := auditQueryParams(q)
+	rows, err := h.q.SelectAuditLogs(context.Background(), params)
+	if err != nil {
+		return nil, fmt.Errorf("query audits: %w", err)
+	}
+	out := make([]*domain.AuditEvent, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, auditRowToEvent(r))
+	}
+	return out, nil
+}
+
+// auditQueryParams converts the domain query into sqlc nullable params.
+func auditQueryParams(q *domain.AuditQuery) db.SelectAuditLogsParams {
+	p := db.SelectAuditLogsParams{}
+	p.ServerID = nullString(q.ServerID)
+	p.SshUser = nullString(q.SSHUser)
+	p.UserID = nullString(q.UserID)
+	p.Username = nullString(q.Username)
+	p.Decision = nullString(string(q.Decision))
+	p.Actor = nullString(q.Actor)
+	if q.From != nil {
+		p.FromTs = nullString(formatRFC3339(*q.From))
+	}
+	if q.To != nil {
+		p.ToTs = nullString(formatRFC3339(*q.To))
+	}
+	p.Q = nullString(q.Q)
+	if q.OnlyFailed {
+		p.OnlyFailed = nullInt32FromInt(1)
+	}
+	limit := int64(q.Limit)
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+	p.Lim = nullInt64(limit)
+	p.Offs = nullInt64(int64(q.Offset))
+	return p
+}
+
+func auditRowToEvent(r db.AuditLog) *domain.AuditEvent {
 	ev := &domain.AuditEvent{
 		ID: r.ID, TraceID: r.TraceID, Actor: r.Actor, ServerID: r.ServerID, ServerName: r.ServerName,
-		SSHUser: r.SSHUser, ServerHost: r.ServerHost, Operator: r.Operator,
+		SSHUser: r.SshUser, ServerHost: r.ServerHost, Operator: r.Operator,
 		UserID: r.UserID, Username: r.Username,
-		Command: r.Command, Intent: r.Intent, DryRun: intToBool(r.DryRun),
+		Command: r.Command, Intent: r.Intent, DryRun: r.DryRun == 1,
 		Decision: domain.PolicyDecision(r.Decision), PrevHash: r.PrevHash, EventHash: r.EventHash,
 	}
 	if t, ok := parseRFC3339(r.Timestamp); ok {
 		ev.Timestamp = t
 	}
-	if r.L1JSON.Valid && r.L1JSON.String != "" {
-		_ = json.Unmarshal([]byte(r.L1JSON.String), &ev.L1Verdict)
+	if r.L1VerdictJson.Valid && r.L1VerdictJson.String != "" {
+		_ = json.Unmarshal([]byte(r.L1VerdictJson.String), &ev.L1Verdict)
 	}
-	if r.L2JSON.Valid && r.L2JSON.String != "" {
-		_ = json.Unmarshal([]byte(r.L2JSON.String), &ev.L2Verdict)
+	if r.L2VerdictJson.Valid && r.L2VerdictJson.String != "" {
+		_ = json.Unmarshal([]byte(r.L2VerdictJson.String), &ev.L2Verdict)
 	}
 	if r.ApprovalID.Valid {
 		ev.ApprovalID = r.ApprovalID.String
 	}
-	if r.ApprovalStat.Valid && r.ApprovalStat.String != "" {
-		decision := domain.ApprovalDecision(r.ApprovalStat.String)
-		ev.ApprovalStatus = decision
+	if r.ApprovalStatus.Valid && r.ApprovalStatus.String != "" {
+		ev.ApprovalStatus = domain.ApprovalDecision(r.ApprovalStatus.String)
 	}
 	if r.ExitCode.Valid {
-		c := int(r.ExitCode.Int64)
+		c := int(r.ExitCode.Int32)
 		ev.ExitCode = &c
 	}
 	if r.DurationMs.Valid {
 		d := r.DurationMs.Int64
 		ev.DurationMs = &d
 	}
-	if r.StdoutPrev.Valid {
-		ev.StdoutPreview = r.StdoutPrev.String
+	if r.StdoutPreview.Valid {
+		ev.StdoutPreview = r.StdoutPreview.String
 	}
-	if r.StderrPrev.Valid {
-		ev.StderrPreview = r.StderrPrev.String
+	if r.StderrPreview.Valid {
+		ev.StderrPreview = r.StderrPreview.String
 	}
 	if r.Error.Valid {
 		ev.Error = r.Error.String
 	}
-	return ev, nil
+	return ev
 }
 
-// exitCodeDebugFormat renders exit code exactly like Rust's {:?} on Option<i32>
-// ("None" / "Some(0)"), keeping hash chains byte-compatible with legacy records.
+// VerifyAuditChain recomputes the full hash chain from genesis. The timestamp
+// is hashed verbatim as stored, so chains written by earlier versions keep
+// verifying unchanged.
+func (h *DB) VerifyAuditChain() (*domain.AuditChainStatus, error) {
+	rows, err := h.q.SelectAuditChain(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("verify chain: %w", err)
+	}
+
+	status := &domain.AuditChainStatus{Valid: true}
+	var prevHash string
+	for _, r := range rows {
+		status.TotalEvents++
+		expectedPrev := prevHash
+		if expectedPrev == "" {
+			expectedPrev = GenesisHash
+		}
+		ev := &domain.AuditEvent{
+			ID: r.ID, TraceID: r.TraceID, Actor: r.Actor, Timestamp: mustParse(r.Timestamp),
+			ServerID: r.ServerID, Command: r.Command, Intent: r.Intent,
+			Decision: domain.PolicyDecision(r.Decision),
+			SSHUser:  r.SshUser, ServerHost: r.ServerHost, Operator: r.Operator,
+			UserID: r.UserID, Username: r.Username,
+			PrevHash: r.PrevHash,
+		}
+		if r.ExitCode.Valid {
+			c := int(r.ExitCode.Int32)
+			ev.ExitCode = &c
+		}
+		if r.PrevHash != expectedPrev || computeEventHash(ev, r.Timestamp) != r.EventHash {
+			status.Valid = false
+			status.BrokenAtID = r.ID
+			break
+		}
+		prevHash = r.EventHash
+	}
+	return status, nil
+}
+
+// exitCodeDebugFormat renders exit code exactly like the legacy format
+// ("None" / "Some(0)"), keeping the hash payload stable.
 func exitCodeDebugFormat(ev *domain.AuditEvent) string {
 	if ev.ExitCode == nil {
 		return "None"
@@ -116,9 +228,8 @@ func exitCodeDebugFormat(ev *domain.AuditEvent) string {
 }
 
 // computeEventHash builds the SHA-256 chain hash over the raw stored fields.
-// The timestamp is hashed verbatim as stored (the legacy implementation hashed
-// exactly the string it persisted), so pre-existing chains verify unchanged.
-// New multi-user fields are appended only when present.
+// The timestamp is hashed verbatim as stored; multi-user fields are appended
+// only when present, so pre-existing chain records verify unchanged.
 func computeEventHash(ev *domain.AuditEvent, tsStr string) string {
 	payload := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
 		ev.PrevHash, ev.ID, ev.TraceID, ev.Actor, tsStr,
@@ -133,208 +244,36 @@ func computeEventHash(ev *domain.AuditEvent, tsStr string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// AppendAudit inserts an event into the hash chain (and optional JSONL mirror).
-func (db *DB) AppendAudit(ev *domain.AuditEvent) error {
-	if ev.TraceID == "" {
-		ev.TraceID = ev.ID
-	}
-	if ev.Timestamp.IsZero() {
-		ev.Timestamp = nowUTC()
-	}
-	tsStr := formatRFC3339(ev.Timestamp)
-
-	var prevHash string
-	err := db.sql.QueryRow(`SELECT event_hash FROM audit_logs ORDER BY seq DESC LIMIT 1`).Scan(&prevHash)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		prevHash = GenesisHash
-	case err != nil:
-		return fmt.Errorf("audit tail: %w", err)
-	}
-
-	ev.PrevHash = prevHash
-	ev.EventHash = computeEventHash(ev, tsStr)
-
-	l1 := nullJSON(ev.L1Verdict)
-	l2 := nullJSON(ev.L2Verdict)
-	_, err = db.sql.Exec(`INSERT INTO audit_logs (`+auditCols+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		nil, ev.ID, ev.TraceID, ev.Actor, tsStr,
-		ev.ServerID, ev.ServerName, ev.SSHUser, ev.ServerHost, ev.Operator,
-		ev.UserID, ev.Username, ev.Command, ev.Intent, boolToInt(ev.DryRun),
-		string(ev.Decision), l1, l2,
-		nullString(ev.ApprovalID), nullString(string(ev.ApprovalStatus)),
-		nullInt64Ptr(ev.ExitCode), nullInt64Ptr(ev.DurationMs),
-		nullString(ev.StdoutPreview), nullString(ev.StderrPreview), nullString(ev.Error),
-		ev.PrevHash, ev.EventHash)
-	if err != nil {
-		return fmt.Errorf("audit insert: %w", err)
-	}
-
-	if db.auditJSONLPath != "" {
-		db.appendJSONL(ev)
-	}
-	return nil
-}
-
-func (db *DB) appendJSONL(ev *domain.AuditEvent) {
-	f, err := os.OpenFile(db.auditJSONLPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 -- configured path
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	if b, err := json.Marshal(ev); err == nil {
-		_, _ = f.Write(append(b, '\n'))
-	}
-}
-
-// QueryAudits filters the audit log. userIDFilter scopes results to one user
-// (used for the audit.view_self permission level).
-func (db *DB) QueryAudits(q *domain.AuditQuery) ([]*domain.AuditEvent, error) {
-	var sb strings.Builder
-	var args []any
-	sb.WriteString(`SELECT ` + auditCols + ` FROM audit_logs WHERE 1=1`)
-
-	if q.ServerID != "" {
-		sb.WriteString(" AND server_id = ?")
-		args = append(args, q.ServerID)
-	}
-	if q.SSHUser != "" {
-		sb.WriteString(" AND ssh_user = ?")
-		args = append(args, q.SSHUser)
-	}
-	if q.UserID != "" {
-		sb.WriteString(" AND user_id = ?")
-		args = append(args, q.UserID)
-	} else if q.Username != "" {
-		sb.WriteString(" AND username = ?")
-		args = append(args, q.Username)
-	}
-	if q.Actor != "" {
-		cond, arg := actorFilter(q.Actor)
-		sb.WriteString(" AND " + cond)
-		if arg != nil {
-			args = append(args, arg)
-		}
-	}
-	if q.Decision != "" {
-		sb.WriteString(" AND decision = ?")
-		args = append(args, string(q.Decision))
-	}
-	if q.OnlyFailed {
-		sb.WriteString(" AND ((exit_code IS NOT NULL AND exit_code != 0) OR (error IS NOT NULL AND error != ''))")
-	}
-	if q.From != nil {
-		sb.WriteString(" AND timestamp >= ?")
-		args = append(args, formatRFC3339(*q.From))
-	}
-	if q.To != nil {
-		sb.WriteString(" AND timestamp <= ?")
-		args = append(args, formatRFC3339(*q.To))
-	}
-	if q.Q != "" {
-		like := "%" + q.Q + "%"
-		sb.WriteString(` AND (command LIKE ? OR intent LIKE ? OR server_name LIKE ?
-			OR ssh_user LIKE ? OR server_host LIKE ? OR operator LIKE ? OR trace_id LIKE ?
-			OR username LIKE ?)`)
-		for i := 0; i < 8; i++ {
-			args = append(args, like)
-		}
-	}
-
-	limit := q.Limit
-	if limit <= 0 {
-		limit = 200
-	}
-	if limit > 2000 {
-		limit = 2000
-	}
-	sb.WriteString(" ORDER BY seq DESC LIMIT ? OFFSET ?")
-	args = append(args, limit, q.Offset)
-
-	rows, err := db.sql.Query(sb.String(), args...)
-	if err != nil {
-		return nil, fmt.Errorf("query audits: %w", err)
-	}
-	defer rows.Close()
-
-	var out []*domain.AuditEvent
-	for rows.Next() {
-		r, err := scanAuditRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		ev, err := r.toEvent()
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, ev)
-	}
-	return out, rows.Err()
-}
-
-// VerifyAuditChain recomputes the full hash chain from genesis.
-func (db *DB) VerifyAuditChain() (*domain.AuditChainStatus, error) {
-	rows, err := db.sql.Query(`SELECT ` + auditCols + ` FROM audit_logs ORDER BY seq ASC`)
-	if err != nil {
-		return nil, fmt.Errorf("verify chain: %w", err)
-	}
-	defer rows.Close()
-
-	status := &domain.AuditChainStatus{Valid: true}
-	var prevHash string
-	for rows.Next() {
-		r, err := scanAuditRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		status.TotalEvents++
-		expectedPrev := prevHash
-		if expectedPrev == "" {
-			expectedPrev = GenesisHash
-		}
-		ev := &domain.AuditEvent{
-			ID: r.ID, TraceID: r.TraceID, Actor: r.Actor, Timestamp: mustParse(r.Timestamp),
-			ServerID: r.ServerID, Command: r.Command, Intent: r.Intent,
-			Decision: domain.PolicyDecision(r.Decision),
-			SSHUser:  r.SSHUser, ServerHost: r.ServerHost, Operator: r.Operator,
-			UserID: r.UserID, Username: r.Username,
-			PrevHash: r.PrevHash,
-			ExitCode: nullIntToPtr(r.ExitCode),
-		}
-		if r.PrevHash != expectedPrev || computeEventHash(ev, r.Timestamp) != r.EventHash {
-			status.Valid = false
-			status.BrokenAtID = r.ID
-			break
-		}
-		prevHash = r.EventHash
-	}
-	return status, rows.Err()
-}
-
-// nullJSON marshals a pointer payload or returns nil SQL value.
-func nullJSON(v any) any {
+// nullJSON marshals a pointer payload into a nullable JSON string column.
+func nullJSON(v any) sql.NullString {
 	if v == nil {
-		return nil
+		return sql.NullString{}
 	}
 	b, err := json.Marshal(v)
 	if err != nil {
-		return nil
+		return sql.NullString{}
 	}
-	return string(b)
+	return sql.NullString{String: string(b), Valid: true}
 }
 
-func nullInt64Ptr[T int | int64](p *T) any {
+func nullInt64FromPtr(p *int64) sql.NullInt64 {
 	if p == nil {
-		return nil
+		return sql.NullInt64{}
 	}
-	return *p
+	return sql.NullInt64{Int64: *p, Valid: true}
 }
 
-func nullIntToPtr(n sql.NullInt64) *int {
-	if !n.Valid {
-		return nil
+func nullInt64(i int64) sql.NullInt64 {
+	return sql.NullInt64{Int64: i, Valid: true}
+}
+
+func nullInt32(i *int) sql.NullInt32 {
+	if i == nil {
+		return sql.NullInt32{}
 	}
-	v := int(n.Int64)
-	return &v
+	return sql.NullInt32{Int32: int32(*i), Valid: true}
+}
+
+func nullInt32FromInt(i int) sql.NullInt32 {
+	return sql.NullInt32{Int32: int32(i), Valid: true}
 }

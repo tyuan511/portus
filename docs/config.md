@@ -1,13 +1,15 @@
 # Configuration Reference
 
-Config file discovery: `--config <path>` / `$SSHIELD_CONFIG` / `<data_dir>/sshield-server.toml`.
-A missing file is not an error — defaults apply. Copy `sshield-server.toml.example` as a starting point.
+Config file: YAML (`sshield-server.yaml`). Discovery order:
+`--config <path>` / `$SSHIELD_CONFIG` / `<data_dir>/sshield-server.yaml`.
+A legacy `sshield-server.toml` in the data dir is still discovered as a fallback.
+A missing file is not an error — defaults apply. Copy `sshield-server.yaml.example` as a starting point.
 
 Environment overrides use the `SSHIELD_` prefix with dots mapped to underscores
 (e.g. `security.lockout_minutes` → `SSHIELD_SECURITY_LOCKOUT_MINUTES`).
 Legacy singles still work: `SSHIELD_ADDR`, `SSHIELD_DB_URL`, `SSHIELD_AUDIT_JSONL`, `SSHIELD_VAULT_PATH`.
 
-## `[server]`
+## `server`
 
 | Key | Default | Notes |
 |---|---|---|
@@ -15,22 +17,34 @@ Legacy singles still work: `SSHIELD_ADDR`, `SSHIELD_DB_URL`, `SSHIELD_AUDIT_JSON
 | `allowed_origins` | `[]` | Browser origins for cross-origin API access. Empty = same-origin only (recommended) |
 | `tls_cert`, `tls_key` | `""` | Optional built-in HTTPS; otherwise terminate TLS at your reverse proxy |
 
-## `[storage]`
+## `storage`
 
 | Key | Default | Notes |
 |---|---|---|
-| `data_dir` | `~/.local/share/sshield` | Home for DB, vault, server key, bootstrap hint |
-| `db_url` | `<data_dir>/sshield.db` | SQLite path (`sqlite://` prefix accepted). Relative paths resolve against `data_dir` |
+| `db_url` | `postgres://sshield:sshield@127.0.0.1:5432/sshield?sslmode=disable` | PostgreSQL connection string (pgx URL) |
+| `data_dir` | `~/.local/share/sshield` | Home for the vault, server key, bootstrap hint |
 | `audit_jsonl` | `""` | Optional JSONL mirror of the audit chain |
 
-## `[vault]`
+PostgreSQL is the only supported backend; all data access goes through
+**sqlc-generated queries** (`internal/storage/db`), with the schema embedded in
+the binary (`internal/storage/migrations`, applied idempotently at boot).
+Create the database before first boot — tables are created automatically:
+
+```sql
+CREATE DATABASE sshield;
+-- or with a dedicated role:
+CREATE ROLE sshield LOGIN PASSWORD 'secret';
+CREATE DATABASE sshield OWNER sshield;
+```
+
+## `vault`
 
 | Key | Default | Notes |
 |---|---|---|
 | `auto_lock_secs` | `900` | Idle auto-lock for the master key (min 60) |
 | `unlock_passphrase_file` | `""` | 0600 file whose contents auto-unlock the vault at startup (headless). Leave empty for manual admin unlock via the web UI |
 
-## `[bootstrap]` (first boot only, when the users table is empty)
+## `bootstrap` (first boot only, when the users table is empty)
 
 | Key | Default | Notes |
 |---|---|---|
@@ -40,7 +54,7 @@ Legacy singles still work: `SSHIELD_ADDR`, `SSHIELD_DB_URL`, `SSHIELD_AUDIT_JSON
 
 The generated password forces a change at first login. Existing databases are never re-bootstrapped.
 
-## `[security]`
+## `security`
 
 | Key | Default | Notes |
 |---|---|---|
@@ -55,7 +69,6 @@ The generated password forces a change at first login. Existing databases are ne
 
 ## Data files (all 0600)
 
-- `sshield.db` — SQLite (WAL); schema upgrades run automatically at boot
 - `vault.enc` — sealed credentials (AES-256-GCM + Argon2id)
 - `server.key` — 32-byte AEAD key encrypting TOTP secrets at rest; **back this up together with the DB**
 - `bootstrap-admin-password.txt` — one-time hint, delete after first login

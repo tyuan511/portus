@@ -35,10 +35,11 @@ type ServerConfig struct {
 }
 
 type StorageConfig struct {
-	// DataDir is the default home for the DB, audit log and vault file.
-	DataDir string `mapstructure:"data_dir"`
-	// DBURL overrides the SQLite DSN when set (e.g. "sqlite:///path/sshield.db").
+	// DBURL is the PostgreSQL connection string (pgx URL), e.g.
+	// "postgres://sshield:secret@127.0.0.1:5432/sshield?sslmode=disable".
 	DBURL string `mapstructure:"db_url"`
+	// DataDir is the home for the vault, server key and bootstrap hint.
+	DataDir string `mapstructure:"data_dir"`
 	// AuditJSONL optionally mirrors the audit chain to a JSONL file; empty = off.
 	AuditJSONL string `mapstructure:"audit_jsonl"`
 }
@@ -80,8 +81,8 @@ func Defaults(v *viper.Viper) {
 	v.SetDefault("server.tls_cert", "")
 	v.SetDefault("server.tls_key", "")
 
+	v.SetDefault("storage.db_url", "postgres://sshield:sshield@127.0.0.1:5432/sshield?sslmode=disable")
 	v.SetDefault("storage.data_dir", defaultDataDir())
-	v.SetDefault("storage.db_url", "")
 	v.SetDefault("storage.audit_jsonl", "")
 
 	v.SetDefault("vault.auto_lock_secs", 900)
@@ -130,11 +131,18 @@ func Load(path string) (*Config, error) {
 		discover = os.Getenv("SSHIELD_CONFIG")
 	}
 	if discover == "" {
-		discover = filepath.Join(v.GetString("storage.data_dir"), "sshield-server.toml")
+		// YAML first; fall back to a legacy TOML file when only that exists.
+		yamlPath := filepath.Join(v.GetString("storage.data_dir"), "sshield-server.yaml")
+		tomlPath := filepath.Join(v.GetString("storage.data_dir"), "sshield-server.toml")
+		if _, err := os.Stat(yamlPath); err == nil {
+			discover = yamlPath
+		} else if _, err := os.Stat(tomlPath); err == nil {
+			discover = tomlPath
+		}
 	}
 	if _, err := os.Stat(discover); err == nil {
 		v.SetConfigFile(discover)
-		v.SetConfigType("toml")
+		v.SetConfigType(strings.TrimPrefix(filepath.Ext(discover), "."))
 		if err := v.ReadInConfig(); err != nil {
 			return nil, fmt.Errorf("read config %s: %w", discover, err)
 		}
@@ -164,6 +172,7 @@ func Load(path string) (*Config, error) {
 
 // expandPaths resolves relative storage paths against the data dir so that
 // everything lives together by default; absolute paths pass through as-is.
+// Non-sqlite DSNs (mysql/postgres URLs) are never path-expanded.
 func (c *Config) expandPaths(configPath string) {
 	c.Storage.DataDir = expandHome(c.Storage.DataDir)
 	rel := func(p string) string {
@@ -173,7 +182,6 @@ func (c *Config) expandPaths(configPath string) {
 		}
 		return filepath.Join(c.Storage.DataDir, p)
 	}
-	c.Storage.DBURL = rel(c.Storage.DBURL)
 	c.Storage.AuditJSONL = rel(c.Storage.AuditJSONL)
 	c.Vault.UnlockPassphraseFile = rel(c.Vault.UnlockPassphraseFile)
 	c.Bootstrap.AdminPasswordFile = rel(c.Bootstrap.AdminPasswordFile)
@@ -197,6 +205,9 @@ func (c *Config) validate() error {
 	if c.Storage.DataDir == "" {
 		return fmt.Errorf("storage.data_dir must not be empty")
 	}
+	if c.Storage.DBURL == "" {
+		return fmt.Errorf("storage.db_url must not be empty")
+	}
 	if c.Vault.AutoLockSecs < 60 {
 		return fmt.Errorf("vault.auto_lock_secs must be >= 60")
 	}
@@ -212,16 +223,11 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// DBPath returns the SQLite database file path.
-func (c *Config) DBPath() string {
-	if c.Storage.DBURL != "" {
-		if rest, ok := strings.CutPrefix(c.Storage.DBURL, "sqlite://"); ok {
-			return rest
-		}
-		return c.Storage.DBURL
-	}
-	return filepath.Join(c.Storage.DataDir, "sshield.db")
-}
+// PostgresDSN returns the PostgreSQL connection string (pgx URL).
+func (c *Config) PostgresDSN() string { return c.Storage.DBURL }
+
+// DataDirPath returns the resolved data directory (vault, server key, hints).
+func (c *Config) DataDirPath() string { return c.Storage.DataDir }
 
 // AuditJSONLPath returns the audit mirror path ("" disables mirroring).
 func (c *Config) AuditJSONLPath() string { return c.Storage.AuditJSONL }

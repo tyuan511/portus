@@ -14,6 +14,13 @@ make build            # builds web/ then the single static binary
 ./bin/sshield-server  # listens on 127.0.0.1:8787
 ```
 
+Requires PostgreSQL (the only backend). Quick container for evaluation:
+
+```bash
+docker run -d --name sshield-pg -e POSTGRES_PASSWORD=secret -e POSTGRES_USER=sshield \
+  -e POSTGRES_DB=sshield -p 5432:5432 postgres:16-alpine
+```
+
 First boot bootstraps (idempotent):
 
 - built-in roles `admin` (immutable, all permissions) and `member`
@@ -37,6 +44,7 @@ create **user groups**, grant **hosts / host groups** to them in *Access*, and i
 | MCP | Official Go SDK, streamable HTTP at `/mcp`, bearer PAT only (never cookies), stateless JSON mode, per-token rate limit, all 14 tools RBAC-scoped |
 | SSH | ProxyJump chains with cycle detection, credential fallback vault→identity-file→agent→default keys, PTY terminals over websocket, exec with timeout + output masking |
 | Vault | AES-256-GCM sealed credential store, Argon2id master key, idle auto-lock, admin-only management |
+| Databases | SQLite (default, cgo-free), MySQL, PostgreSQL — same schema, versioned migrations, chosen by config |
 | Web | React 19 + Vite + Tailwind v4 SPA, 17 themes, embedded into the binary via `go:embed`, xterm.js terminal, permission-aware navigation |
 
 ## Layout
@@ -44,9 +52,9 @@ create **user groups**, grant **hosts / host groups** to them in *Access*, and i
 ```
 cmd/sshield-server/    entrypoint
 internal/
-  config/              viper TOML + SSHIELD_* env overrides
+  config/              viper YAML + SSHIELD_* env overrides
   domain/              shared models (snake_case JSON contract)
-  storage/             SQLite (modernc, cgo-free), versioned migrations, audit chain
+  storage/             sqlc queries (db/), domain mapping, audit hash chain
   vault/               sealed credential vault
   security/            L1 engine (mvdan/sh), masking, L2 reviewers
   sshpool/             connection pool, jump chains, exec, PTY

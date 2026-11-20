@@ -1,8 +1,12 @@
 package httpserver_test
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,13 +37,43 @@ type fixture struct {
 	cfg  *config.Config
 }
 
+// testPostgresURL provisions a unique schema and returns its DSN.
+func testPostgresURL(t *testing.T) string {
+	t.Helper()
+	base := os.Getenv("TEST_POSTGRES_URL")
+	if base == "" {
+		base = "postgres://sshield:secret@127.0.0.1:54329/sshield_test?sslmode=disable"
+	}
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	schema := "h_" + hex.EncodeToString(b[:])
+
+	boot, err := storage.Open(base, "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v); set TEST_POSTGRES_URL to enable integration tests", err)
+	}
+	if err := boot.Exec(fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, schema)); err != nil {
+		_ = boot.Close()
+		t.Fatalf("create schema: %v", err)
+	}
+	_ = boot.Close()
+	t.Cleanup(func() {
+		drop, err2 := storage.Open(base, "")
+		if err2 == nil {
+			_ = drop.Exec(fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, schema))
+			_ = drop.Close()
+		}
+	})
+	return fmt.Sprintf("%s&options=-c%%20search_path%%3D%s", base, schema)
+}
+
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	dir := t.TempDir()
 
 	cfg := config.Bare()
 	cfg.Storage.DataDir = dir
-	cfg.Storage.DBURL = ""
+	cfg.Storage.DBURL = testPostgresURL(t)
 	cfg.Storage.AuditJSONL = ""
 	cfg.Vault.AutoLockSecs = 900
 	cfg.Bootstrap.AdminUsername = "root-admin"
@@ -50,9 +84,9 @@ func newFixture(t *testing.T) *fixture {
 	cfg.Security.LockoutMinutes = 15
 	cfg.Security.IPMaxAttempts = 100 // do not trip IP limits in RBAC tests
 
-	db, err := storage.Open(filepath.Join(dir, "test.db"), "")
+	db, err := storage.Open(cfg.Storage.DBURL, "")
 	if err != nil {
-		t.Fatalf("storage: %v", err)
+		t.Skipf("postgres unavailable (%v); set TEST_POSTGRES_URL to enable integration tests", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 

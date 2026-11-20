@@ -21,21 +21,28 @@ func TestLoadDefaultsWithoutFile(t *testing.T) {
 	if cfg.Security.LoginMaxAttempts != 5 {
 		t.Fatalf("login max attempts default: %d", cfg.Security.LoginMaxAttempts)
 	}
+	if cfg.Storage.DBURL == "" {
+		t.Fatal("default postgres DSN must be set")
+	}
 }
 
-func TestLoadFromTOMLAndEnvOverride(t *testing.T) {
+func TestLoadFromYAMLAndEnvOverride(t *testing.T) {
 	dir := t.TempDir()
-	cfgFile := filepath.Join(dir, "sshield-server.toml")
+	cfgFile := filepath.Join(dir, "sshield-server.yaml")
 	content := `
-[server]
-bind = "0.0.0.0:9000"
+server:
+  bind: "0.0.0.0:9000"
 
-[bootstrap]
-admin_username = "root-admin"
+bootstrap:
+  admin_username: "root-admin"
 
-[security]
-login_max_attempts = 3
-lockout_minutes = 30
+storage:
+  driver: postgres
+  db_url: "postgres://u:p@db.local:5432/sshield"
+
+security:
+  login_max_attempts: 3
+  lockout_minutes: 30
 `
 	if err := os.WriteFile(cfgFile, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -49,7 +56,7 @@ lockout_minutes = 30
 		t.Fatalf("load: %v", err)
 	}
 	if cfg.Server.Bind != "0.0.0.0:9000" {
-		t.Fatalf("toml bind not applied: %s", cfg.Server.Bind)
+		t.Fatalf("yaml bind not applied: %s", cfg.Server.Bind)
 	}
 	if cfg.Bootstrap.AdminUsername != "root-admin" {
 		t.Fatalf("bootstrap username: %s", cfg.Bootstrap.AdminUsername)
@@ -60,12 +67,30 @@ lockout_minutes = 30
 	if cfg.Security.LockoutMinutes != 42 {
 		t.Fatalf("env override failed: %d", cfg.Security.LockoutMinutes)
 	}
-	// Relative paths resolve against the config file directory.
-	if cfg.DBPath() != filepath.Join(dir, "sshield.db") {
-		t.Fatalf("db path: %s", cfg.DBPath())
+	if cfg.PostgresDSN() != "postgres://u:p@db.local:5432/sshield" {
+		t.Fatalf("dsn: %s", cfg.PostgresDSN())
 	}
-	if cfg.VaultPath() != filepath.Join(dir, "vault.enc") {
-		t.Fatalf("vault path: %s", cfg.VaultPath())
+}
+
+func TestDiscoverTOMLFallback(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SSHIELD_STORAGE_DATA_DIR", dir)
+	t.Setenv("SSHIELD_CONFIG", "")
+
+	cfgFile := filepath.Join(dir, "sshield-server.toml")
+	content := `
+[server]
+bind = "127.0.0.1:9100"
+`
+	if err := os.WriteFile(cfgFile, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Server.Bind != "127.0.0.1:9100" {
+		t.Fatalf("legacy toml not discovered: %s", cfg.Server.Bind)
 	}
 }
 

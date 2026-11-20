@@ -45,8 +45,8 @@ func run() error {
 		"bind", cfg.Server.Bind,
 		"data_dir", cfg.Storage.DataDir)
 
-	// Storage.
-	db, err := storage.Open(cfg.DBPath(), cfg.AuditJSONLPath())
+	// Storage (PostgreSQL via sqlc-generated queries).
+	db, err := storage.Open(cfg.PostgresDSN(), cfg.AuditJSONLPath())
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
 	}

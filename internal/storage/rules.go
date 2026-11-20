@@ -1,37 +1,42 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/yuantang/sshield/internal/domain"
+	"github.com/yuantang/sshield/internal/storage/db"
 )
 
 // --- security rules ---
 
-const ruleCols = `id, name, match_kind, pattern, decision, description, enabled, priority`
-
-func scanRule(row interface{ Scan(...any) error }) (*domain.SecurityRule, error) {
-	var r domain.SecurityRule
-	var enabled int
-	if err := row.Scan(&r.ID, &r.Name, &r.MatchKind, &r.Pattern, &r.Decision,
-		&r.Description, &enabled, &r.Priority); err != nil {
-		return nil, err
+func ruleToDomain(r db.SecurityRule) *domain.SecurityRule {
+	return &domain.SecurityRule{
+		ID:          r.ID,
+		Name:        r.Name,
+		MatchKind:   domain.RuleMatchKind(r.MatchKind),
+		Pattern:     r.Pattern,
+		Decision:    domain.PolicyDecision(r.Decision),
+		Description: r.Description,
+		Enabled:     r.Enabled == 1,
+		Priority:    int(r.Priority),
 	}
-	r.Enabled = intToBool(enabled)
-	return &r, nil
 }
 
 // UpsertRule inserts or updates an L1 security rule.
-func (db *DB) UpsertRule(r *domain.SecurityRule) error {
-	_, err := db.sql.Exec(`INSERT INTO security_rules (`+ruleCols+`) VALUES (?,?,?,?,?,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, match_kind=excluded.match_kind,
-		pattern=excluded.pattern, decision=excluded.decision, description=excluded.description,
-		enabled=excluded.enabled, priority=excluded.priority`,
-		r.ID, r.Name, string(r.MatchKind), r.Pattern, string(r.Decision),
-		r.Description, boolToInt(r.Enabled), r.Priority)
+func (h *DB) UpsertRule(r *domain.SecurityRule) error {
+	err := h.q.UpsertRule(context.Background(), db.UpsertRuleParams{
+		ID:          r.ID,
+		Name:        r.Name,
+		MatchKind:   string(r.MatchKind),
+		Pattern:     r.Pattern,
+		Decision:    string(r.Decision),
+		Description: r.Description,
+		Enabled:     int32(boolToInt(r.Enabled)),
+		Priority:    int32(r.Priority),
+	})
 	if err != nil {
 		return fmt.Errorf("upsert rule: %w", err)
 	}
@@ -39,45 +44,38 @@ func (db *DB) UpsertRule(r *domain.SecurityRule) error {
 }
 
 // ListRules returns all security rules ordered by priority (desc).
-func (db *DB) ListRules() ([]*domain.SecurityRule, error) {
-	rows, err := db.sql.Query(`SELECT ` + ruleCols + ` FROM security_rules ORDER BY priority DESC`)
+func (h *DB) ListRules() ([]*domain.SecurityRule, error) {
+	rows, err := h.q.ListRules(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("list rules: %w", err)
 	}
-	defer rows.Close()
-	var out []*domain.SecurityRule
-	for rows.Next() {
-		r, err := scanRule(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
+	out := make([]*domain.SecurityRule, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ruleToDomain(r))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // DeleteRule removes a rule; returns whether a row was deleted.
-func (db *DB) DeleteRule(id string) (bool, error) {
-	return db.execDelete(`DELETE FROM security_rules WHERE id = ?`, id)
+func (h *DB) DeleteRule(id string) (bool, error) {
+	n, err := h.q.DeleteRule(context.Background(), id)
+	if err != nil {
+		return false, fmt.Errorf("delete rule: %w", err)
+	}
+	return n > 0, nil
 }
 
 // CountRules returns the number of stored rules (seed detection).
-func (db *DB) CountRules() (int, error) {
-	var n int
-	err := db.sql.QueryRow(`SELECT COUNT(*) FROM security_rules`).Scan(&n)
-	return n, err
+func (h *DB) CountRules() (int, error) {
+	n, err := h.q.CountRules(context.Background())
+	return int(n), err
 }
 
 // --- L2 config ---
 
-// GetL2Config returns the active L2 provider configuration.
-func (db *DB) GetL2Config() (*domain.L2ProviderConfig, error) {
-	row := db.sql.QueryRow(`SELECT id, name, protocol, base_url, model, api_key_credential_id,
-		timeout_ms, risk_threshold_ask, risk_threshold_deny, enabled FROM l2_configs ORDER BY id LIMIT 1`)
-	var c domain.L2ProviderConfig
-	var enabled int
-	err := row.Scan(&c.ID, &c.Name, &c.Protocol, &c.BaseURL, &c.Model, &c.APIKeyCredentialID,
-		&c.TimeoutMs, &c.RiskThresholdAsk, &c.RiskThresholdDeny, &enabled)
+// GetL2Config returns the active L2 provider configuration (default when unset).
+func (h *DB) GetL2Config() (*domain.L2ProviderConfig, error) {
+	row, err := h.q.GetL2Config(context.Background())
 	if errors.Is(err, sql.ErrNoRows) {
 		def := domain.DefaultL2ProviderConfig()
 		return &def, nil
@@ -85,22 +83,34 @@ func (db *DB) GetL2Config() (*domain.L2ProviderConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get l2 config: %w", err)
 	}
-	c.Enabled = intToBool(enabled)
-	return &c, nil
+	return &domain.L2ProviderConfig{
+		ID:                 row.ID,
+		Name:               row.Name,
+		Protocol:           domain.L2Protocol(row.Protocol),
+		BaseURL:            row.BaseUrl,
+		Model:              row.Model,
+		APIKeyCredentialID: row.ApiKeyCredentialID,
+		TimeoutMs:          row.TimeoutMs,
+		RiskThresholdAsk:   int(row.RiskThresholdAsk),
+		RiskThresholdDeny:  int(row.RiskThresholdDeny),
+		Enabled:            row.Enabled == 1,
+	}, nil
 }
 
 // UpsertL2Config saves the L2 provider configuration.
-func (db *DB) UpsertL2Config(c *domain.L2ProviderConfig) error {
-	_, err := db.sql.Exec(`INSERT INTO l2_configs (id, name, protocol, base_url, model,
-		api_key_credential_id, timeout_ms, risk_threshold_ask, risk_threshold_deny, enabled)
-		VALUES (?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, protocol=excluded.protocol,
-		base_url=excluded.base_url, model=excluded.model,
-		api_key_credential_id=excluded.api_key_credential_id, timeout_ms=excluded.timeout_ms,
-		risk_threshold_ask=excluded.risk_threshold_ask,
-		risk_threshold_deny=excluded.risk_threshold_deny, enabled=excluded.enabled`,
-		c.ID, c.Name, string(c.Protocol), c.BaseURL, c.Model, c.APIKeyCredentialID,
-		c.TimeoutMs, c.RiskThresholdAsk, c.RiskThresholdDeny, boolToInt(c.Enabled))
+func (h *DB) UpsertL2Config(c *domain.L2ProviderConfig) error {
+	err := h.q.UpsertL2Config(context.Background(), db.UpsertL2ConfigParams{
+		ID:                 c.ID,
+		Name:               c.Name,
+		Protocol:           string(c.Protocol),
+		BaseUrl:            c.BaseURL,
+		Model:              c.Model,
+		ApiKeyCredentialID: c.APIKeyCredentialID,
+		TimeoutMs:          c.TimeoutMs,
+		RiskThresholdAsk:   int32(c.RiskThresholdAsk),
+		RiskThresholdDeny:  int32(c.RiskThresholdDeny),
+		Enabled:            int32(boolToInt(c.Enabled)),
+	})
 	if err != nil {
 		return fmt.Errorf("upsert l2 config: %w", err)
 	}
@@ -110,15 +120,17 @@ func (db *DB) UpsertL2Config(c *domain.L2ProviderConfig) error {
 // --- snippets ---
 
 // UpsertSnippet inserts or updates a command snippet.
-func (db *DB) UpsertSnippet(s *domain.CommandSnippet) error {
+func (h *DB) UpsertSnippet(s *domain.CommandSnippet) error {
 	if s.Tags == nil {
 		s.Tags = []string{}
 	}
-	_, err := db.sql.Exec(`INSERT INTO snippets (id, name, command, description, tags_json)
-		VALUES (?,?,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, command=excluded.command,
-		description=excluded.description, tags_json=excluded.tags_json`,
-		s.ID, s.Name, s.Command, s.Description, tagsJSON(s.Tags))
+	err := h.q.UpsertSnippet(context.Background(), db.UpsertSnippetParams{
+		ID:          s.ID,
+		Name:        s.Name,
+		Command:     s.Command,
+		Description: s.Description,
+		TagsJson:    tagsJSON(s.Tags),
+	})
 	if err != nil {
 		return fmt.Errorf("upsert snippet: %w", err)
 	}
@@ -126,36 +138,38 @@ func (db *DB) UpsertSnippet(s *domain.CommandSnippet) error {
 }
 
 // ListSnippets returns all snippets.
-func (db *DB) ListSnippets() ([]*domain.CommandSnippet, error) {
-	rows, err := db.sql.Query(`SELECT id, name, command, description, tags_json FROM snippets ORDER BY name`)
+func (h *DB) ListSnippets() ([]*domain.CommandSnippet, error) {
+	rows, err := h.q.ListSnippets(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("list snippets: %w", err)
 	}
-	defer rows.Close()
-	var out []*domain.CommandSnippet
-	for rows.Next() {
-		var s domain.CommandSnippet
-		var tagsJSONStr string
-		if err := rows.Scan(&s.ID, &s.Name, &s.Command, &s.Description, &tagsJSONStr); err != nil {
-			return nil, err
-		}
-		s.Tags = parseTags(tagsJSONStr)
-		out = append(out, &s)
+	out := make([]*domain.CommandSnippet, 0, len(rows))
+	for _, s := range rows {
+		out = append(out, &domain.CommandSnippet{
+			ID:          s.ID,
+			Name:        s.Name,
+			Command:     s.Command,
+			Description: s.Description,
+			Tags:        parseTags(s.TagsJson),
+		})
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // DeleteSnippet removes a snippet; returns whether a row was deleted.
-func (db *DB) DeleteSnippet(id string) (bool, error) {
-	return db.execDelete(`DELETE FROM snippets WHERE id = ?`, id)
+func (h *DB) DeleteSnippet(id string) (bool, error) {
+	n, err := h.q.DeleteSnippet(context.Background(), id)
+	if err != nil {
+		return false, fmt.Errorf("delete snippet: %w", err)
+	}
+	return n > 0, nil
 }
 
 // --- settings KV ---
 
 // GetSetting returns a global setting value.
-func (db *DB) GetSetting(key string) (string, bool, error) {
-	var v string
-	err := db.sql.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, key).Scan(&v)
+func (h *DB) GetSetting(key string) (string, bool, error) {
+	v, err := h.q.GetSetting(context.Background(), key)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -166,33 +180,14 @@ func (db *DB) GetSetting(key string) (string, bool, error) {
 }
 
 // SetSetting writes a global setting value.
-func (db *DB) SetSetting(key, value string) error {
-	_, err := db.sql.Exec(`INSERT INTO app_settings (key, value, updated_at) VALUES (?,?,?)
-		ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
-		key, value, nowRFC3339())
+func (h *DB) SetSetting(key, value string) error {
+	err := h.q.SetSetting(context.Background(), db.SetSettingParams{
+		Key:       key,
+		Value:     value,
+		UpdatedAt: nowRFC3339(),
+	})
 	if err != nil {
 		return fmt.Errorf("set setting: %w", err)
 	}
 	return nil
-}
-
-// GetJSONSetting reads a JSON-encoded setting into out; ok=false when absent.
-func (db *DB) GetJSONSetting(key string, out any) (bool, error) {
-	v, ok, err := db.GetSetting(key)
-	if err != nil || !ok {
-		return false, err
-	}
-	if err := json.Unmarshal([]byte(v), out); err != nil {
-		return true, fmt.Errorf("decode setting %s: %w", key, err)
-	}
-	return true, nil
-}
-
-func (db *DB) execDelete(q string, args ...any) (bool, error) {
-	res, err := db.sql.Exec(q, args...)
-	if err != nil {
-		return false, fmt.Errorf("delete: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
 }

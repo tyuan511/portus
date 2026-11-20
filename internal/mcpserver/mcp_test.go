@@ -2,9 +2,12 @@ package mcpserver_test
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,6 +35,36 @@ type mcpFixture struct {
 	db  *storage.DB
 }
 
+// testPostgresURL provisions a unique schema and returns its DSN.
+func testPostgresURL(t *testing.T) string {
+	t.Helper()
+	base := os.Getenv("TEST_POSTGRES_URL")
+	if base == "" {
+		base = "postgres://sshield:secret@127.0.0.1:54329/sshield_test?sslmode=disable"
+	}
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	schema := "m_" + hex.EncodeToString(b[:])
+
+	boot, err := storage.Open(base, "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v); set TEST_POSTGRES_URL to enable integration tests", err)
+	}
+	if err := boot.Exec(fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, schema)); err != nil {
+		_ = boot.Close()
+		t.Fatalf("create schema: %v", err)
+	}
+	_ = boot.Close()
+	t.Cleanup(func() {
+		drop, err2 := storage.Open(base, "")
+		if err2 == nil {
+			_ = drop.Exec(fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, schema))
+			_ = drop.Close()
+		}
+	})
+	return fmt.Sprintf("%s&options=-c%%20search_path%%3D%s", base, schema)
+}
+
 func newMCPFixture(t *testing.T) *mcpFixture {
 	t.Helper()
 	dir := t.TempDir()
@@ -41,9 +74,9 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 	cfg.Bootstrap.AdminUsername = "root-admin"
 	cfg.Bootstrap.AdminPassword = "bootstrap-pass-123"
 
-	db, err := storage.Open(filepath.Join(dir, "test.db"), "")
+	db, err := storage.Open(cfg.Storage.DBURL, "")
 	if err != nil {
-		t.Fatal(err)
+		t.Skipf("postgres unavailable (%v); set TEST_POSTGRES_URL to enable integration tests", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := httpserver.Bootstrap(db, cfg); err != nil {

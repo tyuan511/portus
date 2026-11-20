@@ -1,21 +1,50 @@
 package storage
 
 import (
-	"path/filepath"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/yuantang/sshield/internal/domain"
 )
 
+// testDB opens an isolated postgres schema; skips when unreachable.
 func testDB(t *testing.T) *DB {
 	t.Helper()
-	db, err := Open(filepath.Join(t.TempDir(), "test.db"), "")
-	if err != nil {
-		t.Fatalf("open: %v", err)
+	base := os.Getenv("TEST_POSTGRES_URL")
+	if base == "" {
+		base = "postgres://sshield:secret@127.0.0.1:54329/sshield_test?sslmode=disable"
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	schema := "s_" + hex.EncodeToString(b[:])
+
+	boot, err := Open(base, "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v); set TEST_POSTGRES_URL to enable db tests", err)
+	}
+	if err := boot.Exec(fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, schema)); err != nil {
+		_ = boot.Close()
+		t.Fatalf("create schema: %v", err)
+	}
+	_ = boot.Close()
+
+	h, err := Open(fmt.Sprintf("%s&options=-c%%20search_path%%3D%s", base, schema), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	t.Cleanup(func() {
+		drop, err2 := Open(base, "")
+		if err2 == nil {
+			_ = drop.Exec(fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, schema))
+			_ = drop.Close()
+		}
+		_ = h.Close()
+	})
+	return h
 }
 
 func TestAuditChainAppendAndVerify(t *testing.T) {
@@ -72,7 +101,7 @@ func TestAuditChainTamperDetection(t *testing.T) {
 		}
 	}
 	// Tamper with a stored command directly.
-	if _, err := db.sql.Exec(`UPDATE audit_logs SET command = 'rm -rf /' WHERE seq = 2`); err != nil {
+	if err := db.Exec(`UPDATE audit_logs SET command = 'rm -rf /' WHERE seq = 2`); err != nil {
 		t.Fatalf("tamper: %v", err)
 	}
 	status, err := db.VerifyAuditChain()
@@ -208,6 +237,11 @@ func TestRBACGrantEvaluation(t *testing.T) {
 	// Grant decision on srv-1: connect yes, execute no.
 	asset := servers[0]
 	d, err := db.ServerGrantDecision("usr-bob", asset)
+	var cnt int
+	_ = db.sqlDB.QueryRow(`SELECT COUNT(*) FROM host_grants`).Scan(&cnt)
+	var mcnt int
+	_ = db.sqlDB.QueryRow(`SELECT COUNT(*) FROM user_group_members`).Scan(&mcnt)
+	t.Logf("DEBUG rows grants=%d members=%d", cnt, mcnt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +343,7 @@ func TestSessionsAndCleanup(t *testing.T) {
 	db.TouchSession(s.ID, now.Add(2*time.Hour))
 
 	// Expire it manually then cleanup.
-	if _, err := db.sql.Exec(`UPDATE sessions SET expires_at = ? WHERE id = ?`,
+	if err := db.Exec(`UPDATE sessions SET expires_at = $1 WHERE id = $2`,
 		formatRFC3339(now.Add(-time.Minute)), s.ID); err != nil {
 		t.Fatal(err)
 	}

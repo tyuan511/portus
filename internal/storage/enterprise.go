@@ -1,39 +1,36 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/yuantang/sshield/internal/domain"
+	"github.com/yuantang/sshield/internal/storage/db"
 )
 
 // --- roles ---
 
-const roleCols = `id, name, permissions_json, is_builtin, description, created_at`
-
-func scanRole(row interface{ Scan(...any) error }) (*domain.Role, error) {
-	var r domain.Role
-	var permsJSON string
-	var builtin int
-	var createdAt string
-	if err := row.Scan(&r.ID, &r.Name, &permsJSON, &builtin, &r.Description, &createdAt); err != nil {
-		return nil, err
+func roleToDomain(r db.Role) *domain.Role {
+	role := &domain.Role{
+		ID:          r.ID,
+		Name:        r.Name,
+		IsBuiltin:   r.IsBuiltin == 1,
+		Description: r.Description,
 	}
-	_ = json.Unmarshal([]byte(permsJSON), &r.Permissions)
-	if r.Permissions == nil {
-		r.Permissions = []domain.Permission{}
+	_ = json.Unmarshal([]byte(r.PermissionsJson), &role.Permissions)
+	if role.Permissions == nil {
+		role.Permissions = []domain.Permission{}
 	}
-	r.IsBuiltin = intToBool(builtin)
-	r.CreatedAt, _ = parseRFC3339(createdAt)
-	return &r, nil
+	role.CreatedAt, _ = parseRFC3339(r.CreatedAt)
+	return role
 }
 
 // UpsertRole inserts or updates a role.
-func (db *DB) UpsertRole(r *domain.Role) error {
+func (h *DB) UpsertRole(r *domain.Role) error {
 	if r.Permissions == nil {
 		r.Permissions = []domain.Permission{}
 	}
@@ -41,11 +38,14 @@ func (db *DB) UpsertRole(r *domain.Role) error {
 		r.CreatedAt = nowUTC()
 	}
 	perms, _ := json.Marshal(r.Permissions)
-	_, err := db.sql.Exec(`INSERT INTO roles (id, name, permissions_json, is_builtin, description, created_at)
-		VALUES (?,?,?,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, permissions_json=excluded.permissions_json,
-		is_builtin=excluded.is_builtin, description=excluded.description`,
-		r.ID, r.Name, string(perms), boolToInt(r.IsBuiltin), r.Description, formatRFC3339(r.CreatedAt))
+	err := h.q.UpsertRole(context.Background(), db.UpsertRoleParams{
+		ID:              r.ID,
+		Name:            r.Name,
+		PermissionsJson: string(perms),
+		IsBuiltin:       int32(boolToInt(r.IsBuiltin)),
+		Description:     r.Description,
+		CreatedAt:       formatRFC3339(r.CreatedAt),
+	})
 	if err != nil {
 		return fmt.Errorf("upsert role: %w", err)
 	}
@@ -53,105 +53,77 @@ func (db *DB) UpsertRole(r *domain.Role) error {
 }
 
 // GetRole fetches a role by id.
-func (db *DB) GetRole(id string) (*domain.Role, error) {
-	row := db.sql.QueryRow(`SELECT `+roleCols+` FROM roles WHERE id = ?`, id)
-	r, err := scanRole(row)
+func (h *DB) GetRole(id string) (*domain.Role, error) {
+	r, err := h.q.GetRoleByID(context.Background(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	return r, err
+	if err != nil {
+		return nil, fmt.Errorf("get role: %w", err)
+	}
+	return roleToDomain(r), nil
 }
 
 // ListRoles returns all roles.
-func (db *DB) ListRoles() ([]*domain.Role, error) {
-	rows, err := db.sql.Query(`SELECT ` + roleCols + ` FROM roles ORDER BY is_builtin DESC, name`)
+func (h *DB) ListRoles() ([]*domain.Role, error) {
+	rows, err := h.q.ListRoles(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("list roles: %w", err)
 	}
-	defer rows.Close()
-	var out []*domain.Role
-	for rows.Next() {
-		r, err := scanRole(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
+	out := make([]*domain.Role, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, roleToDomain(r))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // DeleteRole removes a non-builtin role; fails when users still reference it.
-func (db *DB) DeleteRole(id string) (bool, error) {
-	var builtin int
-	var users int
-	if err := db.sql.QueryRow(`SELECT is_builtin FROM roles WHERE id = ?`, id).Scan(&builtin); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, ErrNotFound
-		}
-		return false, err
+func (h *DB) DeleteRole(id string) (bool, error) {
+	builtin, err := h.q.GetRoleBuiltin(context.Background(), id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
 	}
-	if intToBool(builtin) {
+	if err != nil {
+		return false, fmt.Errorf("get role: %w", err)
+	}
+	if builtin == 1 {
 		return false, errors.New("built-in roles cannot be deleted")
 	}
-	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM users WHERE role_id = ?`, id).Scan(&users); err != nil {
-		return false, err
+	n, err := h.q.CountRoleUsers(context.Background(), id)
+	if err != nil {
+		return false, fmt.Errorf("count role users: %w", err)
 	}
-	if users > 0 {
-		return false, fmt.Errorf("role still assigned to %d user(s)", users)
+	if n > 0 {
+		return false, fmt.Errorf("role still assigned to %d user(s)", n)
 	}
-	return db.execDelete(`DELETE FROM roles WHERE id = ?`, id)
+	deleted, err := h.q.DeleteRole(context.Background(), id)
+	if err != nil {
+		return false, fmt.Errorf("delete role: %w", err)
+	}
+	return deleted > 0, nil
 }
 
 // CountUsers returns the number of user accounts (bootstrap detection).
-func (db *DB) CountUsers() (int, error) {
-	var n int
-	err := db.sql.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
-	return n, err
+func (h *DB) CountUsers() (int, error) {
+	n, err := h.q.CountUsers(context.Background())
+	return int(n), err
 }
 
 // --- users ---
 
-const userCols = `id, username, display_name, password_hash, role_id, is_active,
-	must_change_password, totp_secret, totp_enabled, recovery_codes_json,
-	failed_attempts, locked_until, created_at, updated_at, last_login_at`
-
-type userRow struct {
-	ID, Username, DisplayName, PasswordHash, RoleID string
-	IsActive, MustChange, TOTPEnabled               int
-	TOTPSecret, RecoveryJSON                        string
-	FailedAttempts                                  int
-	LockedUntil                                     sql.NullString
-	CreatedAt, UpdatedAt                            string
-	LastLoginAt                                     sql.NullString
-}
-
-func scanUser(row interface{ Scan(...any) error }) (*userRow, error) {
-	var u userRow
-	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.RoleID,
-		&u.IsActive, &u.MustChange, &u.TOTPSecret, &u.TOTPEnabled, &u.RecoveryJSON,
-		&u.FailedAttempts, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
-	return &u, err
-}
-
-func (u *userRow) toUser(withSecret bool) *domain.User {
-	usr := &domain.User{
-		ID: u.ID, Username: u.Username, DisplayName: u.DisplayName, RoleID: u.RoleID,
-		IsActive: intToBool(u.IsActive), MustChangePassword: intToBool(u.MustChange),
-		TOTPEnabled: intToBool(u.TOTPEnabled),
-	}
-	if t, ok := parseRFC3339(u.CreatedAt); ok {
-		usr.CreatedAt = t
-	}
-	if t, ok := parseRFC3339(u.UpdatedAt); ok {
-		usr.UpdatedAt = t
-	}
-	if u.LastLoginAt.Valid {
-		if t, ok := parseRFC3339(u.LastLoginAt.String); ok {
-			usr.LastLoginAt = &t
-		}
-	}
-	_ = withSecret // TOTP secret is never exposed through domain.User
-	return usr
+type userCredentialsRow struct {
+	ID                 string
+	Username           string
+	DisplayName        string
+	PasswordHash       string
+	RoleID             string
+	IsActive           int32
+	MustChangePassword int32
+	TotpSecret         string
+	TotpEnabled        int32
+	RecoveryCodesJson  string
+	FailedAttempts     int32
+	LockedUntil        sql.NullString
 }
 
 // UserCredentials is the internal authentication record (hash + TOTP material).
@@ -170,38 +142,72 @@ type UserCredentials struct {
 	MustChangePassword bool
 }
 
-func (u *userRow) toCredentials() *UserCredentials {
+func credentialsFromRow(r userCredentialsRow) *UserCredentials {
 	c := &UserCredentials{
-		UserID: u.ID, Username: u.Username, DisplayName: u.DisplayName,
-		PasswordHash: u.PasswordHash, RoleID: u.RoleID,
-		IsActive: intToBool(u.IsActive), TOTPSecret: u.TOTPSecret, TOTPEnabled: intToBool(u.TOTPEnabled),
-		FailedAttempts: u.FailedAttempts, MustChangePassword: intToBool(u.MustChange),
+		UserID:             r.ID,
+		Username:           r.Username,
+		DisplayName:        r.DisplayName,
+		PasswordHash:       r.PasswordHash,
+		RoleID:             r.RoleID,
+		IsActive:           r.IsActive == 1,
+		TOTPSecret:         r.TotpSecret,
+		TOTPEnabled:        r.TotpEnabled == 1,
+		FailedAttempts:     int(r.FailedAttempts),
+		MustChangePassword: r.MustChangePassword == 1,
 	}
-	_ = json.Unmarshal([]byte(u.RecoveryJSON), &c.RecoveryCodes)
-	if u.LockedUntil.Valid {
-		if t, ok := parseRFC3339(u.LockedUntil.String); ok {
+	_ = json.Unmarshal([]byte(r.RecoveryCodesJson), &c.RecoveryCodes)
+	if r.LockedUntil.Valid {
+		if t, ok := parseRFC3339(r.LockedUntil.String); ok {
 			c.LockedUntil = &t
 		}
 	}
 	return c
 }
 
+func userToDomain(u db.User) *domain.User {
+	usr := &domain.User{
+		ID:                 u.ID,
+		Username:           u.Username,
+		DisplayName:        u.DisplayName,
+		RoleID:             u.RoleID,
+		IsActive:           u.IsActive == 1,
+		MustChangePassword: u.MustChangePassword == 1,
+		TOTPEnabled:        u.TotpEnabled == 1,
+	}
+	usr.CreatedAt, _ = parseRFC3339(u.CreatedAt)
+	usr.UpdatedAt, _ = parseRFC3339(u.UpdatedAt)
+	if u.LastLoginAt.Valid {
+		if t, ok := parseRFC3339(u.LastLoginAt.String); ok {
+			usr.LastLoginAt = &t
+		}
+	}
+	return usr
+}
+
 // CreateUser inserts a new user account.
-func (db *DB) CreateUser(u *domain.User, passwordHash, totpSecret string, recoveryCodes []string) error {
+func (h *DB) CreateUser(u *domain.User, passwordHash, totpSecret string, recoveryCodes []string) error {
 	if recoveryCodes == nil {
 		recoveryCodes = []string{}
 	}
 	conv, _ := json.Marshal(recoveryCodes)
 	now := nowRFC3339()
-	_, err := db.sql.Exec(`INSERT INTO users (id, username, display_name, password_hash, role_id,
-		is_active, must_change_password, totp_secret, totp_enabled, recovery_codes_json,
-		failed_attempts, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		u.ID, u.Username, u.DisplayName, passwordHash, u.RoleID,
-		boolToInt(u.IsActive), boolToInt(u.MustChangePassword), totpSecret,
-		boolToInt(u.TOTPEnabled), string(conv), 0, now, now)
+	err := h.q.CreateUser(context.Background(), db.CreateUserParams{
+		ID:                 u.ID,
+		Username:           u.Username,
+		DisplayName:        u.DisplayName,
+		PasswordHash:       passwordHash,
+		RoleID:             u.RoleID,
+		IsActive:           int32(boolToInt(u.IsActive)),
+		MustChangePassword: int32(boolToInt(u.MustChangePassword)),
+		TotpSecret:         totpSecret,
+		TotpEnabled:        int32(boolToInt(u.TOTPEnabled)),
+		RecoveryCodesJson:  string(conv),
+		FailedAttempts:     0,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	})
 	if err != nil {
-		if isUniqueViolation(err) {
+		if h.isUniqueViolation(err) {
 			return errors.New("username already exists")
 		}
 		return fmt.Errorf("create user: %w", err)
@@ -210,163 +216,158 @@ func (db *DB) CreateUser(u *domain.User, passwordHash, totpSecret string, recove
 }
 
 // GetUser fetches a user by id (no secrets).
-func (db *DB) GetUser(id string) (*domain.User, error) {
-	row := db.sql.QueryRow(`SELECT `+userCols+` FROM users WHERE id = ?`, id)
-	u, err := scanUser(row)
+func (h *DB) GetUser(id string) (*domain.User, error) {
+	u, err := h.q.GetUserByID(context.Background(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get user: %w", err)
 	}
-	return u.toUser(false), nil
+	return userToDomain(u), nil
 }
 
 // GetUserByUsername fetches a user by unique username.
-func (db *DB) GetUserByUsername(username string) (*domain.User, error) {
-	row := db.sql.QueryRow(`SELECT `+userCols+` FROM users WHERE username = ?`, username)
-	u, err := scanUser(row)
+func (h *DB) GetUserByUsername(username string) (*domain.User, error) {
+	u, err := h.q.GetUserByUsername(context.Background(), username)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get user: %w", err)
 	}
-	return u.toUser(false), nil
+	return userToDomain(u), nil
 }
 
 // GetCredentialsByUsername loads the authentication record for login.
-func (db *DB) GetCredentialsByUsername(username string) (*UserCredentials, error) {
-	row := db.sql.QueryRow(`SELECT `+userCols+` FROM users WHERE username = ?`, username)
-	u, err := scanUser(row)
+func (h *DB) GetCredentialsByUsername(username string) (*UserCredentials, error) {
+	r, err := h.q.GetUserCredentialsByUsername(context.Background(), username)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get credentials: %w", err)
 	}
-	return u.toCredentials(), nil
+	return credentialsFromRow(userCredentialsRow{
+		ID: r.ID, Username: r.Username, DisplayName: r.DisplayName,
+		PasswordHash: r.PasswordHash, RoleID: r.RoleID,
+		IsActive: r.IsActive, MustChangePassword: r.MustChangePassword,
+		TotpSecret: r.TotpSecret, TotpEnabled: r.TotpEnabled,
+		RecoveryCodesJson: r.RecoveryCodesJson, FailedAttempts: r.FailedAttempts,
+		LockedUntil: r.LockedUntil,
+	}), nil
 }
 
 // GetCredentialsByID loads the authentication record by user id.
-func (db *DB) GetCredentialsByID(id string) (*UserCredentials, error) {
-	row := db.sql.QueryRow(`SELECT `+userCols+` FROM users WHERE id = ?`, id)
-	u, err := scanUser(row)
+func (h *DB) GetCredentialsByID(id string) (*UserCredentials, error) {
+	r, err := h.q.GetUserCredentialsByID(context.Background(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get credentials: %w", err)
 	}
-	return u.toCredentials(), nil
+	return credentialsFromRow(userCredentialsRow{
+		ID: r.ID, Username: r.Username, DisplayName: r.DisplayName,
+		PasswordHash: r.PasswordHash, RoleID: r.RoleID,
+		IsActive: r.IsActive, MustChangePassword: r.MustChangePassword,
+		TotpSecret: r.TotpSecret, TotpEnabled: r.TotpEnabled,
+		RecoveryCodesJson: r.RecoveryCodesJson, FailedAttempts: r.FailedAttempts,
+		LockedUntil: r.LockedUntil,
+	}), nil
 }
 
 // ConsumeRecoveryCode replaces the stored recovery code hashes after one is
 // used (the consumed code is removed from the list by the caller).
-func (db *DB) ConsumeRecoveryCode(id string, remainingHashes []string) error {
+func (h *DB) ConsumeRecoveryCode(id string, remainingHashes []string) error {
 	if remainingHashes == nil {
 		remainingHashes = []string{}
 	}
 	conv, _ := json.Marshal(remainingHashes)
-	_, err := db.sql.Exec(`UPDATE users SET recovery_codes_json = ?, updated_at = ? WHERE id = ?`,
-		string(conv), nowRFC3339(), id)
-	return err
+	err := h.q.ConsumeRecoveryCode(context.Background(), db.ConsumeRecoveryCodeParams{
+		ID:                id,
+		RecoveryCodesJson: string(conv),
+		UpdatedAt:         nowRFC3339(),
+	})
+	if err != nil {
+		return fmt.Errorf("consume recovery code: %w", err)
+	}
+	return nil
 }
 
 // ListUsers returns all accounts with their roles hydrated.
-func (db *DB) ListUsers() ([]*domain.User, error) {
-	rows, err := db.sql.Query(`SELECT ` + qualifyCols(userCols, "u") + `, ` +
-		qualifyCols(roleCols, "r") + `
-		FROM users u JOIN roles r ON r.id = u.role_id ORDER BY u.created_at`)
+func (h *DB) ListUsers() ([]*domain.User, error) {
+	rows, err := h.q.ListUsersWithRoles(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
-	defer rows.Close()
-
-	var out []*domain.User
-	for rows.Next() {
-		u, r, err := scanUserWithRole(rows)
-		if err != nil {
-			return nil, err
+	out := make([]*domain.User, 0, len(rows))
+	for _, row := range rows {
+		u := userRowToDomain(row)
+		perms := []domain.Permission{}
+		_ = json.Unmarshal([]byte(row.RolePermissionsJson), &perms)
+		u.Role = &domain.Role{
+			ID:          u.RoleID,
+			Name:        row.RoleName,
+			Permissions: perms,
+			IsBuiltin:   row.RoleIsBuiltin == 1,
+			Description: row.RoleDescription,
 		}
-		u.Role = r
+		u.Role.CreatedAt, _ = parseRFC3339(row.RoleCreatedAt)
 		out = append(out, u)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-func scanUserWithRole(rows *sql.Rows) (*domain.User, *domain.Role, error) {
-	var u userRow
-	var r domain.Role
-	var permsJSON string
-	var builtin int
-	var roleCreated string
-	err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.RoleID,
-		&u.IsActive, &u.MustChange, &u.TOTPSecret, &u.TOTPEnabled, &u.RecoveryJSON,
-		&u.FailedAttempts, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt,
-		&r.ID, &r.Name, &permsJSON, &builtin, &r.Description, &roleCreated)
+// UpdateUserProfile mutates display name / role / active / must-change flags.
+// All fields are set; callers hydrate the current values first.
+func (h *DB) UpdateUserProfile(id string, displayName *string, roleID *string, isActive *bool, mustChange *bool) error {
+	current, err := h.GetUser(id)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
-	_ = json.Unmarshal([]byte(permsJSON), &r.Permissions)
-	r.IsBuiltin = intToBool(builtin)
-	if r.Permissions == nil {
-		r.Permissions = []domain.Permission{}
-	}
-	return u.toUser(false), &r, nil
-}
-
-// qualifyCols prefixes each comma-separated column with a table alias.
-func qualifyCols(cols, alias string) string {
-	parts := strings.Split(cols, ",")
-	for i, p := range parts {
-		parts[i] = alias + "." + strings.TrimSpace(p)
-	}
-	return strings.Join(parts, ", ")
-}
-
-// UpdateUserProfile mutates display name / role / active flag / must-change flag.
-func (db *DB) UpdateUserProfile(id string, displayName *string, roleID *string, isActive *bool, mustChange *bool) error {
-	sets := []string{"updated_at = ?"}
-	args := []any{nowRFC3339()}
+	name := current.DisplayName
 	if displayName != nil {
-		sets = append(sets, "display_name = ?")
-		args = append(args, *displayName)
+		name = *displayName
 	}
+	role := current.RoleID
 	if roleID != nil {
-		sets = append(sets, "role_id = ?")
-		args = append(args, *roleID)
+		role = *roleID
 	}
+	active := current.IsActive
 	if isActive != nil {
-		sets = append(sets, "is_active = ?")
-		args = append(args, boolToInt(*isActive))
+		active = *isActive
 	}
+	mustChangeFlag := current.MustChangePassword
 	if mustChange != nil {
-		sets = append(sets, "must_change_password = ?")
-		args = append(args, boolToInt(*mustChange))
+		mustChangeFlag = *mustChange
 	}
-	args = append(args, id)
-	res, err := db.sql.Exec(`UPDATE users SET `+joinSets(sets)+` WHERE id = ?`, args...)
+	err = h.q.UpdateUserProfile(context.Background(), db.UpdateUserProfileParams{
+		ID:                 id,
+		DisplayName:        name,
+		RoleID:             role,
+		IsActive:           int32(boolToInt(active)),
+		MustChangePassword: int32(boolToInt(mustChangeFlag)),
+		UpdatedAt:          nowRFC3339(),
+	})
 	if err != nil {
 		return fmt.Errorf("update user: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return ErrNotFound
 	}
 	return nil
 }
 
 // SetUserPassword replaces the password hash, clears failure counters and
 // optionally forces a password change at next login.
-func (db *DB) SetUserPassword(id, hash string, mustChange bool) error {
-	res, err := db.sql.Exec(`UPDATE users SET password_hash = ?, must_change_password = ?,
-		failed_attempts = 0, locked_until = NULL, updated_at = ? WHERE id = ?`,
-		hash, boolToInt(mustChange), nowRFC3339(), id)
+func (h *DB) SetUserPassword(id, hash string, mustChange bool) error {
+	n, err := h.q.SetUserPassword(context.Background(), db.SetUserPasswordParams{
+		ID:                 id,
+		PasswordHash:       hash,
+		MustChangePassword: int32(boolToInt(mustChange)),
+		UpdatedAt:          nowRFC3339(),
+	})
 	if err != nil {
 		return fmt.Errorf("set password: %w", err)
 	}
-	n, _ := res.RowsAffected()
 	if n == 0 {
 		return ErrNotFound
 	}
@@ -374,14 +375,18 @@ func (db *DB) SetUserPassword(id, hash string, mustChange bool) error {
 }
 
 // SetUserTOTP stores (or clears) TOTP material.
-func (db *DB) SetUserTOTP(id string, secret string, enabled bool, recoveryCodes []string) error {
+func (h *DB) SetUserTOTP(id string, secret string, enabled bool, recoveryCodes []string) error {
 	if recoveryCodes == nil {
 		recoveryCodes = []string{}
 	}
 	conv, _ := json.Marshal(recoveryCodes)
-	_, err := db.sql.Exec(`UPDATE users SET totp_secret = ?, totp_enabled = ?,
-		recovery_codes_json = ?, updated_at = ? WHERE id = ?`,
-		secret, boolToInt(enabled), string(conv), nowRFC3339(), id)
+	err := h.q.SetUserTOTP(context.Background(), db.SetUserTOTPParams{
+		ID:                id,
+		TotpSecret:        secret,
+		TotpEnabled:       int32(boolToInt(enabled)),
+		RecoveryCodesJson: string(conv),
+		UpdatedAt:         nowRFC3339(),
+	})
 	if err != nil {
 		return fmt.Errorf("set totp: %w", err)
 	}
@@ -389,47 +394,112 @@ func (db *DB) SetUserTOTP(id string, secret string, enabled bool, recoveryCodes 
 }
 
 // RecordLoginSuccess resets failure counters and stamps last_login_at.
-func (db *DB) RecordLoginSuccess(id string) error {
-	_, err := db.sql.Exec(`UPDATE users SET failed_attempts = 0, locked_until = NULL,
-		last_login_at = ?, updated_at = ? WHERE id = ?`, nowRFC3339(), nowRFC3339(), id)
-	return err
+func (h *DB) RecordLoginSuccess(id string) error {
+	err := h.q.RecordLoginSuccess(context.Background(), db.RecordLoginSuccessParams{
+		ID:          id,
+		LastLoginAt: nullString(nowRFC3339()),
+	})
+	if err != nil {
+		return fmt.Errorf("record login success: %w", err)
+	}
+	return nil
 }
 
 // RecordLoginFailure increments the failure counter and applies lockout when
 // maxAttempts is reached; returns the new locked-until time (nil = not locked).
-func (db *DB) RecordLoginFailure(id string, maxAttempts, lockoutMinutes int) (*time.Time, error) {
-	var failed int
-	if err := db.sql.QueryRow(`UPDATE users SET failed_attempts = failed_attempts + 1,
-		updated_at = ? WHERE id = ? RETURNING failed_attempts`, nowRFC3339(), id).Scan(&failed); err != nil {
-		return nil, err
+func (h *DB) RecordLoginFailure(id string, maxAttempts, lockoutMinutes int) (*time.Time, error) {
+	n, err := h.q.BumpFailedAttempts(context.Background(), db.BumpFailedAttemptsParams{
+		ID:        id,
+		UpdatedAt: nowRFC3339(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bump failed attempts: %w", err)
 	}
-	if failed < maxAttempts {
+	if n == 0 {
+		return nil, ErrNotFound
+	}
+	failed, err := h.q.GetUserFailedAttempts(context.Background(), id)
+	if err != nil {
+		return nil, fmt.Errorf("get failed attempts: %w", err)
+	}
+	if int(failed) < maxAttempts {
 		return nil, nil
 	}
 	lockUntil := nowUTC().Add(time.Duration(lockoutMinutes) * time.Minute)
-	if _, err := db.sql.Exec(`UPDATE users SET locked_until = ? WHERE id = ?`,
-		formatRFC3339(lockUntil), id); err != nil {
-		return nil, err
+	if err := h.q.SetUserLockedUntil(context.Background(), db.SetUserLockedUntilParams{
+		ID:          id,
+		LockedUntil: nullString(formatRFC3339(lockUntil)),
+	}); err != nil {
+		return nil, fmt.Errorf("lock user: %w", err)
 	}
 	return &lockUntil, nil
 }
 
 // DeleteUser removes an account.
-func (db *DB) DeleteUser(id string) (bool, error) {
-	return db.execDelete(`DELETE FROM users WHERE id = ?`, id)
+func (h *DB) DeleteUser(id string) (bool, error) {
+	n, err := h.q.DeleteUser(context.Background(), id)
+	if err != nil {
+		return false, fmt.Errorf("delete user: %w", err)
+	}
+	return n > 0, nil
+}
+
+// isUniqueViolation detects duplicate-key errors across drivers.
+func (h *DB) isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return containsFold(msg, "unique") || containsFold(msg, "duplicate key") || containsFold(msg, "duplicate entry")
+}
+
+func containsFold(s, sub string) bool {
+	return len(sub) > 0 && len(s) >= len(sub) && indexFold(s, sub) >= 0
+}
+
+func indexFold(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if equalFold(s[i:i+len(sub)], sub) {
+			return i
+		}
+	}
+	return -1
+}
+
+func equalFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if 'A' <= ca && ca <= 'Z' {
+			ca += 32
+		}
+		if 'A' <= cb && cb <= 'Z' {
+			cb += 32
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
 }
 
 // --- user groups ---
 
 // CreateUserGroup inserts a group.
-func (db *DB) CreateUserGroup(g *domain.UserGroup) error {
+func (h *DB) CreateUserGroup(g *domain.UserGroup) error {
 	if g.CreatedAt.IsZero() {
 		g.CreatedAt = nowUTC()
 	}
-	_, err := db.sql.Exec(`INSERT INTO user_groups (id, name, description, created_at)
-		VALUES (?,?,?,?)`, g.ID, g.Name, g.Description, formatRFC3339(g.CreatedAt))
+	err := h.q.CreateUserGroup(context.Background(), db.CreateUserGroupParams{
+		ID:          g.ID,
+		Name:        g.Name,
+		Description: g.Description,
+		CreatedAt:   formatRFC3339(g.CreatedAt),
+	})
 	if err != nil {
-		if isUniqueViolation(err) {
+		if h.isUniqueViolation(err) {
 			return errors.New("group name already exists")
 		}
 		return fmt.Errorf("create group: %w", err)
@@ -438,62 +508,59 @@ func (db *DB) CreateUserGroup(g *domain.UserGroup) error {
 }
 
 // GetUserGroup fetches one group.
-func (db *DB) GetUserGroup(id string) (*domain.UserGroup, error) {
-	row := db.sql.QueryRow(`SELECT id, name, description, created_at FROM user_groups WHERE id = ?`, id)
-	var g domain.UserGroup
-	var created string
-	err := row.Scan(&g.ID, &g.Name, &g.Description, &created)
+func (h *DB) GetUserGroup(id string) (*domain.UserGroup, error) {
+	g, err := h.q.GetUserGroup(context.Background(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get group: %w", err)
 	}
-	g.CreatedAt, _ = parseRFC3339(created)
-	return &g, nil
+	out := &domain.UserGroup{ID: g.ID, Name: g.Name, Description: g.Description}
+	out.CreatedAt, _ = parseRFC3339(g.CreatedAt)
+	return out, nil
 }
 
 // ListUserGroups returns all groups.
-func (db *DB) ListUserGroups() ([]*domain.UserGroup, error) {
-	rows, err := db.sql.Query(`SELECT id, name, description, created_at FROM user_groups ORDER BY name`)
+func (h *DB) ListUserGroups() ([]*domain.UserGroup, error) {
+	rows, err := h.q.ListUserGroups(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("list groups: %w", err)
 	}
-	defer rows.Close()
-	var out []*domain.UserGroup
-	for rows.Next() {
-		var g domain.UserGroup
-		var created string
-		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &created); err != nil {
-			return nil, err
-		}
-		g.CreatedAt, _ = parseRFC3339(created)
-		out = append(out, &g)
+	out := make([]*domain.UserGroup, 0, len(rows))
+	for _, g := range rows {
+		ug := &domain.UserGroup{ID: g.ID, Name: g.Name, Description: g.Description}
+		ug.CreatedAt, _ = parseRFC3339(g.CreatedAt)
+		out = append(out, ug)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // UpdateUserGroup mutates name/description.
-func (db *DB) UpdateUserGroup(id string, name *string, description *string) error {
-	sets, args := []string{}, []any{}
-	if name != nil {
-		sets, args = append(sets, "name = ?"), append(args, *name)
-	}
-	if description != nil {
-		sets, args = append(sets, "description = ?"), append(args, *description)
-	}
-	if len(sets) == 0 {
-		return nil
-	}
-	args = append(args, id)
-	res, err := db.sql.Exec(`UPDATE user_groups SET `+joinSets(sets)+` WHERE id = ?`, args...)
+func (h *DB) UpdateUserGroup(id string, name *string, description *string) error {
+	current, err := h.GetUserGroup(id)
 	if err != nil {
-		if isUniqueViolation(err) {
-			return errors.New("group name already exists")
-		}
 		return err
 	}
-	n, _ := res.RowsAffected()
+	newName := current.Name
+	if name != nil {
+		newName = *name
+	}
+	newDesc := current.Description
+	if description != nil {
+		newDesc = *description
+	}
+	n, err := h.q.UpdateUserGroup(context.Background(), db.UpdateUserGroupParams{
+		ID:          id,
+		Name:        newName,
+		Description: newDesc,
+	})
+	if err != nil {
+		if h.isUniqueViolation(err) {
+			return errors.New("group name already exists")
+		}
+		return fmt.Errorf("update group: %w", err)
+	}
 	if n == 0 {
 		return ErrNotFound
 	}
@@ -501,89 +568,102 @@ func (db *DB) UpdateUserGroup(id string, name *string, description *string) erro
 }
 
 // DeleteUserGroup removes a group (grants cascade).
-func (db *DB) DeleteUserGroup(id string) (bool, error) {
-	return db.execDelete(`DELETE FROM user_groups WHERE id = ?`, id)
+func (h *DB) DeleteUserGroup(id string) (bool, error) {
+	n, err := h.q.DeleteUserGroup(context.Background(), id)
+	if err != nil {
+		return false, fmt.Errorf("delete group: %w", err)
+	}
+	return n > 0, nil
 }
 
 // AddGroupMember links a user to a group (idempotent).
-func (db *DB) AddGroupMember(groupID, userID string) error {
-	_, err := db.sql.Exec(`INSERT OR IGNORE INTO user_group_members (group_id, user_id) VALUES (?,?)`,
-		groupID, userID)
-	return err
+func (h *DB) AddGroupMember(groupID, userID string) error {
+	err := h.q.AddGroupMember(context.Background(), db.AddGroupMemberParams{
+		GroupID: groupID,
+		UserID:  userID,
+	})
+	if err != nil {
+		return fmt.Errorf("add group member: %w", err)
+	}
+	return nil
 }
 
 // RemoveGroupMember unlinks a user from a group.
-func (db *DB) RemoveGroupMember(groupID, userID string) (bool, error) {
-	return db.execDelete(`DELETE FROM user_group_members WHERE group_id = ? AND user_id = ?`, groupID, userID)
+func (h *DB) RemoveGroupMember(groupID, userID string) (bool, error) {
+	n, err := h.q.RemoveGroupMember(context.Background(), db.RemoveGroupMemberParams{
+		GroupID: groupID,
+		UserID:  userID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("remove group member: %w", err)
+	}
+	return n > 0, nil
 }
 
 // ListGroupMembers returns the users of a group.
-func (db *DB) ListGroupMembers(groupID string) ([]*domain.User, error) {
-	rows, err := db.sql.Query(`SELECT u.id, u.username, u.display_name, u.role_id, u.is_active,
-		u.must_change_password, u.totp_enabled, u.created_at, u.updated_at, u.last_login_at
-		FROM users u JOIN user_group_members m ON m.user_id = u.id
-		WHERE m.group_id = ? ORDER BY u.username`, groupID)
+func (h *DB) ListGroupMembers(groupID string) ([]*domain.User, error) {
+	rows, err := h.q.ListGroupMembers(context.Background(), groupID)
 	if err != nil {
 		return nil, fmt.Errorf("list group members: %w", err)
 	}
-	defer rows.Close()
-	var out []*domain.User
-	for rows.Next() {
-		var u domain.User
-		var lastLogin sql.NullString
-		var created, updated string
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.RoleID, &u.IsActive,
-			&u.MustChangePassword, &u.TOTPEnabled, &created, &updated, &lastLogin); err != nil {
-			return nil, err
+	out := make([]*domain.User, 0, len(rows))
+	for _, u := range rows {
+		member := &domain.User{
+			ID:                 u.ID,
+			Username:           u.Username,
+			DisplayName:        u.DisplayName,
+			RoleID:             u.RoleID,
+			IsActive:           u.IsActive == 1,
+			MustChangePassword: u.MustChangePassword == 1,
+			TOTPEnabled:        u.TotpEnabled == 1,
 		}
-		u.CreatedAt, _ = parseRFC3339(created)
-		u.UpdatedAt, _ = parseRFC3339(updated)
-		if lastLogin.Valid {
-			if t, ok := parseRFC3339(lastLogin.String); ok {
-				u.LastLoginAt = &t
+		member.CreatedAt, _ = parseRFC3339(u.CreatedAt)
+		member.UpdatedAt, _ = parseRFC3339(u.UpdatedAt)
+		if u.LastLoginAt.Valid {
+			if t, ok := parseRFC3339(u.LastLoginAt.String); ok {
+				member.LastLoginAt = &t
 			}
 		}
-		out = append(out, &u)
+		out = append(out, member)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ListGroupsForUser returns the groups a user belongs to.
-func (db *DB) ListGroupsForUser(userID string) ([]*domain.UserGroup, error) {
-	rows, err := db.sql.Query(`SELECT g.id, g.name, g.description, g.created_at
-		FROM user_groups g JOIN user_group_members m ON m.group_id = g.id
-		WHERE m.user_id = ? ORDER BY g.name`, userID)
+func (h *DB) ListGroupsForUser(userID string) ([]*domain.UserGroup, error) {
+	rows, err := h.q.ListGroupsForUser(context.Background(), userID)
 	if err != nil {
 		return nil, fmt.Errorf("groups for user: %w", err)
 	}
-	defer rows.Close()
-	var out []*domain.UserGroup
-	for rows.Next() {
-		var g domain.UserGroup
-		var created string
-		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &created); err != nil {
-			return nil, err
-		}
-		g.CreatedAt, _ = parseRFC3339(created)
-		out = append(out, &g)
+	out := make([]*domain.UserGroup, 0, len(rows))
+	for _, g := range rows {
+		ug := &domain.UserGroup{ID: g.ID, Name: g.Name, Description: g.Description}
+		ug.CreatedAt, _ = parseRFC3339(g.CreatedAt)
+		out = append(out, ug)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // --- host grants ---
 
 // CreateHostGrant inserts an access grant.
-func (db *DB) CreateHostGrant(g *domain.HostGrant) error {
+func (h *DB) CreateHostGrant(g *domain.HostGrant) error {
 	if g.CreatedAt.IsZero() {
 		g.CreatedAt = nowUTC()
 	}
 	if (g.ServerID == "") == (g.GroupName == "") {
 		return errors.New("grant must target exactly one of server_id or group_name")
 	}
-	_, err := db.sql.Exec(`INSERT INTO host_grants (id, user_group_id, server_id, group_name,
-		can_connect, can_execute, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)`,
-		g.ID, g.UserGroupID, g.ServerID, g.GroupName,
-		boolToInt(g.CanConnect), boolToInt(g.CanExecute), g.CreatedBy, formatRFC3339(g.CreatedAt))
+	err := h.q.CreateHostGrant(context.Background(), db.CreateHostGrantParams{
+		ID:          g.ID,
+		UserGroupID: g.UserGroupID,
+		ServerID:    g.ServerID,
+		GroupName:   g.GroupName,
+		CanConnect:  int32(boolToInt(g.CanConnect)),
+		CanExecute:  int32(boolToInt(g.CanExecute)),
+		CreatedBy:   g.CreatedBy,
+		CreatedAt:   formatRFC3339(g.CreatedAt),
+	})
 	if err != nil {
 		return fmt.Errorf("create grant: %w", err)
 	}
@@ -591,52 +671,63 @@ func (db *DB) CreateHostGrant(g *domain.HostGrant) error {
 }
 
 // ListHostGrants returns all grants with their groups hydrated.
-func (db *DB) ListHostGrants() ([]*domain.HostGrant, error) {
-	rows, err := db.sql.Query(`SELECT g.id, g.user_group_id, g.server_id, g.group_name,
-		g.can_connect, g.can_execute, g.created_by, g.created_at,
-		ug.id, ug.name, ug.description, ug.created_at
-		FROM host_grants g JOIN user_groups ug ON ug.id = g.user_group_id
-		ORDER BY g.created_at DESC`)
+func (h *DB) ListHostGrants() ([]*domain.HostGrant, error) {
+	rows, err := h.q.ListHostGrants(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("list grants: %w", err)
 	}
-	defer rows.Close()
-	var out []*domain.HostGrant
-	for rows.Next() {
-		var grant domain.HostGrant
-		var ug domain.UserGroup
-		var created, ugCreated string
-		if err := rows.Scan(&grant.ID, &grant.UserGroupID, &grant.ServerID, &grant.GroupName,
-			&grant.CanConnect, &grant.CanExecute, &grant.CreatedBy, &created,
-			&ug.ID, &ug.Name, &ug.Description, &ugCreated); err != nil {
-			return nil, err
+	out := make([]*domain.HostGrant, 0, len(rows))
+	for _, g := range rows {
+		grant := &domain.HostGrant{
+			ID:          g.ID,
+			UserGroupID: g.UserGroupID,
+			ServerID:    g.ServerID,
+			GroupName:   g.GroupName,
+			CanConnect:  g.CanConnect == 1,
+			CanExecute:  g.CanExecute == 1,
+			CreatedBy:   g.CreatedBy,
 		}
-		grant.CreatedAt, _ = parseRFC3339(created)
-		ug.CreatedAt, _ = parseRFC3339(ugCreated)
-		grant.UserGroup = &ug
-		out = append(out, &grant)
+		grant.CreatedAt, _ = parseRFC3339(g.CreatedAt)
+		ug := &domain.UserGroup{ID: g.UgID, Name: g.UgName, Description: g.UgDescription}
+		ug.CreatedAt, _ = parseRFC3339(g.UgCreatedAt)
+		grant.UserGroup = ug
+		out = append(out, grant)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // UpdateHostGrant toggles the connect/execute bits.
-func (db *DB) UpdateHostGrant(id string, canConnect, canExecute *bool) error {
-	sets, args := []string{}, []any{}
-	if canConnect != nil {
-		sets, args = append(sets, "can_connect = ?"), append(args, boolToInt(*canConnect))
-	}
-	if canExecute != nil {
-		sets, args = append(sets, "can_execute = ?"), append(args, boolToInt(*canExecute))
-	}
-	if len(sets) == 0 {
-		return nil
-	}
-	args = append(args, id)
-	res, err := db.sql.Exec(`UPDATE host_grants SET `+joinSets(sets)+` WHERE id = ?`, args...)
+func (h *DB) UpdateHostGrant(id string, canConnect, canExecute *bool) error {
+	grants, err := h.ListHostGrants()
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
+	var current *domain.HostGrant
+	for _, g := range grants {
+		if g.ID == id {
+			current = g
+			break
+		}
+	}
+	if current == nil {
+		return ErrNotFound
+	}
+	connect := current.CanConnect
+	if canConnect != nil {
+		connect = *canConnect
+	}
+	execute := current.CanExecute
+	if canExecute != nil {
+		execute = *canExecute
+	}
+	n, err := h.q.UpdateHostGrant(context.Background(), db.UpdateHostGrantParams{
+		ID:         id,
+		CanConnect: int32(boolToInt(connect)),
+		CanExecute: int32(boolToInt(execute)),
+	})
+	if err != nil {
+		return fmt.Errorf("update grant: %w", err)
+	}
 	if n == 0 {
 		return ErrNotFound
 	}
@@ -644,13 +735,17 @@ func (db *DB) UpdateHostGrant(id string, canConnect, canExecute *bool) error {
 }
 
 // DeleteHostGrant removes a grant.
-func (db *DB) DeleteHostGrant(id string) (bool, error) {
-	return db.execDelete(`DELETE FROM host_grants WHERE id = ?`, id)
+func (h *DB) DeleteHostGrant(id string) (bool, error) {
+	n, err := h.q.DeleteHostGrant(context.Background(), id)
+	if err != nil {
+		return false, fmt.Errorf("delete grant: %w", err)
+	}
+	return n > 0, nil
 }
 
 // GrantsForServer lists the grants targeting a specific server (admin UI).
-func (db *DB) GrantsForServer(serverID, groupName string) ([]*domain.HostGrant, error) {
-	all, err := db.ListHostGrants()
+func (h *DB) GrantsForServer(serverID, groupName string) ([]*domain.HostGrant, error) {
+	all, err := h.ListHostGrants()
 	if err != nil {
 		return nil, err
 	}
@@ -666,17 +761,23 @@ func (db *DB) GrantsForServer(serverID, groupName string) ([]*domain.HostGrant, 
 // --- api tokens ---
 
 // CreateApiToken stores a token record (hash only).
-func (db *DB) CreateApiToken(t *domain.ApiToken, tokenHash string) error {
+func (h *DB) CreateApiToken(t *domain.ApiToken, tokenHash string) error {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = nowUTC()
 	}
-	var expires any
+	var expires sql.NullString
 	if t.ExpiresAt != nil {
-		expires = formatRFC3339(*t.ExpiresAt)
+		expires = nullString(formatRFC3339(*t.ExpiresAt))
 	}
-	_, err := db.sql.Exec(`INSERT INTO api_tokens (id, user_id, name, prefix, token_hash,
-		created_at, expires_at) VALUES (?,?,?,?,?,?,?)`,
-		t.ID, t.UserID, t.Name, t.Prefix, tokenHash, formatRFC3339(t.CreatedAt), expires)
+	err := h.q.CreateApiToken(context.Background(), db.CreateApiTokenParams{
+		ID:        t.ID,
+		UserID:    t.UserID,
+		Name:      t.Name,
+		Prefix:    t.Prefix,
+		TokenHash: tokenHash,
+		CreatedAt: formatRFC3339(t.CreatedAt),
+		ExpiresAt: expires,
+	})
 	if err != nil {
 		return fmt.Errorf("create token: %w", err)
 	}
@@ -684,95 +785,114 @@ func (db *DB) CreateApiToken(t *domain.ApiToken, tokenHash string) error {
 }
 
 // GetApiTokenByHash resolves a bearer token (sha256 hex) to its record.
-func (db *DB) GetApiTokenByHash(hash string) (*domain.ApiToken, error) {
-	row := db.sql.QueryRow(`SELECT id, user_id, name, prefix, created_at, last_used_at,
-		expires_at, revoked_at FROM api_tokens WHERE token_hash = ?`, hash)
-	var t domain.ApiToken
-	var created string
-	var lastUsed, expires, revoked sql.NullString
-	err := row.Scan(&t.ID, &t.UserID, &t.Name, &t.Prefix, &created, &lastUsed, &expires, &revoked)
+func (h *DB) GetApiTokenByHash(hash string) (*domain.ApiToken, error) {
+	t, err := h.q.GetApiTokenByHash(context.Background(), hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get token: %w", err)
 	}
-	t.CreatedAt, _ = parseRFC3339(created)
-	if lastUsed.Valid {
-		if v, ok := parseRFC3339(lastUsed.String); ok {
-			t.LastUsedAt = &v
+	out := &domain.ApiToken{
+		ID:     t.ID,
+		UserID: t.UserID,
+		Name:   t.Name,
+		Prefix: t.Prefix,
+	}
+	out.CreatedAt, _ = parseRFC3339(t.CreatedAt)
+	if t.LastUsedAt.Valid {
+		if v, ok := parseRFC3339(t.LastUsedAt.String); ok {
+			out.LastUsedAt = &v
 		}
 	}
-	if expires.Valid {
-		if v, ok := parseRFC3339(expires.String); ok {
-			t.ExpiresAt = &v
+	if t.ExpiresAt.Valid {
+		if v, ok := parseRFC3339(t.ExpiresAt.String); ok {
+			out.ExpiresAt = &v
 		}
 	}
-	if revoked.Valid {
-		if v, ok := parseRFC3339(revoked.String); ok {
-			t.RevokedAt = &v
+	if t.RevokedAt.Valid {
+		if v, ok := parseRFC3339(t.RevokedAt.String); ok {
+			out.RevokedAt = &v
 		}
 	}
-	return &t, nil
+	return out, nil
 }
 
 // TouchApiToken updates last_used_at.
-func (db *DB) TouchApiToken(id string) {
-	_, _ = db.sql.Exec(`UPDATE api_tokens SET last_used_at = ? WHERE id = ?`, nowRFC3339(), id)
+func (h *DB) TouchApiToken(id string) {
+	_ = h.q.TouchApiToken(context.Background(), db.TouchApiTokenParams{
+		ID:         id,
+		LastUsedAt: nullString(nowRFC3339()),
+	})
 }
 
 // ListApiTokensForUser returns the user's tokens (no hashes).
-func (db *DB) ListApiTokensForUser(userID string) ([]*domain.ApiToken, error) {
-	rows, err := db.sql.Query(`SELECT id, user_id, name, prefix, created_at, last_used_at,
-		expires_at, revoked_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`, userID)
+func (h *DB) ListApiTokensForUser(userID string) ([]*domain.ApiToken, error) {
+	rows, err := h.q.ListApiTokensForUser(context.Background(), userID)
 	if err != nil {
 		return nil, fmt.Errorf("list tokens: %w", err)
 	}
-	defer rows.Close()
-	var out []*domain.ApiToken
-	for rows.Next() {
-		var t domain.ApiToken
-		var created string
-		var lastUsed, expires, revoked sql.NullString
-		if err := rows.Scan(&t.ID, &t.UserID, &t.Name, &t.Prefix, &created, &lastUsed, &expires, &revoked); err != nil {
-			return nil, err
-		}
-		t.CreatedAt, _ = parseRFC3339(created)
-		if lastUsed.Valid {
-			if v, ok := parseRFC3339(lastUsed.String); ok {
-				t.LastUsedAt = &v
-			}
-		}
-		if expires.Valid {
-			if v, ok := parseRFC3339(expires.String); ok {
-				t.ExpiresAt = &v
-			}
-		}
-		if revoked.Valid {
-			if v, ok := parseRFC3339(revoked.String); ok {
-				t.RevokedAt = &v
-			}
-		}
-		out = append(out, &t)
+	out := make([]*domain.ApiToken, 0, len(rows))
+	for _, t := range rows {
+		out = append(out, tokenToDomain(t))
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+func tokenToDomain(t db.ApiToken) *domain.ApiToken {
+	out := &domain.ApiToken{
+		ID:     t.ID,
+		UserID: t.UserID,
+		Name:   t.Name,
+		Prefix: t.Prefix,
+	}
+	out.CreatedAt, _ = parseRFC3339(t.CreatedAt)
+	if t.LastUsedAt.Valid {
+		if v, ok := parseRFC3339(t.LastUsedAt.String); ok {
+			out.LastUsedAt = &v
+		}
+	}
+	if t.ExpiresAt.Valid {
+		if v, ok := parseRFC3339(t.ExpiresAt.String); ok {
+			out.ExpiresAt = &v
+		}
+	}
+	if t.RevokedAt.Valid {
+		if v, ok := parseRFC3339(t.RevokedAt.String); ok {
+			out.RevokedAt = &v
+		}
+	}
+	return out
 }
 
 // RevokeApiToken marks a token revoked (only by its owner).
-func (db *DB) RevokeApiToken(id, userID string) (bool, error) {
-	return db.execRowsAffected(`UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND user_id = ?
-		AND revoked_at IS NULL`, nowRFC3339(), id, userID)
+func (h *DB) RevokeApiToken(id, userID string) (bool, error) {
+	n, err := h.q.RevokeApiToken(context.Background(), db.RevokeApiTokenParams{
+		ID:        id,
+		UserID:    userID,
+		RevokedAt: nullString(nowRFC3339()),
+	})
+	if err != nil {
+		return false, fmt.Errorf("revoke token: %w", err)
+	}
+	return n > 0, nil
 }
 
 // --- sessions ---
 
 // CreateSession stores a web session (token stored as sha256 hash).
-func (db *DB) CreateSession(s *domain.UserSession, tokenHash string, absoluteExpires time.Time) error {
-	_, err := db.sql.Exec(`INSERT INTO sessions (id, user_id, token_hash, ip, user_agent,
-		created_at, last_seen_at, expires_at, absolute_expires_at) VALUES (?,?,?,?,?,?,?,?,?)`,
-		s.ID, s.UserID, tokenHash, s.IP, s.UserAgent,
-		formatRFC3339(s.CreatedAt), formatRFC3339(s.LastSeenAt),
-		formatRFC3339(s.ExpiresAt), formatRFC3339(absoluteExpires))
+func (h *DB) CreateSession(s *domain.UserSession, tokenHash string, absoluteExpires time.Time) error {
+	err := h.q.CreateSession(context.Background(), db.CreateSessionParams{
+		ID:                s.ID,
+		UserID:            s.UserID,
+		TokenHash:         tokenHash,
+		Ip:                s.IP,
+		UserAgent:         s.UserAgent,
+		CreatedAt:         formatRFC3339(s.CreatedAt),
+		LastSeenAt:        formatRFC3339(s.LastSeenAt),
+		ExpiresAt:         formatRFC3339(s.ExpiresAt),
+		AbsoluteExpiresAt: formatRFC3339(absoluteExpires),
+	})
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
@@ -780,151 +900,132 @@ func (db *DB) CreateSession(s *domain.UserSession, tokenHash string, absoluteExp
 }
 
 // GetSessionByHash resolves a session cookie value (sha256 hex) to the session.
-func (db *DB) GetSessionByHash(hash string) (*domain.UserSession, error) {
-	row := db.sql.QueryRow(`SELECT id, user_id, ip, user_agent, created_at, last_seen_at,
-		expires_at FROM sessions WHERE token_hash = ?`, hash)
-	var s domain.UserSession
-	var created, lastSeen, expires string
-	err := row.Scan(&s.ID, &s.UserID, &s.IP, &s.UserAgent, &created, &lastSeen, &expires)
+func (h *DB) GetSessionByHash(hash string) (*domain.UserSession, error) {
+	s, err := h.q.GetSessionByHash(context.Background(), hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get session: %w", err)
 	}
-	s.CreatedAt, _ = parseRFC3339(created)
-	s.LastSeenAt, _ = parseRFC3339(lastSeen)
-	s.ExpiresAt, _ = parseRFC3339(expires)
-	return &s, nil
+	out := &domain.UserSession{
+		ID:        s.ID,
+		UserID:    s.UserID,
+		IP:        s.Ip,
+		UserAgent: s.UserAgent,
+	}
+	out.CreatedAt, _ = parseRFC3339(s.CreatedAt)
+	out.LastSeenAt, _ = parseRFC3339(s.LastSeenAt)
+	out.ExpiresAt, _ = parseRFC3339(s.ExpiresAt)
+	return out, nil
 }
 
 // TouchSession slides the idle expiry window forward.
-func (db *DB) TouchSession(id string, newExpiry time.Time) {
-	_, _ = db.sql.Exec(`UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?`,
-		nowRFC3339(), formatRFC3339(newExpiry), id)
+func (h *DB) TouchSession(id string, newExpiry time.Time) {
+	_ = h.q.TouchSession(context.Background(), db.TouchSessionParams{
+		ID:         id,
+		LastSeenAt: nowRFC3339(),
+		ExpiresAt:  formatRFC3339(newExpiry),
+	})
 }
 
 // DeleteSession removes one session.
-func (db *DB) DeleteSession(id string) (bool, error) {
-	return db.execDelete(`DELETE FROM sessions WHERE id = ?`, id)
+func (h *DB) DeleteSession(id string) (bool, error) {
+	n, err := h.q.DeleteSession(context.Background(), id)
+	if err != nil {
+		return false, fmt.Errorf("delete session: %w", err)
+	}
+	return n > 0, nil
 }
 
-// DeleteSessionsForUser removes every session of a user (password change /
-// account disable). Returns the number removed.
-func (db *DB) DeleteSessionsForUser(userID string) (int64, error) {
-	res, err := db.sql.Exec(`DELETE FROM sessions WHERE user_id = ?`, userID)
+// DeleteSessionsForUser removes every session of a user.
+func (h *DB) DeleteSessionsForUser(userID string) (int64, error) {
+	n, err := h.q.DeleteSessionsForUser(context.Background(), userID)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("delete sessions: %w", err)
 	}
-	n, _ := res.RowsAffected()
 	return n, nil
 }
 
+func sessionRowsToDomain(rows []db.Session) []*domain.UserSession {
+	out := make([]*domain.UserSession, 0, len(rows))
+	for _, s := range rows {
+		item := &domain.UserSession{
+			ID:        s.ID,
+			UserID:    s.UserID,
+			IP:        s.Ip,
+			UserAgent: s.UserAgent,
+		}
+		item.CreatedAt, _ = parseRFC3339(s.CreatedAt)
+		item.LastSeenAt, _ = parseRFC3339(s.LastSeenAt)
+		item.ExpiresAt, _ = parseRFC3339(s.ExpiresAt)
+		out = append(out, item)
+	}
+	return out
+}
+
 // ListSessionsForUser returns a user's active sessions.
-func (db *DB) ListSessionsForUser(userID string) ([]*domain.UserSession, error) {
-	return db.querySessions(`SELECT id, user_id, ip, user_agent, created_at, last_seen_at, expires_at
-		FROM sessions WHERE user_id = ? ORDER BY last_seen_at DESC`, userID)
+func (h *DB) ListSessionsForUser(userID string) ([]*domain.UserSession, error) {
+	rows, err := h.q.ListSessionsForUser(context.Background(), userID)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	return sessionRowsToDomain(rows), nil
 }
 
 // ListAllSessions returns every active session (admin).
-func (db *DB) ListAllSessions() ([]*domain.UserSession, error) {
-	return db.querySessions(`SELECT id, user_id, ip, user_agent, created_at, last_seen_at, expires_at
-		FROM sessions ORDER BY last_seen_at DESC`)
-}
-
-func (db *DB) querySessions(q string, args ...any) ([]*domain.UserSession, error) {
-	rows, err := db.sql.Query(q, args...)
+func (h *DB) ListAllSessions() ([]*domain.UserSession, error) {
+	rows, err := h.q.ListAllSessions(context.Background())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list all sessions: %w", err)
 	}
-	defer rows.Close()
-	var out []*domain.UserSession
-	for rows.Next() {
-		var s domain.UserSession
-		var created, lastSeen, expires string
-		if err := rows.Scan(&s.ID, &s.UserID, &s.IP, &s.UserAgent, &created, &lastSeen, &expires); err != nil {
-			return nil, err
-		}
-		s.CreatedAt, _ = parseRFC3339(created)
-		s.LastSeenAt, _ = parseRFC3339(lastSeen)
-		s.ExpiresAt, _ = parseRFC3339(expires)
-		out = append(out, &s)
-	}
-	return out, rows.Err()
+	return sessionRowsToDomain(rows), nil
 }
 
-// CleanupExpired removes expired sessions, tokens beyond retention and stale
-// auth attempts; returns the number of rows removed.
-func (db *DB) CleanupExpired() (int64, error) {
+// CleanupExpired removes expired sessions and stale auth attempts.
+func (h *DB) CleanupExpired() (int64, error) {
 	now := nowRFC3339()
-	var total int64
-	for _, q := range []string{
-		`DELETE FROM sessions WHERE expires_at < ? OR absolute_expires_at < ?`,
-		`DELETE FROM auth_attempts WHERE created_at < ?`,
-	} {
-		res, err := db.sql.Exec(q, now, now)
-		if err != nil {
-			return total, err
-		}
-		n, _ := res.RowsAffected()
-		total += n
+	sessions, err := h.q.CleanupExpiredSessions(context.Background(), now)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup sessions: %w", err)
 	}
-	return total, nil
+	attempts, err := h.q.CleanupStaleAuthAttempts(context.Background(), now)
+	if err != nil {
+		return sessions, fmt.Errorf("cleanup attempts: %w", err)
+	}
+	return sessions + attempts, nil
 }
 
 // --- auth attempts (brute-force evidence) ---
 
 // RecordAuthAttempt persists one login attempt outcome.
-func (db *DB) RecordAuthAttempt(username, ip string, success bool) error {
-	_, err := db.sql.Exec(`INSERT INTO auth_attempts (username, ip, success, created_at)
-		VALUES (?,?,?,?)`, username, ip, boolToInt(success), nowRFC3339())
-	return err
+func (h *DB) RecordAuthAttempt(username, ip string, success bool) error {
+	err := h.q.RecordAuthAttempt(context.Background(), db.RecordAuthAttemptParams{
+		Username:  username,
+		Ip:        ip,
+		Success:   int32(boolToInt(success)),
+		CreatedAt: nowRFC3339(),
+	})
+	if err != nil {
+		return fmt.Errorf("record auth attempt: %w", err)
+	}
+	return nil
 }
 
 // CountFailedAttemptsByUser counts recent failures for a username in the window.
-func (db *DB) CountFailedAttemptsByUser(username string, since time.Time) (int, error) {
-	return db.countWhere(`SELECT COUNT(*) FROM auth_attempts WHERE username = ? AND success = 0 AND created_at >= ?`,
-		username, formatRFC3339(since))
+func (h *DB) CountFailedAttemptsByUser(username string, since time.Time) (int, error) {
+	n, err := h.q.CountFailedAttemptsByUser(context.Background(), db.CountFailedAttemptsByUserParams{
+		Username:  username,
+		CreatedAt: formatRFC3339(since),
+	})
+	return int(n), err
 }
 
 // CountFailedAttemptsByIP counts recent failures for a source IP in the window.
-func (db *DB) CountFailedAttemptsByIP(ip string, since time.Time) (int, error) {
-	return db.countWhere(`SELECT COUNT(*) FROM auth_attempts WHERE ip = ? AND success = 0 AND created_at >= ?`,
-		ip, formatRFC3339(since))
-}
-
-func (db *DB) countWhere(q string, args ...any) (int, error) {
-	var n int
-	if err := db.sql.QueryRow(q, args...).Scan(&n); err != nil {
-		return 0, err
-	}
-	return n, nil
-}
-
-// --- small helpers ---
-
-func joinSets(sets []string) string {
-	out := ""
-	for i, s := range sets {
-		if i > 0 {
-			out += ", "
-		}
-		out += s
-	}
-	return out
-}
-
-// execRowsAffected wraps Exec and reports whether any row changed.
-func (db *DB) execRowsAffected(q string, args ...any) (bool, error) {
-	res, err := db.sql.Exec(q, args...)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
-}
-
-// isUniqueViolation detects modernc/sqlite UNIQUE constraint errors.
-func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unique")
+func (h *DB) CountFailedAttemptsByIP(ip string, since time.Time) (int, error) {
+	n, err := h.q.CountFailedAttemptsByIP(context.Background(), db.CountFailedAttemptsByIPParams{
+		Ip:        ip,
+		CreatedAt: formatRFC3339(since),
+	})
+	return int(n), err
 }
