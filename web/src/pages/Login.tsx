@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { BrandLogo } from "@/components/BrandLogo";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/auth";
@@ -51,7 +52,7 @@ export default function Login() {
       <header className="border-b border-border">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
           <Link to="/" className="flex items-center gap-2">
-            <div className="flex size-6 items-center justify-center rounded-md bg-primary font-bold text-primary-foreground">S</div>
+            <BrandLogo size={26} />
             <span className="text-sm font-medium tracking-tight">SSHield</span>
           </Link>
           <Link to="/" className="text-sm text-muted-foreground hover:text-foreground">

@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import SnippetsPanel from "@/pages/Snippets";
 import { ErrorText, Page, PageHeader } from "@/components/ui/shared";
 import type { CommandVerdict, L2ProviderConfig, PolicyDecision, SecurityRule, SemanticReviewVerdict } from "@/types";
 
@@ -93,6 +94,7 @@ export default function SecurityView() {
           <TabsTrigger value="rules">L1 Rules</TabsTrigger>
           <TabsTrigger value="l2">L2 Reviewer</TabsTrigger>
           <TabsTrigger value="sandbox">Sandbox</TabsTrigger>
+          {auth.hasPermission("snippets.use") && <TabsTrigger value="snippets">Snippets</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="rules">

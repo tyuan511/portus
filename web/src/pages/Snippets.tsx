@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { ErrorText, Page, PageHeader } from "@/components/ui/shared";
+import { ErrorText } from "@/components/ui/shared";
 import type { CommandSnippet } from "@/types";
 
 export default function Snippets() {
@@ -48,14 +48,12 @@ export default function Snippets() {
   };
 
   return (
-    <Page
-      header={
-        <PageHeader
-          title="Command Snippets"
-          actions={canManage && <Button size="sm" onClick={() => setForm({ name: "", command: "", description: "" })}><Plus className="size-3.5" /> New</Button>}
-        />
-      }
-    >
+    <div className="space-y-3">
+      {canManage && (
+        <Button size="sm" onClick={() => setForm({ name: "", command: "", description: "" })}>
+          <Plus className="size-3.5" /> New snippet
+        </Button>
+      )}
       <ErrorText>{error}</ErrorText>
       <div className="space-y-2">
         {snippets.map((s) => (
@@ -87,6 +85,6 @@ export default function Snippets() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Page>
+    </div>
   );
 }

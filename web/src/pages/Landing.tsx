@@ -11,6 +11,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { BrandLogo } from "@/components/BrandLogo";
 import { useAuth } from "@/lib/auth";
 
 // Supabaze-inspired landing (DESIGN.md): white canvas, ink ladder, a single
@@ -72,7 +73,7 @@ export default function Landing() {
       <header className="border-b border-border">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
           <div className="flex items-center gap-2">
-            <div className="flex size-6 items-center justify-center rounded-md bg-primary font-bold text-primary-foreground">S</div>
+            <BrandLogo size={26} />
             <span className="text-sm font-medium tracking-tight">SSHield</span>
           </div>
           <nav className="flex items-center gap-3">
@@ -180,7 +181,7 @@ export default function Landing() {
       <footer className="border-t border-border py-12">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 text-sm text-muted-foreground sm:flex-row">
           <div className="flex items-center gap-2">
-            <div className="flex size-5 items-center justify-center rounded bg-primary text-[11px] font-bold text-primary-foreground">S</div>
+            <BrandLogo size={20} />
             SSHield Enterprise
           </div>
           <div className="flex items-center gap-6">
