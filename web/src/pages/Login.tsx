@@ -5,6 +5,7 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/auth";
+import { useI18n } from "@/lib/i18n";
 import { api, ApiError, TOTP_REQUIRED } from "@/lib/api";
 import { ErrorText } from "@/components/ui/shared";
 import ChangePasswordDialog from "@/components/ChangePasswordDialog";
@@ -14,6 +15,7 @@ import ChangePasswordDialog from "@/components/ChangePasswordDialog";
 // no decorative chrome.
 export default function Login() {
   const auth = useAuth();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -31,7 +33,7 @@ export default function Login() {
     } catch (err) {
       if (err instanceof ApiError && err.code === TOTP_REQUIRED) {
         setNeedTotp(true);
-        setError("Enter your 6-digit authenticator code");
+        setError(t("login.totpPrompt"));
       } else {
         setError(err instanceof Error ? err.message : "login failed");
       }
@@ -56,46 +58,44 @@ export default function Login() {
             <span className="text-sm font-medium tracking-tight">SSHield</span>
           </Link>
           <Link to="/" className="text-sm text-muted-foreground hover:text-foreground">
-            Back to home
+            {t("login.back")}
           </Link>
         </div>
       </header>
 
       <main className="flex flex-1 items-center justify-center px-4 py-16">
         <div className="w-full max-w-sm">
-          <h1 className="text-3xl font-medium tracking-tight">Sign in</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            to your SSHield operations console
-          </p>
+          <h1 className="text-3xl font-medium tracking-tight">{t("login.title")}</h1>
+          <p className="mt-1.5 text-sm text-muted-foreground">{t("login.subtitle")}</p>
 
           <form onSubmit={submit} className="mt-8 space-y-5">
             <div className="space-y-1.5">
-              <Label htmlFor="username" className="text-foreground">Username</Label>
+              <Label htmlFor="username" className="text-foreground">{t("login.username")}</Label>
               <Input id="username" value={username} autoFocus required autoComplete="username"
                 onChange={(e) => setUsername(e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="password" className="text-foreground">Password</Label>
+              <Label htmlFor="password" className="text-foreground">{t("login.password")}</Label>
               <Input id="password" type="password" value={password} required autoComplete="current-password"
                 onChange={(e) => setPassword(e.target.value)} />
             </div>
             {needTotp && (
               <div className="space-y-1.5">
-                <Label htmlFor="totp" className="text-foreground">Authenticator code</Label>
+                <Label htmlFor="totp" className="text-foreground">{t("login.totp")}</Label>
                 <Input id="totp" inputMode="numeric" pattern="[0-9]*" maxLength={6} value={totpCode}
                   onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ""))} />
               </div>
             )}
             <ErrorText>{error}</ErrorText>
             <Button type="submit" className="w-full font-medium" disabled={busy}>
-              {busy ? "Signing in…" : "Sign in"}
+              {busy ? t("login.signingin") : t("login.submit")}
             </Button>
           </form>
 
           <p className="mt-6 text-sm text-muted-foreground">
-            Accounts are provisioned by your administrator.{" "}
+            {t("login.provisioned")}{" "}
             <Link to="/" className="underline underline-offset-2 hover:text-foreground">
-              Back to overview
+              {t("login.overview")}
             </Link>
           </p>
         </div>

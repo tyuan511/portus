@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useI18n, type Lang } from "@/lib/i18n";
 import { SSHIELD_THEMES, applyTheme, getSavedThemeId } from "@/lib/themes";
 import { ErrorText, Page, PageHeader } from "@/components/ui/shared";
 import type { ApiToken, UserSession } from "@/types";
@@ -17,6 +18,7 @@ const THEME_KEY = "/api/settings/ui.theme";
 
 export default function SettingsView() {
   const auth = useAuth();
+  const { t, lang, setLang } = useI18n();
   const canUseMcp = auth.hasPermission("mcp.access");
   const [themeId, setThemeId] = useState(getSavedThemeId());
   const [tokens, setTokens] = useState<ApiToken[]>([]);
@@ -114,17 +116,28 @@ export default function SettingsView() {
   };
 
   return (
-    <Page header={<PageHeader title="Settings" subtitle="Appearance, API tokens, two-factor, active sessions" />}>
+    <Page header={<PageHeader title={t("settings.title")} subtitle={t("settings.subtitle")} />}>
       <ErrorText>{error}</ErrorText>
       <Tabs defaultValue="appearance">
         <TabsList>
-          <TabsTrigger value="appearance">Appearance</TabsTrigger>
-          {canUseMcp && <TabsTrigger value="tokens">API Tokens</TabsTrigger>}
-          <TabsTrigger value="totp">Two-Factor</TabsTrigger>
-          <TabsTrigger value="sessions">Sessions</TabsTrigger>
+          <TabsTrigger value="appearance">{t("settings.appearance")}</TabsTrigger>
+          {canUseMcp && <TabsTrigger value="tokens">{t("settings.tokens")}</TabsTrigger>}
+          <TabsTrigger value="totp">{t("settings.totp")}</TabsTrigger>
+          <TabsTrigger value="sessions">{t("settings.sessions")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="appearance">
+          <div className="mb-6 max-w-xs space-y-1.5">
+            <Label className="text-sm">{t("settings.language")}</Label>
+            <select
+              className="h-8 w-full rounded-lg border bg-background px-2 text-sm"
+              value={lang}
+              onChange={(e) => setLang(e.target.value as Lang)}
+            >
+              <option value="en">English</option>
+              <option value="zh-CN">简体中文</option>
+            </select>
+          </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
             {SSHIELD_THEMES.map((t) => (
               <button key={t.id}

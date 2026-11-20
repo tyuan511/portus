@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/BrandLogo";
 import { useAuth } from "@/lib/auth";
+import { useI18n } from "@/lib/i18n";
 
 // Supabaze-inspired landing (DESIGN.md): white canvas, ink ladder, a single
 // emerald CTA per viewport, weight-500 display with negative tracking, and
@@ -65,6 +66,7 @@ const FEATURES = [
 
 export default function Landing() {
   const auth = useAuth();
+  const { t } = useI18n();
   const navigate = useNavigate();
 
   return (
@@ -78,10 +80,10 @@ export default function Landing() {
           </div>
           <nav className="flex items-center gap-3">
             <Link to="/login" className="text-sm text-muted-foreground hover:text-foreground">
-              Sign in
+              {t("landing.cta.signin")}
             </Link>
             <Button size="sm" className="font-medium" onClick={() => navigate("/login")}>
-              Open console
+              {t("landing.cta.console")}
             </Button>
           </nav>
         </div>
@@ -91,25 +93,23 @@ export default function Landing() {
       <section className="mx-auto max-w-6xl px-6 pb-16 pt-20 text-center sm:pt-28">
         <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-border bg-secondary px-3 py-1 text-xs text-muted-foreground">
           <span className="size-1.5 rounded-full bg-primary" />
-          SSHield Enterprise — multi-user SSH gateway
+          {t("landing.badge")}
         </p>
         <h1 className="mx-auto max-w-3xl text-4xl font-medium leading-[1.1] tracking-tight sm:text-6xl">
-          Ship commands to production
+          {t("landing.hero.title1")}
           <br />
-          <span className="text-muted-foreground">with a safety net.</span>
+          <span className="text-muted-foreground">{t("landing.hero.title2")}</span>
         </h1>
         <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-muted-foreground sm:text-lg">
-          SSHield sits between your team, your AI agents and your servers: RBAC-scoped
-          access, a layered command security pipeline, and a tamper-evident audit trail —
-          in one binary with an embedded console.
+          {t("landing.hero.body")}
         </p>
         <div className="mt-8 flex items-center justify-center gap-3">
           <Button className="h-10 px-5 font-medium" onClick={() => navigate(auth.identity ? "/" : "/login")}>
-            {auth.identity ? "Open console" : "Sign in"}
+            {auth.identity ? t("landing.cta.console") : t("landing.cta.signin")}
             <ArrowRight className="size-4" />
           </Button>
           <Button variant="outline" className="h-10 px-5 font-medium" onClick={() => document.getElementById("pipeline")?.scrollIntoView({ behavior: "smooth" })}>
-            How it guards commands
+            {t("landing.cta.pipeline")}
           </Button>
         </div>
       </section>
@@ -141,11 +141,8 @@ export default function Landing() {
       {/* security pipeline */}
       <section id="pipeline" className="border-t border-border bg-secondary/50 py-20">
         <div className="mx-auto max-w-6xl px-6">
-          <h2 className="text-3xl font-medium tracking-tight">Four layers between intent and impact</h2>
-          <p className="mt-2 max-w-2xl text-muted-foreground">
-            Commands from the console and from AI agents pass the same pipeline —
-            and every layer is recorded.
-          </p>
+          <h2 className="text-3xl font-medium tracking-tight">{t("landing.pipeline.title")}</h2>
+          <p className="mt-2 max-w-2xl text-muted-foreground">{t("landing.pipeline.sub")}</p>
           <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {PIPELINE.map((item, i) => (
               <div key={item.title} className="rounded-xl border border-border bg-card p-6">
@@ -164,7 +161,7 @@ export default function Landing() {
       {/* feature grid */}
       <section className="py-20">
         <div className="mx-auto max-w-6xl px-6">
-          <h2 className="text-3xl font-medium tracking-tight">Enterprise access control, developer-grade UX</h2>
+          <h2 className="text-3xl font-medium tracking-tight">{t("landing.features.title")}</h2>
           <div className="mt-10 grid gap-4 sm:grid-cols-2">
             {FEATURES.map((f) => (
               <div key={f.title} className="rounded-xl border border-border bg-card p-8">

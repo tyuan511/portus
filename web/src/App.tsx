@@ -10,6 +10,7 @@ import {
   Users,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import { useI18n } from "@/lib/i18n";
 import { applyTheme, getSavedThemeId } from "@/lib/themes";
 import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -25,6 +26,7 @@ import TerminalPane from "@/pages/TerminalPane";
 
 export default function App() {
   const auth = useAuth();
+  const { t } = useI18n();
   const location = useLocation();
 
   useEffect(() => {
@@ -34,7 +36,7 @@ export default function App() {
   if (auth.loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">
-        Loading SSHield…
+        {t("common.loading")}
       </div>
     );
   }
@@ -53,18 +55,18 @@ export default function App() {
 
   // Six entries max — consolidated surfaces keep the sidebar scannable.
   const nav: { to: string; label: string; icon: typeof Server; show: boolean }[] = [
-    { to: "/", label: "Hosts", icon: Server, show: auth.hasPermission("host.read") },
-    { to: "/approvals", label: "Approvals", icon: Activity, show: auth.hasPermission("approvals.decide") },
-    { to: "/audit", label: "Audit Logs", icon: ScrollText, show: auth.hasPermission("audit.view_self") || auth.hasPermission("audit.view_all") },
+    { to: "/", label: t("nav.hosts"), icon: Server, show: auth.hasPermission("host.read") },
+    { to: "/approvals", label: t("nav.approvals"), icon: Activity, show: auth.hasPermission("approvals.decide") },
+    { to: "/audit", label: t("nav.audit"), icon: ScrollText, show: auth.hasPermission("audit.view_self") || auth.hasPermission("audit.view_all") },
     {
       to: "/security",
-      label: "Security",
+      label: t("nav.security"),
       icon: Shield,
       show: auth.hasPermission("rules.read") || auth.hasPermission("rules.manage") || auth.hasPermission("snippets.use"),
     },
     {
       to: "/admin",
-      label: "Admin",
+      label: t("nav.admin"),
       icon: Users,
       show:
         auth.hasPermission("users.manage") ||
@@ -72,7 +74,7 @@ export default function App() {
         auth.hasPermission("groups.manage") ||
         auth.hasPermission("access.manage"),
     },
-    { to: "/settings", label: "Settings", icon: Settings, show: true },
+    { to: "/settings", label: t("nav.settings"), icon: Settings, show: true },
   ].filter((n) => n.show);
 
   const isTerminalRoute = location.pathname.startsWith("/terminal/");
@@ -107,7 +109,7 @@ export default function App() {
           </div>
           <Button variant="ghost" size="sm" className="w-full justify-start" onClick={() => void auth.logout()}>
             <LogOut className="size-4" />
-            <span className="hidden sm:inline">Sign out</span>
+            <span className="hidden sm:inline">{t("nav.signout")}</span>
           </Button>
         </div>
       </aside>

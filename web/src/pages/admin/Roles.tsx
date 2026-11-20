@@ -6,12 +6,14 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useI18n, permissionLabel } from "@/lib/i18n";
 import { ErrorText, Page, PageHeader } from "@/components/ui/shared";
 import type { Permission, Role } from "@/types";
 import { ALL_PERMISSIONS } from "@/lib/permissions";
 
 export default function AdminRoles() {
   const auth = useAuth();
+  const { lang, t } = useI18n();
   const [roles, setRoles] = useState<Role[]>([]);
   const [error, setError] = useState<string>();
   const [form, setForm] = useState<{ name: string; description: string } | null>(null);
@@ -63,9 +65,9 @@ export default function AdminRoles() {
     <Page
       header={
         <PageHeader
-          title="Roles & Permissions"
-          subtitle="The admin role is immutable. Toggle permissions per role — changes take effect after the user signs in again."
-          actions={<Button size="sm" onClick={() => setForm({ name: "", description: "" })}><Plus className="size-3.5" /> New role</Button>}
+          title={t("admin.roles")}
+          subtitle={t("admin.roles.subtitle")}
+          actions={<Button size="sm" onClick={() => setForm({ name: "", description: "" })}><Plus className="size-3.5" /> {t("admin.roles.add")}</Button>}
         />
       }
     >
@@ -74,8 +76,13 @@ export default function AdminRoles() {
         <table className="w-full min-w-4xl text-sm">
           <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
             <tr>
-              <th className="sticky left-0 bg-muted/50 px-3 py-2">Role</th>
-              {ALL_PERMISSIONS.map((p) => <th key={p} className="px-2 py-2 text-center font-mono text-[10px]">{p}</th>)}
+              <th className="sticky left-0 z-10 bg-muted/50 px-3 py-2">Role</th>
+              {ALL_PERMISSIONS.map((p) => (
+                <th key={p} className="px-2 py-2 text-center align-bottom">
+                  <div className="font-sans text-[11px] normal-case tracking-normal">{permissionLabel(lang, p)}</div>
+                  <div className="font-mono text-[10px] opacity-60">{p}</div>
+                </th>
+              ))}
               <th className="px-2 py-2" />
             </tr>
           </thead>

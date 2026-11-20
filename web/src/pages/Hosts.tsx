@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useI18n } from "@/lib/i18n";
 import { ErrorText, Page, PageHeader } from "@/components/ui/shared";
 import type { ServerAsset } from "@/types";
 
@@ -28,6 +29,7 @@ const EMPTY_FORM = {
 
 export default function Hosts() {
   const auth = useAuth();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [servers, setServers] = useState<ServerAsset[]>([]);
   const [error, setError] = useState<string>();
@@ -121,6 +123,17 @@ export default function Hosts() {
     }
   };
 
+  const pickFile = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setImportText(text);
+      setError(undefined);
+    } catch {
+      setError("failed to read the selected file");
+    }
+  };
+
   const doImport = async () => {
     try {
       await api.post("/api/servers/import-ssh-config", { content: importText });
@@ -136,16 +149,16 @@ export default function Hosts() {
     <Page
       header={
         <PageHeader
-          title="Hosts"
-          subtitle={canManage ? "Server inventory and access targets" : "Hosts granted to you by your administrator"}
+          title={t("hosts.title")}
+          subtitle={canManage ? t("hosts.subtitle") : "Hosts granted to you by your administrator"}
           actions={
             canManage && (
               <>
                 <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
-                  <Upload className="size-3.5" /> Import ssh config
+                  <Upload className="size-3.5" /> {t("hosts.import")}
                 </Button>
                 <Button size="sm" onClick={() => openForm()}>
-                  <Plus className="size-3.5" /> Add host
+                  <Plus className="size-3.5" /> {t("hosts.add")}
                 </Button>
               </>
             )
@@ -156,7 +169,7 @@ export default function Hosts() {
       <ErrorText>{error}</ErrorText>
       {groups.length === 0 && (
         <p className="mt-8 text-center text-sm text-muted-foreground">
-          No hosts {canManage ? "yet — add your first server" : "granted to your account"}.
+          {canManage ? t("hosts.emptyAdmin") : t("hosts.empty")}
         </p>
       )}
       <div className="space-y-5">
@@ -182,12 +195,12 @@ export default function Hosts() {
                         <div className="flex justify-end gap-1">
                           {canConnect && (
                             <Button size="xs" onClick={() => navigate(`/terminal/${s.id}`)}>
-                              <Plug className="size-3" /> Connect
+                              <Plug className="size-3" /> {t("hosts.connect")}
                             </Button>
                           )}
                           {canManage && (
                             <>
-                              <Button variant="outline" size="xs" onClick={() => void test(s.id)}>Test</Button>
+                              <Button variant="outline" size="xs" onClick={() => void test(s.id)}>{t("hosts.test")}</Button>
                               <Button variant="ghost" size="icon-xs" onClick={() => openForm(s)}><Pencil className="size-3" /></Button>
                               <Button variant="destructive" size="icon-xs" onClick={() => void remove(s.id)}><Trash2 className="size-3" /></Button>
                             </>
@@ -250,19 +263,31 @@ export default function Hosts() {
       {/* Import ssh config */}
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>Import OpenSSH config</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{t("hosts.importTitle")}</DialogTitle></DialogHeader>
           <div className="space-y-2">
-            <Label>Paste your ~/.ssh/config content</Label>
+            <Label>{t("hosts.importPaste")}</Label>
             <textarea
               className="h-48 w-full rounded-lg border bg-background p-2 font-mono text-xs"
               value={importText}
               onChange={(e) => setImportText(e.target.value)}
               placeholder={"Host bastion\n  HostName 10.0.0.9\n  User ops\n\nHost web-*\n  HostName 10.0.0.%h"}
             />
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              {t("hosts.importHint")}
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2 py-1 font-medium text-foreground hover:bg-muted">
+                {t("hosts.importPick")}
+                <input
+                  type="file"
+                  className="hidden"
+                  accept=".conf,.cfg,.txt,text/plain"
+                  onChange={(e) => void pickFile(e.target.files?.[0])}
+                />
+              </label>
+            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setImportOpen(false)}>Cancel</Button>
-            <Button onClick={() => void doImport()} disabled={!importText.trim()}>Import</Button>
+            <Button variant="outline" onClick={() => setImportOpen(false)}>{t("common.cancel")}</Button>
+            <Button onClick={() => void doImport()} disabled={!importText.trim()}>{t("common.save")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
