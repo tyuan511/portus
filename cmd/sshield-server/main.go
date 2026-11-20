@@ -17,6 +17,7 @@ import (
 	"github.com/yuantang/sshield/internal/domain"
 	"github.com/yuantang/sshield/internal/httpserver"
 	"github.com/yuantang/sshield/internal/logging"
+	"github.com/yuantang/sshield/internal/mcpserver"
 	"github.com/yuantang/sshield/internal/rbac"
 	"github.com/yuantang/sshield/internal/security"
 	"github.com/yuantang/sshield/internal/sshpool"
@@ -95,8 +96,24 @@ func run() error {
 	engine := security.NewEngine()
 	broker := approvals.NewBroker()
 
-	// MCP endpoint (Phase 6 wires the real handler; nil keeps the route off).
 	server := httpserver.New(logger, cfg, db, authSvc, rbacSvc, pool, engine, broker, sealedVault)
+
+	// MCP endpoint: bearer-PAT gate at the fiber layer; tools resolve identity
+	// per call from the request's Authorization header.
+	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
+		DB:     db,
+		Auth:   authSvc,
+		RBAC:   rbacSvc,
+		Pool:   pool,
+		Engine: engine,
+		Broker: broker,
+		Vault:  sealedVault,
+		Rules:  server.CachedRules,
+		L2:     server.L2Reviewer,
+		Audit:  server.Audit,
+		Log:    logger,
+	})
+	server.SetMCPHandler(mcpHandler)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -119,7 +136,7 @@ func run() error {
 
 	log.Infow("sshield-server listening",
 		"addr", cfg.Server.Bind,
-		"mcp", false,
+		"mcp", true,
 		"tls", cfg.Server.TLSCert != "")
 	if err := server.Listen(ctx); err != nil {
 		return apierr.Internal("server stopped", err)

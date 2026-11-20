@@ -195,9 +195,9 @@ func (s *Server) handleEvaluate(c *fiber.Ctx) error {
 		return apierr.BadRequest("invalid JSON body")
 	}
 	asset := s.sandboxAsset(req.ServerID)
-	verdict := s.engine.Evaluate(req.Command, s.cachedRules())
+	verdict := s.engine.Evaluate(req.Command, s.CachedRules())
 	var l2 *domain.SemanticReviewVerdict
-	if reviewer := s.l2Reviewer(); reviewer != nil {
+	if reviewer := s.L2Reviewer(); reviewer != nil {
 		v, err := reviewer.Review(c.Context(), &domain.SemanticReviewRequest{
 			ServerName: asset.Name,
 			ServerTags: asset.Tags,

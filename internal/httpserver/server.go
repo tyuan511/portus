@@ -4,7 +4,9 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -12,7 +14,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/fiber/v2/middleware/recover"
+	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"go.uber.org/zap"
 
@@ -80,8 +82,8 @@ func New(log *zap.Logger, cfg *config.Config, db *storage.DB, authSvc *auth.Serv
 	return s
 }
 
-// cachedRules returns the L1 rule set with a 10s TTL.
-func (s *Server) cachedRules() []*domain.SecurityRule {
+// CachedRules returns the L1 rule set with a 10s TTL.
+func (s *Server) CachedRules() []*domain.SecurityRule {
 	s.rulesMu.Lock()
 	defer s.rulesMu.Unlock()
 	if s.rulesCache != nil && time.Since(s.rulesLoaded) < 10*time.Second {
@@ -107,8 +109,8 @@ func (s *Server) InvalidateSecurityCaches() {
 	s.l2Config = nil
 }
 
-// l2Reviewer returns a reviewer for the active L2 config, or nil when disabled.
-func (s *Server) l2Reviewer() security.Reviewer {
+// L2Reviewer returns a reviewer for the active L2 config, or nil when disabled.
+func (s *Server) L2Reviewer() security.Reviewer {
 	s.rulesMu.Lock()
 	defer s.rulesMu.Unlock()
 	if s.l2Config == nil || time.Since(s.l2Loaded) >= 10*time.Second {
@@ -125,9 +127,81 @@ func (s *Server) l2Reviewer() security.Reviewer {
 	return security.NewL2Reviewer(s.sealedVault, *s.l2Config)
 }
 
-// SetMCPHandler mounts a net/http handler (the MCP streamable endpoint) at /mcp.
+// SetMCPHandler mounts a net/http handler (the MCP streamable endpoint) at
+// /mcp behind bearer-PAT authentication and per-token rate limiting.
 func (s *Server) SetMCPHandler(h http.Handler) {
-	s.mcpNext = h
+	s.mcpNext = s.mcpGate(h)
+}
+
+// mcpGate enforces: Authorization: Bearer <PAT>, active account with
+// mcp.access permission, and a per-token sliding-window rate limit.
+func (s *Server) mcpGate(next http.Handler) http.Handler {
+	type window struct {
+		start time.Time
+		count int
+	}
+	var mu sync.Mutex
+	buckets := map[string]*window{}
+	limit := s.cfg.Security.MCPRatePerMin
+	if limit <= 0 {
+		limit = 60
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := mcpBearer(r.Header.Get("Authorization"))
+		if token == "" {
+			mcpPlainError(w, 401, apierr.CodeUnauthorized, "mcp endpoint requires Authorization: Bearer <api token>")
+			return
+		}
+		identity, _, err := s.authSvc.ResolveApiToken(token)
+		if err != nil || identity == nil {
+			mcpPlainError(w, 401, apierr.CodeUnauthorized, "invalid or expired api token")
+			return
+		}
+		if !identity.HasPermission(domain.PermMCPAccess) {
+			mcpPlainError(w, 403, apierr.CodeForbidden, "missing mcp.access permission")
+			return
+		}
+
+		key := auth.HashToken(token)
+		nowT := time.Now()
+		mu.Lock()
+		bucket, ok := buckets[key]
+		if !ok || nowT.Sub(bucket.start) > time.Minute {
+			if len(buckets) > 10_000 {
+				buckets = map[string]*window{} // crude overflow protection
+			}
+			bucket = &window{start: nowT}
+			buckets[key] = bucket
+		}
+		bucket.count++
+		count := bucket.count
+		mu.Unlock()
+		if count > limit {
+			mcpPlainError(w, 429, apierr.CodeRateLimited, "mcp rate limit exceeded; slow down")
+			return
+		}
+
+		if s.mcpNext == nil {
+			mcpPlainError(w, 503, apierr.CodeInternal, "mcp endpoint not configured")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func mcpBearer(header string) string {
+	parts := strings.SplitN(header, " ", 2)
+	if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+		return strings.TrimSpace(parts[1])
+	}
+	return ""
+}
+
+func mcpPlainError(w http.ResponseWriter, status int, code apierr.Code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"code": code, "message": message})
 }
 
 // Listen starts the HTTP(S) server and blocks until the context is cancelled.
@@ -148,7 +222,7 @@ func (s *Server) App() *fiber.App { return s.app }
 // --- middleware ---
 
 func (s *Server) useGlobalMiddleware() {
-	s.app.Use(recover.New(recover.Config{EnableStackTrace: false}))
+	s.app.Use(fiberrecover.New(fiberrecover.Config{EnableStackTrace: false}))
 	s.app.Use(requestid.New())
 	s.app.Use(func(c *fiber.Ctx) error {
 		s.log.Debug("request",
@@ -282,10 +356,16 @@ func identityFrom(c *fiber.Ctx) *domain.Identity {
 func (s *Server) registerRoutes() {
 	app := s.app
 
-	// MCP endpoint (net/http handler adapted into fiber).
-	if s.mcpNext != nil {
-		app.All("/mcp", adaptor.HTTPHandler(s.mcpNext))
-	}
+	// MCP endpoint (net/http handler adapted into fiber). The gate answers
+	// with a structured error until SetMCPHandler provides the real handler.
+	app.All("/mcp", func(c *fiber.Ctx) error {
+		defer func() {
+			if p := recover(); p != nil {
+				s.log.Error("mcp handler panic", zap.Any("panic", p), zap.String("stack", string(debug.Stack())))
+			}
+		}()
+		return adaptor.HTTPHandler(s.mcpGate(s.mcpNext))(c)
+	})
 
 	// Health is intentionally unauthenticated (load balancer probes).
 	app.Get("/api/health", s.handleHealth)
