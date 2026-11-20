@@ -126,6 +126,8 @@ export interface ApprovalRequest {
   verdict: CommandVerdict;
   l2_verdict?: SemanticReviewVerdict | null;
   timeout_secs: number;
+  user_id?: string;
+  requested_by?: string;
 }
 
 export interface AuditEvent {
@@ -133,6 +135,11 @@ export interface AuditEvent {
   trace_id: string;
   actor: string;
   timestamp: string;
+  user_id?: string;
+  username?: string;
+  operator?: string;
+  ssh_user?: string;
+  server_host?: string;
   server_id: string;
   server_name: string;
   command: string;
@@ -158,6 +165,110 @@ export interface AuditChainStatus {
   broken_at_id?: string | null;
 }
 
+export interface AuditStats {
+  total_commands: number;
+  allowed_count: number;
+  approval_count: number;
+  denied_count: number;
+  failed_count: number;
+  avg_duration_ms?: number | null;
+  by_actor: { key: string; count: number }[];
+  by_user: { key: string; count: number }[];
+  by_server: { server_id: string; server_name: string; count: number; failed_count: number }[];
+  top_commands: { key: string; count: number }[];
+  daily_trend: { date: string; total: number; denied: number; failed: number }[];
+}
+
 export type WsEvent =
   | { type: "approval_requested"; payload: ApprovalRequest }
   | { type: "approval_resolved"; payload: { id: string; decision: ApprovalDecision } };
+
+// ===== Enterprise (multi-user) =====
+
+export type Permission =
+  | "host.read" | "host.connect" | "host.execute" | "host.manage"
+  | "vault.manage" | "rules.read" | "rules.manage"
+  | "snippets.use" | "snippets.manage"
+  | "audit.view_self" | "audit.view_all" | "approvals.decide" | "mcp.access"
+  | "users.manage" | "roles.manage" | "groups.manage" | "access.manage"
+  | "settings.manage";
+
+export interface Role {
+  id: string;
+  name: string;
+  permissions: Permission[];
+  is_builtin: boolean;
+  description?: string;
+  created_at?: string;
+}
+
+export interface User {
+  id: string;
+  username: string;
+  display_name: string;
+  role_id: string;
+  role?: Role;
+  is_active: boolean;
+  must_change_password: boolean;
+  totp_enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+  last_login_at?: string | null;
+}
+
+export interface Identity {
+  user_id: string;
+  username: string;
+  display_name: string;
+  role_id: string;
+  role_name: string;
+  permissions: Permission[];
+  is_admin: boolean;
+  totp_enabled: boolean;
+}
+
+export interface UserGroup {
+  id: string;
+  name: string;
+  description?: string;
+  created_at?: string;
+}
+
+export interface HostGrant {
+  id: string;
+  user_group_id: string;
+  user_group?: UserGroup;
+  server_id?: string;
+  group_name?: string;
+  can_connect: boolean;
+  can_execute: boolean;
+  created_by?: string;
+  created_at?: string;
+}
+
+export interface ApiToken {
+  id: string;
+  user_id: string;
+  name: string;
+  prefix: string;
+  created_at: string;
+  last_used_at?: string | null;
+  expires_at?: string | null;
+  revoked_at?: string | null;
+}
+
+export interface UserSession {
+  id: string;
+  user_id: string;
+  ip: string;
+  user_agent: string;
+  created_at: string;
+  last_seen_at: string;
+  expires_at: string;
+}
+
+export interface LoginResponse {
+  user: Identity;
+  must_change_password: boolean;
+  recovery_code_used: boolean;
+}

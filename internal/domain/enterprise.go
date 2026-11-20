@@ -159,6 +159,8 @@ type Identity struct {
 	Permissions []Permission `json:"permissions"`
 	// IsAdmin is true only for the built-in admin role (bypasses grants).
 	IsAdmin bool `json:"is_admin"`
+	// TOTPEnabled reports whether the account has a second factor enrolled.
+	TOTPEnabled bool `json:"totp_enabled"`
 }
 
 func (i *Identity) HasPermission(p Permission) bool {

@@ -207,5 +207,6 @@ func identityPayload(id *domain.Identity) fiber.Map {
 		"role_name":    id.RoleName,
 		"permissions":  id.Permissions,
 		"is_admin":     id.IsAdmin,
+		"totp_enabled": id.TOTPEnabled,
 	}
 }

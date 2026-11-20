@@ -183,6 +183,7 @@ func (s *Service) buildIdentity(creds *storage.UserCredentials) (*domain.Identit
 		RoleName:    role.Name,
 		Permissions: role.Permissions,
 		IsAdmin:     role.Name == domain.BuiltinRoleAdmin,
+		TOTPEnabled: creds.TOTPEnabled,
 	}, nil
 }
 
@@ -337,6 +338,7 @@ func (s *Service) identityForUser(user *domain.User) (*domain.Identity, error) {
 		RoleName:    role.Name,
 		Permissions: role.Permissions,
 		IsAdmin:     role.Name == domain.BuiltinRoleAdmin,
+		TOTPEnabled: user.TOTPEnabled,
 	}, nil
 }
 

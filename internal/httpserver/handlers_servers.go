@@ -64,6 +64,7 @@ func (s *Server) handleUpsertServer(c *fiber.Ctx) error {
 	}
 	if asset.ID == "" {
 		asset.ID = storage.GenerateID("srv")
+		asset.Enabled = true // new hosts are active unless explicitly disabled later
 	}
 	if asset.Host == "" || asset.Name == "" || asset.Username == "" {
 		return apierr.Unprocessable("name, host and username are required")
