@@ -1,31 +1,32 @@
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { ArrowLeft } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ErrorText } from "@/components/ui/shared";
+import { StatusPill } from "@/components/sshield/StatusDot";
 import { wsUrl } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
-import { ErrorText } from "@/components/ui/shared";
 
-// xterm surfaces per brand theme (DESIGN.md): the canvas-night code-block
-// surface for Night, the white canvas for Daylight — emerald stays the only
-// chromatic event in both.
 const XTERM_THEMES = {
   dark: {
-    background: "#1c1c1c",
+    background: "#000000",
     foreground: "#ededed",
-    cursor: "#3ecf8e",
-    selectionBackground: "#3ecf8e55",
+    cursor: "#ededed",
+    selectionBackground: "#ededed33",
   },
   light: {
     background: "#ffffff",
     foreground: "#171717",
-    cursor: "#3ecf8e",
-    selectionBackground: "#3ecf8e55",
+    cursor: "#171717",
+    selectionBackground: "#17171722",
   },
 } as const;
 
 type ThemeMode = keyof typeof XTERM_THEMES;
+type ConnState = "connecting" | "connected" | "disconnected";
 
 function currentMode(): ThemeMode {
   return document.documentElement.classList.contains("dark") ? "dark" : "light";
@@ -33,14 +34,14 @@ function currentMode(): ThemeMode {
 
 export default function TerminalPane() {
   const { serverId } = useParams<{ serverId: string }>();
+  const navigate = useNavigate();
   const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const [error, setError] = useState<string>();
   const [mode, setMode] = useState<ThemeMode>(currentMode);
+  const [status, setStatus] = useState<ConnState>("connecting");
 
-  // The terminal follows the global Daylight/Night theme; applyTheme()
-  // mutates the root element, so watch it there.
   useEffect(() => {
     const root = document.documentElement;
     const obs = new MutationObserver(() => setMode(currentMode()));
@@ -57,18 +58,23 @@ export default function TerminalPane() {
     if (!serverId) return;
     let ws: WebSocket | null = null;
     let disposed = false;
+    setStatus("connecting");
 
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: "'Geist Mono', ui-monospace, SFMono-Regular, monospace",
+      fontFamily: "'Geist Mono Variable', ui-monospace, SFMono-Regular, monospace",
       theme: XTERM_THEMES[currentMode()],
     });
     termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current!);
-    try { fit.fit(); } catch { /* hidden */ }
+    try {
+      fit.fit();
+    } catch {
+      /* hidden */
+    }
     term.onResize(({ cols, rows }) => {
       ws?.send(JSON.stringify({ type: "resize", cols, rows }));
     });
@@ -85,6 +91,7 @@ export default function TerminalPane() {
     ws.onopen = () => {
       if (disposed) return;
       setError(undefined);
+      setStatus("connected");
       term.writeln(`\x1b[32m${t("terminal.connected")}\x1b[0m`);
     };
     ws.onmessage = (ev) => {
@@ -92,17 +99,30 @@ export default function TerminalPane() {
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === "error") setError(msg.message);
-          if (msg.type === "exit") term.writeln(`\r\n\x1b[33m${t("terminal.sessionEnded")}\x1b[0m`);
+          if (msg.type === "exit") {
+            setStatus("disconnected");
+            term.writeln(`\r\n\x1b[33m${t("terminal.sessionEnded")}\x1b[0m`);
+          }
           if (msg.type === "ready") term.clear();
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
         return;
       }
       term.write(new Uint8Array(ev.data));
     };
-    // StrictMode dev double-mount tears the first socket down immediately;
-    // its abort must not surface as an error (the replacement socket works).
-    ws.onerror = () => { if (!disposed) setError(t("terminal.wsError")); };
-    ws.onclose = () => { if (!disposed) term.writeln(`\r\n\x1b[31m${t("terminal.disconnected")}\x1b[0m`); };
+    ws.onerror = () => {
+      if (!disposed) {
+        setStatus("disconnected");
+        setError(t("terminal.wsError"));
+      }
+    };
+    ws.onclose = () => {
+      if (!disposed) {
+        setStatus("disconnected");
+        term.writeln(`\r\n\x1b[31m${t("terminal.disconnected")}\x1b[0m`);
+      }
+    };
 
     const onWindowResize = () => fit.fit();
     window.addEventListener("resize", onWindowResize);
@@ -116,14 +136,36 @@ export default function TerminalPane() {
     };
   }, [serverId]);
 
+  const statusTone = status === "connected" ? "success" : status === "connecting" ? "warning" : "danger";
+  const statusLabel =
+    status === "connected"
+      ? t("terminal.statusConnected")
+      : status === "connecting"
+        ? t("terminal.statusConnecting")
+        : t("terminal.statusDisconnected");
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-12 shrink-0 items-center border-b px-4">
-        <h1 className="text-base font-semibold">{t("terminal.title")}</h1>
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <div className="flex h-13 shrink-0 items-center justify-between border-b border-border bg-card px-4">
+        <div className="flex items-center gap-3">
+          <Button variant="outline" size="xs" onClick={() => navigate("/")}>
+            <ArrowLeft data-icon="inline-start" />
+            {t("terminal.back")}
+          </Button>
+          <span className="text-sm font-semibold tracking-tight">{t("terminal.title")}</span>
+          {serverId && (
+            <span className="hidden rounded border border-border bg-secondary px-2 py-0.5 font-mono text-[11px] text-muted-foreground sm:inline-block">
+              {serverId}
+            </span>
+          )}
+        </div>
+        <StatusPill label={statusLabel} tone={statusTone} pulse={status === "connected" || status === "connecting"} />
       </div>
-      <ErrorText>{error}</ErrorText>
-      {/* Host background matches the xterm surface so the sub-row leftover
-          space below the last line blends in. */}
+      {error && (
+        <div className="px-4 pt-3">
+          <ErrorText>{error}</ErrorText>
+        </div>
+      )}
       <div
         ref={containerRef}
         className="terminal-host min-h-0 flex-1"

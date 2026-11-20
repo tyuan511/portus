@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Check, Copy, Plus, Terminal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ErrorText } from "@/components/ui/shared";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
-import { ErrorText } from "@/components/ui/shared";
 import type { CommandSnippet } from "@/types";
 
 export default function Snippets() {
@@ -17,6 +19,7 @@ export default function Snippets() {
   const [snippets, setSnippets] = useState<CommandSnippet[]>([]);
   const [error, setError] = useState<string>();
   const [form, setForm] = useState<{ name: string; command: string; description: string } | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -26,7 +29,9 @@ export default function Snippets() {
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const save = async () => {
     if (!form) return;
@@ -49,40 +54,95 @@ export default function Snippets() {
     }
   };
 
+  const copy = async (id: string, command: string) => {
+    await navigator.clipboard.writeText(command);
+    setCopiedId(id);
+    window.setTimeout(() => setCopiedId((cur) => (cur === id ? null : cur)), 1600);
+  };
+
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       {canManage && (
-        <Button size="sm" onClick={() => setForm({ name: "", command: "", description: "" })}>
-          <Plus className="size-3.5" /> {t("snippets.new")}
-        </Button>
+        <div className="flex justify-end">
+          <Button size="sm" onClick={() => setForm({ name: "", command: "", description: "" })}>
+            <Plus data-icon="inline-start" />
+            {t("snippets.new")}
+          </Button>
+        </div>
       )}
       <ErrorText>{error}</ErrorText>
-      <div className="space-y-2">
-        {snippets.map((s) => (
-          <div key={s.id} className="flex items-center justify-between rounded-xl border px-3 py-2">
-            <div className="min-w-0">
-              <div className="text-sm font-medium">{s.name}</div>
-              <code className="block truncate text-xs text-muted-foreground" title={s.command}>{s.command}</code>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="xs" onClick={() => void navigator.clipboard.writeText(s.command)}>{t("common.copy")}</Button>
-              {canManage && <Button variant="destructive" size="icon-xs" onClick={() => void remove(s.id)}><Trash2 className="size-3" /></Button>}
-            </div>
-          </div>
-        ))}
-        {snippets.length === 0 && <p className="mt-8 text-center text-sm text-muted-foreground">{t("snippets.empty")}</p>}
-      </div>
+
+      {snippets.length === 0 ? (
+        <Empty className="border border-border bg-card py-12">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Terminal />
+            </EmptyMedia>
+            <EmptyTitle>{t("security.snippets")}</EmptyTitle>
+            <EmptyDescription>{t("snippets.empty")}</EmptyDescription>
+          </EmptyHeader>
+          {canManage && (
+            <EmptyContent>
+              <Button size="sm" onClick={() => setForm({ name: "", command: "", description: "" })}>
+                <Plus data-icon="inline-start" />
+                {t("snippets.new")}
+              </Button>
+            </EmptyContent>
+          )}
+        </Empty>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {snippets.map((s) => (
+            <Card key={s.id} size="sm" className="flex-row items-center justify-between gap-4 px-4 py-3">
+              <div className="min-w-0">
+                <div className="text-sm font-medium">{s.name}</div>
+                <code className="mt-0.5 block truncate font-mono text-xs text-muted-foreground" title={s.command}>
+                  {s.command}
+                </code>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Button variant="outline" size="xs" onClick={() => void copy(s.id, s.command)}>
+                  {copiedId === s.id ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+                  {copiedId === s.id ? t("common.copied") : t("common.copy")}
+                </Button>
+                {canManage && (
+                  <Button variant="destructive" size="icon-xs" onClick={() => void remove(s.id)}>
+                    <Trash2 />
+                  </Button>
+                )}
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
 
       <Dialog open={form !== null} onOpenChange={(o) => !o && setForm(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>{t("snippets.new")}</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1"><Label>{t("common.name")}</Label><Input value={form?.name ?? ""} onChange={(e) => setForm({ ...form!, name: e.target.value })} /></div>
-            <div className="space-y-1"><Label>{t("snippets.command")}</Label><Input value={form?.command ?? ""} onChange={(e) => setForm({ ...form!, command: e.target.value })} /></div>
+          <DialogHeader>
+            <DialogTitle>{t("snippets.new")}</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label>{t("common.name")}</Label>
+              <Input
+                value={form?.name ?? ""}
+                onChange={(e) => setForm({ ...form!, name: e.target.value })}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>{t("snippets.command")}</Label>
+              <Input
+                className="font-mono text-xs"
+                value={form?.command ?? ""}
+                onChange={(e) => setForm({ ...form!, command: e.target.value })}
+              />
+            </div>
             <ErrorText>{error}</ErrorText>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setForm(null)}>{t("common.cancel")}</Button>
+            <Button variant="outline" onClick={() => setForm(null)}>
+              {t("common.cancel")}
+            </Button>
             <Button onClick={() => void save()}>{t("common.save")}</Button>
           </DialogFooter>
         </DialogContent>

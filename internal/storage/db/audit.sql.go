@@ -340,10 +340,10 @@ func (q *Queries) GetAuditTailHash(ctx context.Context) (string, error) {
 
 const insertAudit = `-- name: InsertAudit :exec
 INSERT INTO audit_logs (id, trace_id, actor, timestamp, server_id, server_name, ssh_user,
-    server_host, operator, user_id, username, command, intent, dry_run, decision,
+    server_host, operator, user_id, username, session_id, command, intent, dry_run, decision,
     l1_verdict_json, l2_verdict_json, approval_id, approval_status, exit_code, duration_ms,
     stdout_preview, stderr_preview, error, prev_hash, event_hash)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
 `
 
 type InsertAuditParams struct {
@@ -358,6 +358,7 @@ type InsertAuditParams struct {
 	Operator       string
 	UserID         string
 	Username       string
+	SessionID      string
 	Command        string
 	Intent         string
 	DryRun         int32
@@ -388,6 +389,7 @@ func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error 
 		arg.Operator,
 		arg.UserID,
 		arg.Username,
+		arg.SessionID,
 		arg.Command,
 		arg.Intent,
 		arg.DryRun,
@@ -407,8 +409,134 @@ func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error 
 	return err
 }
 
+const listMCPSessions = `-- name: ListMCPSessions :many
+SELECT session_id,
+    MAX(username)::text AS username,
+    MIN(timestamp)::text AS first_at,
+    MAX(timestamp)::text AS last_at,
+    COUNT(*)::bigint AS event_count,
+    COALESCE(STRING_AGG(DISTINCT NULLIF(server_name, ''), ', '), '')::text AS servers
+FROM audit_logs
+WHERE session_id <> ''
+  AND ($1::text IS NULL OR user_id = $1::text)
+GROUP BY session_id
+ORDER BY MAX(seq) DESC
+LIMIT $2::bigint
+`
+
+type ListMCPSessionsParams struct {
+	UserID sql.NullString
+	Lim    sql.NullInt64
+}
+
+type ListMCPSessionsRow struct {
+	SessionID  string
+	Username   string
+	FirstAt    string
+	LastAt     string
+	EventCount int64
+	Servers    string
+}
+
+// Sessions are views over the audit trail: every event carrying the same
+// agent-supplied session_id. NULL user_id = all users (admin scope).
+func (q *Queries) ListMCPSessions(ctx context.Context, arg ListMCPSessionsParams) ([]ListMCPSessionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMCPSessions, arg.UserID, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMCPSessionsRow{}
+	for rows.Next() {
+		var i ListMCPSessionsRow
+		if err := rows.Scan(
+			&i.SessionID,
+			&i.Username,
+			&i.FirstAt,
+			&i.LastAt,
+			&i.EventCount,
+			&i.Servers,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const selectAuditBySession = `-- name: SelectAuditBySession :many
+SELECT seq, id, trace_id, actor, timestamp, server_id, server_name, ssh_user, server_host, operator, user_id, username, command, intent, dry_run, decision, l1_verdict_json, l2_verdict_json, approval_id, approval_status, exit_code, duration_ms, stdout_preview, stderr_preview, error, prev_hash, event_hash, session_id FROM audit_logs
+WHERE session_id = $1::text
+  AND ($2::text IS NULL OR user_id = $2::text)
+ORDER BY seq ASC
+`
+
+type SelectAuditBySessionParams struct {
+	SessionID string
+	UserID    sql.NullString
+}
+
+// Ordered replay stream for one session; NULL user_id = admin scope.
+func (q *Queries) SelectAuditBySession(ctx context.Context, arg SelectAuditBySessionParams) ([]AuditLog, error) {
+	rows, err := q.db.QueryContext(ctx, selectAuditBySession, arg.SessionID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditLog{}
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.Seq,
+			&i.ID,
+			&i.TraceID,
+			&i.Actor,
+			&i.Timestamp,
+			&i.ServerID,
+			&i.ServerName,
+			&i.SshUser,
+			&i.ServerHost,
+			&i.Operator,
+			&i.UserID,
+			&i.Username,
+			&i.Command,
+			&i.Intent,
+			&i.DryRun,
+			&i.Decision,
+			&i.L1VerdictJson,
+			&i.L2VerdictJson,
+			&i.ApprovalID,
+			&i.ApprovalStatus,
+			&i.ExitCode,
+			&i.DurationMs,
+			&i.StdoutPreview,
+			&i.StderrPreview,
+			&i.Error,
+			&i.PrevHash,
+			&i.EventHash,
+			&i.SessionID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const selectAuditChain = `-- name: SelectAuditChain :many
-SELECT seq, id, trace_id, actor, timestamp, server_id, server_name, ssh_user, server_host, operator, user_id, username, command, intent, dry_run, decision, l1_verdict_json, l2_verdict_json, approval_id, approval_status, exit_code, duration_ms, stdout_preview, stderr_preview, error, prev_hash, event_hash FROM audit_logs ORDER BY seq ASC
+SELECT seq, id, trace_id, actor, timestamp, server_id, server_name, ssh_user, server_host, operator, user_id, username, command, intent, dry_run, decision, l1_verdict_json, l2_verdict_json, approval_id, approval_status, exit_code, duration_ms, stdout_preview, stderr_preview, error, prev_hash, event_hash, session_id FROM audit_logs ORDER BY seq ASC
 `
 
 func (q *Queries) SelectAuditChain(ctx context.Context) ([]AuditLog, error) {
@@ -448,6 +576,7 @@ func (q *Queries) SelectAuditChain(ctx context.Context) ([]AuditLog, error) {
 			&i.Error,
 			&i.PrevHash,
 			&i.EventHash,
+			&i.SessionID,
 		); err != nil {
 			return nil, err
 		}
@@ -463,7 +592,7 @@ func (q *Queries) SelectAuditChain(ctx context.Context) ([]AuditLog, error) {
 }
 
 const selectAuditLogs = `-- name: SelectAuditLogs :many
-SELECT seq, id, trace_id, actor, timestamp, server_id, server_name, ssh_user, server_host, operator, user_id, username, command, intent, dry_run, decision, l1_verdict_json, l2_verdict_json, approval_id, approval_status, exit_code, duration_ms, stdout_preview, stderr_preview, error, prev_hash, event_hash FROM audit_logs
+SELECT seq, id, trace_id, actor, timestamp, server_id, server_name, ssh_user, server_host, operator, user_id, username, command, intent, dry_run, decision, l1_verdict_json, l2_verdict_json, approval_id, approval_status, exit_code, duration_ms, stdout_preview, stderr_preview, error, prev_hash, event_hash, session_id FROM audit_logs
 WHERE ($1::text IS NULL OR server_id = $1::text)
   AND ($2::text IS NULL OR ssh_user = $2::text)
   AND ($3::text IS NULL OR user_id = $3::text)
@@ -560,6 +689,7 @@ func (q *Queries) SelectAuditLogs(ctx context.Context, arg SelectAuditLogsParams
 			&i.Error,
 			&i.PrevHash,
 			&i.EventHash,
+			&i.SessionID,
 		); err != nil {
 			return nil, err
 		}

@@ -53,6 +53,7 @@ func (h *DB) AppendAudit(ev *domain.AuditEvent) error {
 		Operator:       ev.Operator,
 		UserID:         ev.UserID,
 		Username:       ev.Username,
+		SessionID:      ev.SessionID,
 		Command:        ev.Command,
 		Intent:         ev.Intent,
 		DryRun:         int32(boolToInt(ev.DryRun)),
@@ -140,7 +141,7 @@ func auditRowToEvent(r db.AuditLog) *domain.AuditEvent {
 	ev := &domain.AuditEvent{
 		ID: r.ID, TraceID: r.TraceID, Actor: r.Actor, ServerID: r.ServerID, ServerName: r.ServerName,
 		SSHUser: r.SshUser, ServerHost: r.ServerHost, Operator: r.Operator,
-		UserID: r.UserID, Username: r.Username,
+		UserID: r.UserID, Username: r.Username, SessionID: r.SessionID,
 		Command: r.Command, Intent: r.Intent, DryRun: r.DryRun == 1,
 		Decision: domain.PolicyDecision(r.Decision), PrevHash: r.PrevHash, EventHash: r.EventHash,
 	}
@@ -201,7 +202,7 @@ func (h *DB) VerifyAuditChain() (*domain.AuditChainStatus, error) {
 			ServerID: r.ServerID, Command: r.Command, Intent: r.Intent,
 			Decision: domain.PolicyDecision(r.Decision),
 			SSHUser:  r.SshUser, ServerHost: r.ServerHost, Operator: r.Operator,
-			UserID: r.UserID, Username: r.Username,
+			UserID: r.UserID, Username: r.Username, SessionID: r.SessionID,
 			PrevHash: r.PrevHash,
 		}
 		if r.ExitCode.Valid {
@@ -240,8 +241,65 @@ func computeEventHash(ev *domain.AuditEvent, tsStr string) string {
 	if ev.UserID != "" || ev.Username != "" {
 		payload += fmt.Sprintf("|%s|%s", ev.UserID, ev.Username)
 	}
+	if ev.SessionID != "" {
+		payload += "|" + ev.SessionID
+	}
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])
+}
+
+// MCPSession is the replay-listing projection of one agent session.
+type MCPSession struct {
+	SessionID  string `json:"session_id"`
+	Username   string `json:"username"`
+	FirstAt    string `json:"first_at"`
+	LastAt     string `json:"last_at"`
+	EventCount int64  `json:"event_count"`
+	Servers    string `json:"servers"`
+}
+
+// ListMCPSessions returns agent sessions (audit-trail groupings), scoped to
+// one user unless userID is empty (admin scope).
+func (h *DB) ListMCPSessions(userID string, limit int64) ([]*MCPSession, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := h.q.ListMCPSessions(context.Background(), db.ListMCPSessionsParams{
+		UserID: nullString(userID),
+		Lim:    nullInt64(limit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list mcp sessions: %w", err)
+	}
+	out := make([]*MCPSession, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &MCPSession{
+			SessionID:  r.SessionID,
+			Username:   r.Username,
+			FirstAt:    r.FirstAt,
+			LastAt:     r.LastAt,
+			EventCount: r.EventCount,
+			Servers:    r.Servers,
+		})
+	}
+	return out, nil
+}
+
+// QuerySessionEvents returns the ordered replay stream for one session,
+// scoped to one user unless userID is empty (admin scope).
+func (h *DB) QuerySessionEvents(sessionID, userID string) ([]*domain.AuditEvent, error) {
+	rows, err := h.q.SelectAuditBySession(context.Background(), db.SelectAuditBySessionParams{
+		SessionID: sessionID,
+		UserID:    nullString(userID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query session events: %w", err)
+	}
+	out := make([]*domain.AuditEvent, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, auditRowToEvent(r))
+	}
+	return out, nil
 }
 
 // nullJSON marshals a pointer payload into a nullable JSON string column.

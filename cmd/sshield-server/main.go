@@ -103,10 +103,11 @@ func run() error {
 		Pool:   pool,
 		Engine: engine,
 		Broker: broker,
-		Rules:  server.CachedRules,
-		L2:     server.L2Reviewer,
-		Audit:  server.Audit,
-		Log:    logger,
+		Rules:      server.CachedRules,
+		L2:         server.L2Reviewer,
+		Audit:      server.Audit,
+		Log:        logger,
+		SessionTTL: cfg.MCPSessionTTL(),
 	})
 	server.SetMCPHandler(mcpHandler)
 

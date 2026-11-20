@@ -26,6 +26,9 @@ func (s *Server) registerAdminRoutes(g fiber.Router) {
 	g.Post("/admin/groups", requirePerm(domain.PermAccessManage), s.handleCreateGroup)
 	g.Patch("/admin/groups/:id", requirePerm(domain.PermAccessManage), s.handlePatchGroup)
 	g.Delete("/admin/groups/:id", requirePerm(domain.PermAccessManage), s.handleDeleteGroup)
+	g.Get("/admin/groups/:id/members", requirePerm(domain.PermAccessManage), s.handleListGroupMembers)
+	g.Post("/admin/groups/:id/members", requirePerm(domain.PermAccessManage), s.handleAddGroupMember)
+	g.Delete("/admin/groups/:id/members/:userID", requirePerm(domain.PermAccessManage), s.handleRemoveGroupMember)
 
 	// Host access grants.
 	g.Get("/admin/access-grants", requirePerm(domain.PermAccessManage), s.handleListGrants)

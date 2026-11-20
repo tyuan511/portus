@@ -139,6 +139,7 @@ export interface AuditEvent {
   username?: string;
   operator?: string;
   ssh_user?: string;
+  session_id?: string;
   server_host?: string;
   server_id: string;
   server_name: string;
@@ -255,6 +256,15 @@ export interface UserSession {
   created_at: string;
   last_seen_at: string;
   expires_at: string;
+}
+
+export interface MCPSession {
+  session_id: string;
+  username: string;
+  first_at: string;
+  last_at: string;
+  event_count: number;
+  servers: string;
 }
 
 export interface CredentialMeta {

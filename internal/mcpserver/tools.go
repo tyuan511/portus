@@ -196,10 +196,85 @@ func tGetL2Config(ctx context.Context, d *Deps, id *domain.Identity, args map[st
 	return cfgL2, nil
 }
 
+// --- host sessions: server-issued temporary authorizations ---
+
+func tOpenHostSession(ctx context.Context, d *Deps, id *domain.Identity, args map[string]any) (any, *apierr.E) {
+	serverID := argString(args, "server_id")
+	if serverID == "" {
+		return nil, apierr.BadRequest("server_id is required")
+	}
+	purpose := argString(args, "purpose")
+
+	asset, apiErr := loadAuthorizedServer(d, id, serverID, true)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+
+	ttl := d.SessionTTL
+	if ttl <= 0 {
+		ttl = 30 * time.Minute
+	}
+	sessID := storage.GenerateID("mcpsess")
+	if _, err := d.DB.CreateHostSession(sessID, id.UserID, asset.ID, purpose, ttl); err != nil {
+		return nil, apierr.StorageErr(err)
+	}
+
+	ev := &domain.AuditEvent{
+		ID: storage.GenerateID("aud"), Actor: "mcp-http", Timestamp: now(),
+		ServerID: asset.ID, ServerName: asset.Name,
+		SSHUser: asset.Username, ServerHost: asset.Host + ":" + fmt.Sprint(asset.Port),
+		UserID: id.UserID, Username: id.Username,
+		SessionID: sessID,
+		Command:   "mcp_session.open", Intent: purposeOf(purpose),
+		Decision:  domain.DecisionAllow,
+	}
+	d.Audit(ev)
+
+	return map[string]any{
+		"session_id": sessID,
+		"server_id":  asset.ID,
+		"server":     asset.Name,
+		"expires_at": now().Add(ttl).Format(time.RFC3339),
+	}, nil
+}
+
+func purposeOf(p string) string {
+	if p == "" {
+		return "agent host session"
+	}
+	return p
+}
+
+func tCloseHostSession(ctx context.Context, d *Deps, id *domain.Identity, args map[string]any) (any, *apierr.E) {
+	sessID := argString(args, "session_id")
+	if sessID == "" {
+		return nil, apierr.BadRequest("session_id is required")
+	}
+	sess, err := d.DB.ValidateHostSession(sessID, id.UserID)
+	if err != nil {
+		return nil, apierr.Forbidden(storage.ErrSessionInvalid.Error())
+	}
+	if _, err := d.DB.CloseHostSession(sessID, id.UserID); err != nil {
+		return nil, apierr.StorageErr(err)
+	}
+	if asset, aerr := d.DB.GetServer(sess.ServerID); aerr == nil {
+		d.Audit(&domain.AuditEvent{
+			ID: storage.GenerateID("aud"), Actor: "mcp-http", Timestamp: now(),
+			ServerID: asset.ID, ServerName: asset.Name,
+			SSHUser: asset.Username, ServerHost: asset.Host + ":" + fmt.Sprint(asset.Port),
+			UserID: id.UserID, Username: id.Username,
+			SessionID: sessID,
+			Command: "mcp_session.close", Intent: purposeOf(sess.Purpose),
+			Decision: domain.DecisionAllow,
+		})
+	}
+	return map[string]any{"closed": true}, nil
+}
+
 // --- execute_command: the full layered pipeline ---
 
 type executeArgs struct {
-	ServerID   string
+	SessionID  string
 	Command    string
 	Intent     string
 	DryRun     bool
@@ -208,13 +283,13 @@ type executeArgs struct {
 
 func parseExecuteArgs(args map[string]any) (executeArgs, *apierr.E) {
 	ea := executeArgs{
-		ServerID: argString(args, "server_id"),
-		Command:  argString(args, "command"),
-		Intent:   argString(args, "intent"),
-		DryRun:   argBool(args, "dry_run"),
+		SessionID: argString(args, "session_id"),
+		Command:   argString(args, "command"),
+		Intent:    argString(args, "intent"),
+		DryRun:    argBool(args, "dry_run"),
 	}
-	if ea.ServerID == "" || ea.Command == "" {
-		return ea, apierr.BadRequest("server_id and command are required")
+	if ea.SessionID == "" || ea.Command == "" {
+		return ea, apierr.BadRequest("session_id and command are required")
 	}
 	if ea.Intent == "" {
 		ea.Intent = "AI-assisted operation"
@@ -235,14 +310,21 @@ func tExecuteCommand(ctx context.Context, d *Deps, id *domain.Identity, args map
 		return nil, apiErr
 	}
 
+	sess, err := d.DB.ValidateHostSession(ea.SessionID, id.UserID)
+	if err != nil {
+		return nil, apierr.Forbidden("host session invalid or expired; open a new one with open_host_session")
+	}
+
 	auditID := storage.GenerateID("aud")
 	traceID := storage.GenerateID("mcp")
 	fail := func(err error, decision domain.PolicyDecision, approvalID string, approvalStatus domain.ApprovalDecision) (any, *apierr.E) {
-		d.auditExecution(d, id, ea, traceID, auditID, decision, nil, nil, approvalID, approvalStatus, nil, nil, "", "", err.Error())
+		d.auditExecution(d, id, ea, sess, traceID, auditID, decision, nil, nil, approvalID, approvalStatus, nil, nil, "", "", err.Error())
 		return nil, apierr.From(err)
 	}
 
-	asset, apiErr := loadAuthorizedServer(d, id, ea.ServerID, true)
+	// Re-check the execute grant at execution time too (defense in depth):
+	// a session never outlives the grant it was issued under.
+	asset, apiErr := loadAuthorizedServer(d, id, sess.ServerID, true)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -274,7 +356,7 @@ func tExecuteCommand(ctx context.Context, d *Deps, id *domain.Identity, args map
 	}
 
 	if ea.DryRun {
-		d.auditExecution(d, id, ea, traceID, auditID, final, verdict, l2, "", "", nil, nil, "", "", "")
+		d.auditExecution(d, id, ea, sess, traceID, auditID, final, verdict, l2, "", "", nil, nil, "", "", "")
 		return map[string]any{
 			"dry_run":        true,
 			"final_decision": final,
@@ -309,7 +391,7 @@ func tExecuteCommand(ctx context.Context, d *Deps, id *domain.Identity, args map
 			return nil, denied
 		}
 		auditID = req.ID
-		d.auditExecution(d, id, ea, traceID, auditID, domain.DecisionAskApproval, verdict, l2, req.ID, domain.ApprovalApproved, nil, nil, "", "", "")
+		d.auditExecution(d, id, ea, sess, traceID, auditID, domain.DecisionAskApproval, verdict, l2, req.ID, domain.ApprovalApproved, nil, nil, "", "", "")
 	}
 
 	// SSH execution with output masking.
@@ -324,7 +406,7 @@ func tExecuteCommand(ctx context.Context, d *Deps, id *domain.Identity, args map
 	}
 	stdout := security.MaskSensitiveOutput(out.Stdout)
 	stderr := security.MaskSensitiveOutput(out.Stderr)
-	d.auditExecution(d, id, ea, traceID, auditID, domain.DecisionAllow, verdict, l2, "", "",
+	d.auditExecution(d, id, ea, sess, traceID, auditID, domain.DecisionAllow, verdict, l2, "", "",
 		&out.ExitCode, &out.DurationMs,
 		preview(stdout, 2000), preview(stderr, 2000), "")
 
@@ -339,12 +421,12 @@ func tExecuteCommand(ctx context.Context, d *Deps, id *domain.Identity, args map
 }
 
 // auditExecution writes one structured event per execution outcome.
-func (d *Deps) auditExecution(d2 *Deps, id *domain.Identity, ea executeArgs, traceID, auditID string,
+func (d *Deps) auditExecution(d2 *Deps, id *domain.Identity, ea executeArgs, sess *storage.HostSession, traceID, auditID string,
 	decision domain.PolicyDecision, l1 *domain.CommandVerdict, l2 *domain.SemanticReviewVerdict,
 	approvalID string, approvalStatus domain.ApprovalDecision,
 	exitCode *int, durationMs *int64, stdout, stderr, errMsg string) {
 
-	asset, _ := d2.DB.GetServer(ea.ServerID)
+	asset, _ := d2.DB.GetServer(sess.ServerID)
 	ev := &domain.AuditEvent{
 		ID: auditID, TraceID: traceID, Actor: "mcp-http", Timestamp: now(),
 		Command: ea.Command, Intent: ea.Intent, Decision: decision,
@@ -360,8 +442,9 @@ func (d *Deps) auditExecution(d2 *Deps, id *domain.Identity, ea executeArgs, tra
 		ev.SSHUser = asset.Username
 		ev.ServerHost = fmt.Sprintf("%s:%d", asset.Host, asset.Port)
 	} else {
-		ev.ServerID = ea.ServerID
+		ev.ServerID = sess.ServerID
 	}
+	ev.SessionID = sess.ID
 	d2.Audit(ev)
 }
 

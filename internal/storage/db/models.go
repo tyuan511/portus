@@ -54,6 +54,7 @@ type AuditLog struct {
 	Error          sql.NullString
 	PrevHash       string
 	EventHash      string
+	SessionID      string
 }
 
 type AuthAttempt struct {
@@ -96,6 +97,16 @@ type L2Config struct {
 	RiskThresholdAsk   int32
 	RiskThresholdDeny  int32
 	Enabled            int32
+}
+
+type McpSession struct {
+	ID        string
+	UserID    string
+	ServerID  string
+	Purpose   string
+	CreatedAt string
+	ExpiresAt string
+	ClosedAt  sql.NullString
 }
 
 type SecurityRule struct {

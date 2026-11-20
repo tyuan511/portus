@@ -40,6 +40,9 @@ type Deps struct {
 	L2     func() security.Reviewer
 	Audit  func(ev *domain.AuditEvent)
 	Log    *zap.Logger
+
+	// SessionTTL bounds each server-issued host session.
+	SessionTTL time.Duration
 }
 
 const serverVersion = "1.0.0"
@@ -57,6 +60,8 @@ func NewHandler(d Deps) http.Handler {
 		handler     toolFunc
 	}
 	registrations := []registration{
+		{"open_host_session", "Request temporary authorization to operate on one host. The server validates access and returns a session_id that execute_command requires; every operation in the session is recorded and replayable.", `{"type":"object","properties":{"server_id":{"type":"string"},"purpose":{"type":"string","description":"what this session is for, recorded in the audit trail"}},"required":["server_id"]}`, tOpenHostSession},
+		{"close_host_session", "Close a host session early; further execute_command calls with it will be rejected.", `{"type":"object","properties":{"session_id":{"type":"string"}},"required":["session_id"]}`, tCloseHostSession},
 		{"list_authorized_servers", "List SSH servers the caller is authorized to use", `{"type":"object","properties":{}}`, tListAuthorizedServers},
 		{"get_server_details", "Get details for one authorized server (no secrets)", `{"type":"object","properties":{"server_id":{"type":"string"}},"required":["server_id"]}`, tGetServerDetails},
 		{"test_server_connection", "Test SSH connectivity and authentication to a server", `{"type":"object","properties":{"server_id":{"type":"string"}},"required":["server_id"]}`, tTestServerConnection},
@@ -68,7 +73,7 @@ func NewHandler(d Deps) http.Handler {
 		{"verify_audit_chain", "Verify the tamper-evident audit hash chain (admin)", `{"type":"object","properties":{}}`, tVerifyAuditChain},
 		{"list_pending_approvals", "List pending command approvals (approvals.decide permission)", `{"type":"object","properties":{}}`, tListPendingApprovals},
 		{"get_l2_config", "Get the L2 AI semantic review configuration (rules.read permission)", `{"type":"object","properties":{}}`, tGetL2Config},
-		{"execute_command", "Execute a shell command on a server through the layered security pipeline (L1 → L2 → approval → SSH)", `{"type":"object","properties":{"server_id":{"type":"string"},"command":{"type":"string"},"intent":{"type":"string"},"dry_run":{"type":"boolean"},"timeout_secs":{"type":"integer"}},"required":["server_id","command"]}`, tExecuteCommand},
+		{"execute_command", "Execute a shell command on the host bound to a live session, through the layered security pipeline (L1 → L2 → approval → SSH). Open a session first with open_host_session.", `{"type":"object","properties":{"session_id":{"type":"string","description":"session from open_host_session authorizing this host"},"command":{"type":"string"},"intent":{"type":"string"},"dry_run":{"type":"boolean"},"timeout_secs":{"type":"integer"}},"required":["session_id","command"]}`, tExecuteCommand},
 	}
 
 	for _, reg := range registrations {

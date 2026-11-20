@@ -6,40 +6,46 @@ export interface SshieldTheme {
   swatches: [string, string, string, string];
 }
 
-// Supabaze-inspired brand system (see DESIGN.md): a white canvas with a
-// near-black ink ladder and a single emerald primary (#3ecf8e) as the only
-// chromatic event. Light is the brand default; night inverts the surface
-// ladder while keeping emerald untouched.
+// Vercel-style monochrome brand: white canvas with near-black ink and a
+// solid near-black CTA (inverted on Night). The UI stays strictly greyscale;
+// chroma lives only in the emerald shield logo.
 export const SSHIELD_THEMES: SshieldTheme[] = [
   {
-    id: "supabase-light",
+    id: "daylight",
     name: "Daylight",
     mode: "light",
-    description: "White canvas, near-black ink, emerald CTA",
-    swatches: ["#ffffff", "#fafafa", "#171717", "#3ecf8e"],
+    description: "White canvas, black ink, high-contrast greys",
+    swatches: ["#ffffff", "#fafafa", "#171717", "#171717"],
   },
   {
-    id: "supabase-night",
+    id: "night",
     name: "Night",
     mode: "dark",
-    description: "Canvas-night surfaces, emerald untouched",
-    swatches: ["#1c1c1c", "#202020", "#ededed", "#3ecf8e"],
+    description: "Near-black canvas, inverted light CTA",
+    swatches: ["#0a0a0a", "#1a1a1a", "#a1a1a1", "#ededed"],
   },
 ];
+
+// Themes were renamed when the Supabase-style spec was dropped; keep saved
+// preferences working across the rename.
+const LEGACY_THEME_IDS: Record<string, string> = {
+  "supabase-light": "daylight",
+  "supabase-night": "night",
+};
 
 const STORAGE_KEY = "sshield.theme";
 
 export function getSavedThemeId(): string {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved && SSHIELD_THEMES.some((t) => t.id === saved)) {
-      return saved;
+    const resolved = saved ? LEGACY_THEME_IDS[saved] ?? saved : undefined;
+    if (resolved && SSHIELD_THEMES.some((t) => t.id === resolved)) {
+      return resolved;
     }
   } catch {
     // ignore storage errors
   }
-  // Brand default follows the DESIGN.md white-canvas commitment.
-  return "supabase-light";
+  return "daylight";
 }
 
 export function applyTheme(themeId: string): SshieldTheme {

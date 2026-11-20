@@ -198,14 +198,14 @@ func TestMCPInitializeAndToolsList(t *testing.T) {
 	}
 	result := body["result"].(map[string]any)
 	tools := result["tools"].([]any)
-	if len(tools) != 12 {
-		t.Fatalf("want 12 tools, got %d", len(tools))
+	if len(tools) != 14 {
+		t.Fatalf("want 14 tools, got %d", len(tools))
 	}
 	names := map[string]bool{}
 	for _, tl := range tools {
 		names[tl.(map[string]any)["name"].(string)] = true
 	}
-	for _, want := range []string{"execute_command", "list_authorized_servers", "query_audit_logs", "verify_audit_chain"} {
+	for _, want := range []string{"execute_command", "open_host_session", "close_host_session", "list_authorized_servers", "query_audit_logs", "verify_audit_chain"} {
 		if !names[want] {
 			t.Fatalf("missing tool %s in %v", want, names)
 		}
@@ -224,7 +224,7 @@ func TestMCPExecuteRequiresGrantAndAudits(t *testing.T) {
 		auth.HashPassword("bob-pass-123"), "", nil)
 	token := f.issueToken("usr-bob")
 
-	// initialize + tools/call execute_command on ungranted host.
+	// initialize + tools/call open_host_session on ungranted host.
 	status, body, sessionID := f.callMCP(token, "initialize", map[string]any{
 		"protocolVersion": "2025-03-26",
 		"capabilities":    map[string]any{},
@@ -236,8 +236,8 @@ func TestMCPExecuteRequiresGrantAndAudits(t *testing.T) {
 	f.callMCP(token, "notifications/initialized", nil, sessionID)
 
 	params := map[string]any{
-		"name":      "execute_command",
-		"arguments": map[string]any{"server_id": "srv-1", "command": "ls", "intent": "test", "dry_run": true},
+		"name":      "open_host_session",
+		"arguments": map[string]any{"server_id": "srv-1", "purpose": "test"},
 	}
 	status, body, _ = f.callMCP(token, "tools/call", params, sessionID)
 	if status != 200 {
@@ -245,11 +245,24 @@ func TestMCPExecuteRequiresGrantAndAudits(t *testing.T) {
 	}
 	result := body["result"].(map[string]any)
 	if result["isError"] != true {
-		t.Fatalf("ungranted execute must be a tool error result: %v", result)
+		t.Fatalf("ungranted open must be a tool error result: %v", result)
 	}
 	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
 	if !strings.Contains(text, "no execute grant") && !strings.Contains(text, "403") {
 		t.Fatalf("denial message wrong: %s", text)
+	}
+
+	// execute without a session is rejected outright.
+	status, body, _ = f.callMCP(token, "tools/call", map[string]any{
+		"name": "execute_command",
+		"arguments": map[string]any{"session_id": "mcpsess-does-not-exist", "command": "ls", "dry_run": true},
+	}, sessionID)
+	if status != 200 {
+		t.Fatalf("execute no-session status: %d", status)
+	}
+	result = body["result"].(map[string]any)
+	if result["isError"] != true {
+		t.Fatalf("execute without live session must error: %v", result)
 	}
 }
 
@@ -294,26 +307,93 @@ func TestMCPExecuteDryRunAllowsAndAudits(t *testing.T) {
 		t.Fatalf("granted server must be listed: %s", text)
 	}
 
-	// dry_run: allowed, deny rule enforced at L1 (rm), no SSH attempted.
+	// Open a host session, then execute through it.
+	status, body, _ = f.callMCP(token, "tools/call", map[string]any{
+		"name":      "open_host_session",
+		"arguments": map[string]any{"server_id": "srv-1", "purpose": "cleanup task"},
+	}, sessionID)
+	if status != 200 {
+		t.Fatalf("open session: %d %v", status, body)
+	}
+	openText := toolText(body)
+	if !strings.Contains(openText, "session_id") {
+		t.Fatalf("open must return a session_id: %s", openText)
+	}
+	var sess struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(openText), &sess); err != nil {
+		t.Fatalf("parse open result: %v (%s)", err, openText)
+	}
+	if sess.SessionID == "" {
+		t.Fatal("session_id must be non-empty")
+	}
+
+	// dry_run: allowed command passes, deny rule enforced at L1 (rm).
 	status, body, _ = f.callMCP(token, "tools/call", map[string]any{
 		"name": "execute_command",
 		"arguments": map[string]any{
-			"server_id": "srv-1", "command": "rm -rf /", "intent": "cleanup", "dry_run": true,
+			"session_id": sess.SessionID, "command": "ls -la", "intent": "inspect", "dry_run": true,
 		},
 	}, sessionID)
 	if status != 200 {
-		t.Fatalf("dry run: %d %v", status, body)
+		t.Fatalf("dry run ok: %d %v", status, body)
+	}
+
+	status, body, _ = f.callMCP(token, "tools/call", map[string]any{
+		"name": "execute_command",
+		"arguments": map[string]any{
+			"session_id": sess.SessionID, "command": "rm -rf /", "intent": "cleanup", "dry_run": true,
+		},
+	}, sessionID)
+	if status != 200 {
+		t.Fatalf("dry run deny: %d %v", status, body)
 	}
 	if !strings.Contains(toolText(body), "denied") {
 		t.Fatalf("rm must be denied by L1: %s", toolText(body))
 	}
 
-	// Audit trail for bob exists (denied execution recorded).
-	events, err := f.db.QueryAudits(&domain.AuditQuery{UserID: "usr-bob"})
-	if err != nil {
-		t.Fatal(err)
+	// Close the session; further executes are rejected.
+	status, body, _ = f.callMCP(token, "tools/call", map[string]any{
+		"name":      "close_host_session",
+		"arguments": map[string]any{"session_id": sess.SessionID},
+	}, sessionID)
+	if status != 200 || !strings.Contains(toolText(body), "closed") {
+		t.Fatalf("close session: %d %v", status, body)
 	}
-	if len(events) == 0 {
+	status, body, _ = f.callMCP(token, "tools/call", map[string]any{
+		"name": "execute_command",
+		"arguments": map[string]any{
+			"session_id": sess.SessionID, "command": "ls", "dry_run": true,
+		},
+	}, sessionID)
+	if status != 200 {
+		t.Fatalf("execute after close status: %d", status)
+	}
+	result := body["result"].(map[string]any)
+	if result["isError"] != true {
+		t.Fatalf("execute after close must error: %v", result)
+	}
+
+	// Session replay: open + 2 executions + close all share the session id.
+	sessions, err := f.db.ListMCPSessions("usr-bob", 10)
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("list sessions: %v %d", err, len(sessions))
+	}
+	if sessions[0].SessionID != sess.SessionID || sessions[0].EventCount < 4 {
+		t.Fatalf("session summary wrong: %+v", sessions[0])
+	}
+	events, err := f.db.QuerySessionEvents(sess.SessionID, "usr-bob")
+	if err != nil || len(events) < 4 {
+		t.Fatalf("session events: %v %d", err, len(events))
+	}
+	if events[0].Command != "mcp_session.open" {
+		t.Fatalf("first replay event must be session open: %s", events[0].Command)
+	}
+
+	// Audit trail for bob exists.
+	all, err := f.db.QueryAudits(&domain.AuditQuery{UserID: "usr-bob"})
+	if err != nil || len(all) == 0 {
 		t.Fatal("denied execution must be audited for the calling user")
 	}
 }

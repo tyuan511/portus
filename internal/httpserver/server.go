@@ -376,6 +376,7 @@ func (s *Server) registerRoutes() {
 	s.registerSecurityRoutes(authGroup)
 	s.registerContentRoutes(app, authGroup)
 	s.registerAuditRoutes(authGroup)
+	s.registerMCPSessionRoutes(authGroup)
 	s.registerAdminRoutes(authGroup)
 	s.registerTokenRoutes(authGroup)
 	s.registerWebSockets(app)

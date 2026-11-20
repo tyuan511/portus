@@ -434,3 +434,39 @@ func TestCredentialSealAndDecrypt(t *testing.T) {
 		t.Fatalf("list: %v %d", err, len(list))
 	}
 }
+
+func TestHostSessionLifecycle(t *testing.T) {
+	db := testDB(t)
+
+	sess, err := db.CreateHostSession("mcpsess-1", "usr-a", "srv-1", "deploy", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.ID != "mcpsess-1" || time.Until(sess.ExpiresAt) <= 0 {
+		t.Fatalf("session: %+v", sess)
+	}
+
+	// Valid for the owner.
+	got, err := db.ValidateHostSession("mcpsess-1", "usr-a")
+	if err != nil || got.ServerID != "srv-1" {
+		t.Fatalf("validate: %v %+v", err, got)
+	}
+	// Foreign user rejected.
+	if _, err := db.ValidateHostSession("mcpsess-1", "usr-b"); err != ErrSessionInvalid {
+		t.Fatalf("foreign user must be invalid: %v", err)
+	}
+	// Close by owner, then invalid.
+	if ok, _ := db.CloseHostSession("mcpsess-1", "usr-a"); !ok {
+		t.Fatal("close must succeed")
+	}
+	if _, err := db.ValidateHostSession("mcpsess-1", "usr-a"); err != ErrSessionInvalid {
+		t.Fatalf("closed session must be invalid: %v", err)
+	}
+	// Expired session invalid.
+	if _, err := db.CreateHostSession("mcpsess-2", "usr-a", "srv-1", "", -time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ValidateHostSession("mcpsess-2", "usr-a"); err != ErrSessionInvalid {
+		t.Fatalf("expired session must be invalid: %v", err)
+	}
+}

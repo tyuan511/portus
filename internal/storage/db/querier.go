@@ -19,6 +19,7 @@ type Querier interface {
 	BumpFailedAttempts(ctx context.Context, arg BumpFailedAttemptsParams) (int64, error)
 	CleanupExpiredSessions(ctx context.Context, expiresAt string) (int64, error)
 	CleanupStaleAuthAttempts(ctx context.Context, createdAt string) (int64, error)
+	CloseMCPSession(ctx context.Context, arg CloseMCPSessionParams) (int64, error)
 	ConsumeRecoveryCode(ctx context.Context, arg ConsumeRecoveryCodeParams) error
 	CountCredentials(ctx context.Context) (int64, error)
 	CountFailedAttemptsByIP(ctx context.Context, arg CountFailedAttemptsByIPParams) (int64, error)
@@ -28,6 +29,7 @@ type Querier interface {
 	CreateApiToken(ctx context.Context, arg CreateApiTokenParams) error
 	CreateCredential(ctx context.Context, arg CreateCredentialParams) error
 	CreateHostGrant(ctx context.Context, arg CreateHostGrantParams) error
+	CreateMCPSession(ctx context.Context, arg CreateMCPSessionParams) error
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
 	CreateUserGroup(ctx context.Context, arg CreateUserGroupParams) error
@@ -45,6 +47,7 @@ type Querier interface {
 	GetAuditTailHash(ctx context.Context) (string, error)
 	GetCredential(ctx context.Context, id string) (Credential, error)
 	GetL2Config(ctx context.Context) (L2Config, error)
+	GetMCPSession(ctx context.Context, id string) (McpSession, error)
 	GetServer(ctx context.Context, id string) (Server, error)
 	GetSessionByHash(ctx context.Context, tokenHash string) (Session, error)
 	GetSetting(ctx context.Context, key string) (string, error)
@@ -62,6 +65,9 @@ type Querier interface {
 	ListGroupMembers(ctx context.Context, groupID string) ([]ListGroupMembersRow, error)
 	ListGroupsForUser(ctx context.Context, userID string) ([]UserGroup, error)
 	ListHostGrants(ctx context.Context) ([]ListHostGrantsRow, error)
+	// Sessions are views over the audit trail: every event carrying the same
+	// agent-supplied session_id. NULL user_id = all users (admin scope).
+	ListMCPSessions(ctx context.Context, arg ListMCPSessionsParams) ([]ListMCPSessionsRow, error)
 	ListRules(ctx context.Context) ([]SecurityRule, error)
 	ListServers(ctx context.Context) ([]Server, error)
 	ListServersForUser(ctx context.Context, userID string) ([]Server, error)
@@ -75,6 +81,8 @@ type Querier interface {
 	RecordLoginSuccess(ctx context.Context, arg RecordLoginSuccessParams) error
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) (int64, error)
 	RevokeApiToken(ctx context.Context, arg RevokeApiTokenParams) (int64, error)
+	// Ordered replay stream for one session; NULL user_id = admin scope.
+	SelectAuditBySession(ctx context.Context, arg SelectAuditBySessionParams) ([]AuditLog, error)
 	SelectAuditChain(ctx context.Context) ([]AuditLog, error)
 	// All filters are optional: pass NULL to disable a dimension.
 	// actor semantics: NULL = all; 'mcp' = every mcp-* channel;

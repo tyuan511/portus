@@ -40,4 +40,5 @@ security:
   ip_window_minutes: 60
   enforce_totp: false         # require 2FA enrollment at login
   mcp_rate_per_min: 60        # requests per token per minute on /mcp
+  mcp_session_ttl_minutes: 30 # lifetime of each server-issued MCP host session
   token_ttl_hours: 0          # default API token lifetime (0 = no expiry)

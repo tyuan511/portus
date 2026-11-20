@@ -6,6 +6,7 @@ import { LanguageProvider } from "@/lib/i18n";
 import App from "./App";
 import "./index.css";
 import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

@@ -1,9 +1,32 @@
 -- name: InsertAudit :exec
 INSERT INTO audit_logs (id, trace_id, actor, timestamp, server_id, server_name, ssh_user,
-    server_host, operator, user_id, username, command, intent, dry_run, decision,
+    server_host, operator, user_id, username, session_id, command, intent, dry_run, decision,
     l1_verdict_json, l2_verdict_json, approval_id, approval_status, exit_code, duration_ms,
     stdout_preview, stderr_preview, error, prev_hash, event_hash)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27);
+
+-- name: ListMCPSessions :many
+-- Sessions are views over the audit trail: every event carrying the same
+-- agent-supplied session_id. NULL user_id = all users (admin scope).
+SELECT session_id,
+    MAX(username)::text AS username,
+    MIN(timestamp)::text AS first_at,
+    MAX(timestamp)::text AS last_at,
+    COUNT(*)::bigint AS event_count,
+    COALESCE(STRING_AGG(DISTINCT NULLIF(server_name, ''), ', '), '')::text AS servers
+FROM audit_logs
+WHERE session_id <> ''
+  AND (sqlc.narg('user_id')::text IS NULL OR user_id = sqlc.narg('user_id')::text)
+GROUP BY session_id
+ORDER BY MAX(seq) DESC
+LIMIT sqlc.narg('lim')::bigint;
+
+-- name: SelectAuditBySession :many
+-- Ordered replay stream for one session; NULL user_id = admin scope.
+SELECT * FROM audit_logs
+WHERE session_id = sqlc.arg('session_id')::text
+  AND (sqlc.narg('user_id')::text IS NULL OR user_id = sqlc.narg('user_id')::text)
+ORDER BY seq ASC;
 
 -- name: GetAuditTailHash :one
 SELECT event_hash FROM audit_logs ORDER BY seq DESC LIMIT 1;

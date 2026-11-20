@@ -69,6 +69,8 @@ type SecurityConfig struct {
 	IPWindowMinutes    int   `mapstructure:"ip_window_minutes"`
 	EnforceTOTP        bool  `mapstructure:"enforce_totp"`
 	MCPRatePerMin      int   `mapstructure:"mcp_rate_per_min"`
+	// MCPSessionTTLMinutes bounds each server-issued host session.
+	MCPSessionTTLMinutes int `mapstructure:"mcp_session_ttl_minutes"`
 	// TokenTTLHours for new API tokens; 0 = no expiry by default.
 	TokenTTLHours int `mapstructure:"token_ttl_hours"`
 }
@@ -97,6 +99,7 @@ func Defaults(v *viper.Viper) {
 	v.SetDefault("security.ip_window_minutes", 60)
 	v.SetDefault("security.enforce_totp", false)
 	v.SetDefault("security.mcp_rate_per_min", 60)
+	v.SetDefault("security.mcp_session_ttl_minutes", 30)
 	v.SetDefault("security.token_ttl_hours", 0)
 }
 
@@ -228,6 +231,14 @@ func (c *Config) AuditJSONLPath() string { return c.Storage.AuditJSONL }
 // ServerKeyPath returns the path of the server-side AEAD key file.
 func (c *Config) ServerKeyPath() string {
 	return filepath.Join(c.Storage.DataDir, "server.key")
+}
+
+// MCPSessionTTL returns the host-session lifetime for MCP agents.
+func (c *Config) MCPSessionTTL() time.Duration {
+	if c.Security.MCPSessionTTLMinutes <= 0 {
+		return 30 * time.Minute
+	}
+	return time.Duration(c.Security.MCPSessionTTLMinutes) * time.Minute
 }
 
 // SessionIdle returns the idle timeout duration.

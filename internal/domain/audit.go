@@ -21,6 +21,8 @@ type AuditEvent struct {
 	// non-empty, so pre-existing chain records remain verifiable.
 	UserID   string `json:"user_id,omitempty"`
 	Username string `json:"username,omitempty"`
+	// SessionID groups MCP operations of one agent task for replay.
+	SessionID string `json:"session_id,omitempty"`
 
 	Command        string                 `json:"command"`
 	Intent         string                 `json:"intent"`
