@@ -1,20 +1,10 @@
-# Rust
 target/
-Cargo.lock
-
-# Node / Frontend / Tauri
 node_modules/
-dist/
-apps/web/dist/
-apps/desktop/src-tauri/target/
-
-# Environment & Local Data
-.env
-.env.*
+web/dist/
 *.db
-*.sqlite
-*.sqlite3
-
-# OS
-.DS_Store
-Thumbs.db
+*.db-wal
+*.db-shm
+vault.enc
+server.key
+bootstrap-admin-password.txt
+web/src-tauri
