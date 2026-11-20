@@ -114,6 +114,9 @@ func Internal(msg string, cause error) *E {
 func StorageErr(cause error) *E {
 	return Wrap(CodeStorage, http.StatusInternalServerError, "storage error", cause)
 }
+func VaultError(msg string) *E {
+	return New(CodeVaultError, http.StatusInternalServerError, msg)
+}
 
 func or(msg, fallback string) string {
 	if msg == "" {
