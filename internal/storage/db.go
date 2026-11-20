@@ -20,7 +20,6 @@ import (
 
 	"github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/yuantang/sshield/internal/domain"
 	"github.com/yuantang/sshield/internal/storage/db"
 )
 
@@ -183,27 +182,6 @@ func text(ns sql.NullString) string {
 		return ns.String
 	}
 	return ""
-}
-
-// userRowToDomain maps the joined users+roles row (flat sqlc projection).
-func userRowToDomain(r db.ListUsersWithRolesRow) *domain.User {
-	usr := &domain.User{
-		ID:                 r.ID,
-		Username:           r.Username,
-		DisplayName:        r.DisplayName,
-		RoleID:             r.RoleID,
-		IsActive:           r.IsActive == 1,
-		MustChangePassword: r.MustChangePassword == 1,
-		TOTPEnabled:        r.TotpEnabled == 1,
-	}
-	usr.CreatedAt, _ = parseRFC3339(r.CreatedAt)
-	usr.UpdatedAt, _ = parseRFC3339(r.UpdatedAt)
-	if r.LastLoginAt.Valid {
-		if t, ok := parseRFC3339(r.LastLoginAt.String); ok {
-			usr.LastLoginAt = &t
-		}
-	}
-	return usr
 }
 
 func tagsJSON(tags []string) string {

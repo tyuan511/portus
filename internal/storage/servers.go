@@ -136,11 +136,11 @@ func (h *DB) ListServersForUserFiltered(userID string, needExecute bool) ([]*dom
 	return out, nil
 }
 
-// ServerGrantDecision evaluates a user's effective access on one server.
+// ServerGrantDecision evaluates a user's effective access on one server
+// (resolved through its machine group).
 func (h *DB) ServerGrantDecision(userID string, asset *domain.ServerAsset) (domain.GrantDecision, error) {
 	row, err := h.q.ServerGrantDecision(context.Background(), db.ServerGrantDecisionParams{
 		UserID:    userID,
-		ServerID:  asset.ID,
 		GroupName: asset.GroupName,
 	})
 	if err != nil {

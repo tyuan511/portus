@@ -23,24 +23,22 @@ docker run -d --name sshield-pg -e POSTGRES_PASSWORD=secret -e POSTGRES_USER=ssh
 
 First boot bootstraps (idempotent):
 
-- built-in roles `admin` (immutable, all permissions) and `member`
-  (connect/execute on granted hosts + MCP by default, editable)
 - the initial admin account — password comes from `bootstrap.admin_password`,
   `bootstrap.admin_password_file`, or is **generated** and printed to stderr plus
   `~/.local/share/sshield/bootstrap-admin-password.txt` (0600, delete after first login)
 - the default L1 command rule set
 
 Open http://127.0.0.1:8787, sign in as the bootstrap admin, change the password, then:
-create **user groups**, grant **hosts / host groups** to them in *Access*, and invite
-**users**. Members see exactly what is granted to them — nothing else.
+create **user groups**, grant **machine groups** to them in *Access*, and invite
+**users** (role: admin or member). Members see exactly what is granted to them — nothing else.
 
 ## What's inside
 
 | Area | Details |
 |---|---|
 | Auth | Argon2id passwords, DB-backed sessions (HttpOnly cookie, idle+absolute expiry, revocation on password change/disable), TOTP 2FA with hashed recovery codes, brute-force guard (per-user lockout + per-IP sliding window, persisted) |
-| RBAC | 18 fine-grained permission keys, editable `member` role, custom roles, user groups, host/host-group grants with connect/execute levels; enforced on REST, websockets, and every MCP tool call |
-| Audit | Full hash chain (SHA-256 `prev_hash`), per-user attribution, members see only their own trail (incl. their MCP activity), admins see everything, chain verification endpoint |
+| RBAC | Built-in `admin` / `member` roles (permission sets fixed in code, not editable), user groups granted machine groups with connect/execute levels; enforced on REST, websockets, and every MCP tool call |
+| Audit | Full hash chain (SHA-256 `prev_hash`), per-user attribution, admins see everything (members have no audit surface), chain verification endpoint |
 | MCP | Official Go SDK, streamable HTTP at `/mcp`, bearer PAT only (never cookies), stateless JSON mode, per-token rate limit, 12 tools RBAC-scoped |
 | SSH | ProxyJump chains with cycle detection, credential fallback vault→identity-file→agent→default keys, PTY terminals over websocket, exec with timeout + output masking |
 | Credentials | Per-host passwords/keys sealed with AES-256-GCM under the server key and stored in PostgreSQL — a stolen database dump alone is undecryptable |

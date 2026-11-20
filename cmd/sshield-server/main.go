@@ -14,7 +14,6 @@ import (
 	"github.com/yuantang/sshield/internal/approvals"
 	"github.com/yuantang/sshield/internal/auth"
 	"github.com/yuantang/sshield/internal/config"
-	"github.com/yuantang/sshield/internal/domain"
 	"github.com/yuantang/sshield/internal/httpserver"
 	"github.com/yuantang/sshield/internal/logging"
 	"github.com/yuantang/sshield/internal/mcpserver"
@@ -81,8 +80,7 @@ func run() error {
 		IPWindowMinutes:  cfg.Security.IPWindowMinutes,
 	})
 	authSvc := auth.NewService(db, totpMgr, guard,
-		cfg.SessionIdle(), cfg.SessionAbsolute(), cfg.Security.EnforceTOTP,
-		func(roleID string) (*domain.Role, error) { return db.GetRole(roleID) })
+		cfg.SessionIdle(), cfg.SessionAbsolute(), cfg.Security.EnforceTOTP)
 
 	// Credential secrets at rest are sealed with the server key.
 	if err := db.SetEncryptionKey(serverKey); err != nil {

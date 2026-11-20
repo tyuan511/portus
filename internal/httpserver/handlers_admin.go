@@ -21,20 +21,11 @@ func (s *Server) registerAdminRoutes(g fiber.Router) {
 	g.Post("/admin/users/:id/reset-password", requirePerm(domain.PermUsersManage), s.handleResetPassword)
 	g.Post("/admin/users/:id/reset-totp", requirePerm(domain.PermUsersManage), s.handleResetTOTP)
 
-	// Roles.
-	g.Get("/admin/roles", requirePerm(domain.PermRolesManage), s.handleListRoles)
-	g.Post("/admin/roles", requirePerm(domain.PermRolesManage), s.handleCreateRole)
-	g.Patch("/admin/roles/:id", requirePerm(domain.PermRolesManage), s.handlePatchRole)
-	g.Delete("/admin/roles/:id", requirePerm(domain.PermRolesManage), s.handleDeleteRole)
-
-	// User groups.
-	g.Get("/admin/groups", requirePerm(domain.PermGroupsManage), s.handleListGroups)
-	g.Post("/admin/groups", requirePerm(domain.PermGroupsManage), s.handleCreateGroup)
-	g.Patch("/admin/groups/:id", requirePerm(domain.PermGroupsManage), s.handlePatchGroup)
-	g.Delete("/admin/groups/:id", requirePerm(domain.PermGroupsManage), s.handleDeleteGroup)
-	g.Get("/admin/groups/:id/members", requirePerm(domain.PermGroupsManage), s.handleListGroupMembers)
-	g.Post("/admin/groups/:id/members", requirePerm(domain.PermGroupsManage), s.handleAddGroupMember)
-	g.Delete("/admin/groups/:id/members/:userID", requirePerm(domain.PermGroupsManage), s.handleRemoveGroupMember)
+	// User groups (managed alongside grants on the access surface).
+	g.Get("/admin/groups", requirePerm(domain.PermAccessManage), s.handleListGroups)
+	g.Post("/admin/groups", requirePerm(domain.PermAccessManage), s.handleCreateGroup)
+	g.Patch("/admin/groups/:id", requirePerm(domain.PermAccessManage), s.handlePatchGroup)
+	g.Delete("/admin/groups/:id", requirePerm(domain.PermAccessManage), s.handleDeleteGroup)
 
 	// Host access grants.
 	g.Get("/admin/access-grants", requirePerm(domain.PermAccessManage), s.handleListGrants)
@@ -65,7 +56,7 @@ type createUserRequest struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
 	Password    string `json:"password"`
-	RoleID      string `json:"role_id"`
+	Role        string `json:"role"`
 }
 
 func (s *Server) handleCreateUser(c *fiber.Ctx) error {
@@ -73,20 +64,20 @@ func (s *Server) handleCreateUser(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apierr.BadRequest("invalid JSON body")
 	}
-	if req.Username == "" || req.RoleID == "" {
-		return apierr.Unprocessable("username and role_id are required")
+	if req.Username == "" || req.Role == "" {
+		return apierr.Unprocessable("username and role are required")
+	}
+	if !domain.IsValidRole(req.Role) {
+		return apierr.Unprocessable("role must be one of: admin, member")
 	}
 	if err := auth.CheckPasswordPolicy(req.Password, req.Username); err != nil {
 		return err
-	}
-	if _, err := s.db.GetRole(req.RoleID); err != nil {
-		return apierr.NotFoundf("role %s not found", req.RoleID)
 	}
 	u := &domain.User{
 		ID:          storage.GenerateID("usr"),
 		Username:    req.Username,
 		DisplayName: req.DisplayName,
-		RoleID:      req.RoleID,
+		Role:        req.Role,
 		IsActive:    true,
 	}
 	if err := s.db.CreateUser(u, auth.HashPassword(req.Password), "", nil); err != nil {
@@ -102,7 +93,7 @@ func (s *Server) handleCreateUser(c *fiber.Ctx) error {
 
 type patchUserRequest struct {
 	DisplayName        *string `json:"display_name"`
-	RoleID             *string `json:"role_id"`
+	Role               *string `json:"role"`
 	IsActive           *bool   `json:"is_active"`
 	MustChangePassword *bool   `json:"must_change_password"`
 }
@@ -117,22 +108,17 @@ func (s *Server) handlePatchUser(c *fiber.Ctx) error {
 	if id == actor.UserID && req.IsActive != nil && !*req.IsActive {
 		return apierr.Unprocessable("you cannot deactivate your own account")
 	}
-	if req.RoleID != nil {
-		if _, err := s.db.GetRole(*req.RoleID); err != nil {
-			return apierr.NotFoundf("role %s not found", *req.RoleID)
-		}
+	if req.Role != nil && !domain.IsValidRole(*req.Role) {
+		return apierr.Unprocessable("role must be one of: admin, member")
 	}
-	if err := s.db.UpdateUserProfile(id, req.DisplayName, req.RoleID, req.IsActive, req.MustChangePassword); err != nil {
+	if err := s.db.UpdateUserProfile(id, req.DisplayName, req.Role, req.IsActive, req.MustChangePassword); err != nil {
 		if err == storage.ErrNotFound {
 			return apierr.NotFoundf("user not found")
 		}
 		return apierr.StorageErr(err)
 	}
 	// Deactivation and role changes revoke live sessions immediately.
-	if req.IsActive != nil && !*req.IsActive {
-		_, _ = s.db.DeleteSessionsForUser(id)
-	}
-	if req.RoleID != nil {
+	if (req.IsActive != nil && !*req.IsActive) || req.Role != nil {
 		_, _ = s.db.DeleteSessionsForUser(id)
 	}
 	updated, err := s.db.GetUser(id)
@@ -191,100 +177,6 @@ func (s *Server) handleResetTOTP(c *fiber.Ctx) error {
 	}
 	s.auditAction(c, "user.reset_totp", "reset TOTP for "+user.Username, domain.DecisionAllow, "")
 	return resp.OK(c, fiber.Map{"reset": true})
-}
-
-// --- roles ---
-
-func (s *Server) handleListRoles(c *fiber.Ctx) error {
-	roles, err := s.db.ListRoles()
-	if err != nil {
-		return apierr.StorageErr(err)
-	}
-	return resp.OK(c, roles)
-}
-
-type roleRequest struct {
-	Name        string              `json:"name"`
-	Permissions []domain.Permission `json:"permissions"`
-	Description string              `json:"description"`
-}
-
-func (s *Server) handleCreateRole(c *fiber.Ctx) error {
-	var req roleRequest
-	if err := c.BodyParser(&req); err != nil {
-		return apierr.BadRequest("invalid JSON body")
-	}
-	if req.Name == "" {
-		return apierr.Unprocessable("name is required")
-	}
-	if err := validatePermissions(req.Permissions); err != nil {
-		return err
-	}
-	role := &domain.Role{
-		ID:          storage.GenerateID("role"),
-		Name:        req.Name,
-		Permissions: req.Permissions,
-		Description: req.Description,
-		CreatedAt:   time.Now().UTC(),
-	}
-	if err := s.db.UpsertRole(role); err != nil {
-		return apierr.StorageErr(err)
-	}
-	return resp.Created(c, role)
-}
-
-func (s *Server) handlePatchRole(c *fiber.Ctx) error {
-	var req roleRequest
-	if err := c.BodyParser(&req); err != nil {
-		return apierr.BadRequest("invalid JSON body")
-	}
-	id := c.Params("id")
-	existing, err := s.db.GetRole(id)
-	if err != nil {
-		return apierr.NotFoundf("role not found")
-	}
-	if existing.IsBuiltin && existing.Name == domain.BuiltinRoleAdmin {
-		return apierr.Forbidden("the admin role is immutable")
-	}
-	if req.Permissions != nil {
-		if err := validatePermissions(req.Permissions); err != nil {
-			return err
-		}
-		existing.Permissions = req.Permissions
-	}
-	if req.Name != "" {
-		existing.Name = req.Name
-	}
-	existing.Description = req.Description
-	if err := s.db.UpsertRole(existing); err != nil {
-		return apierr.StorageErr(err)
-	}
-	s.auditAction(c, "role.update", "update role "+existing.Name, domain.DecisionAllow, "")
-	return resp.OK(c, existing)
-}
-
-func (s *Server) handleDeleteRole(c *fiber.Ctx) error {
-	ok, err := s.db.DeleteRole(c.Params("id"))
-	if err != nil {
-		if err == storage.ErrNotFound {
-			return apierr.NotFoundf("role not found")
-		}
-		return apierr.Conflict(err.Error())
-	}
-	return resp.OK(c, fiber.Map{"deleted": ok})
-}
-
-func validatePermissions(perms []domain.Permission) error {
-	valid := map[domain.Permission]bool{}
-	for _, p := range domain.AllPermissions() {
-		valid[p] = true
-	}
-	for _, p := range perms {
-		if !valid[p] {
-			return apierr.Unprocessable("unknown permission: " + string(p))
-		}
-	}
-	return nil
 }
 
 // --- user groups ---
@@ -383,7 +275,6 @@ func (s *Server) handleListGrants(c *fiber.Ctx) error {
 
 type grantRequest struct {
 	UserGroupID string `json:"user_group_id"`
-	ServerID    string `json:"server_id"`
 	GroupName   string `json:"group_name"`
 	CanConnect  bool   `json:"can_connect"`
 	CanExecute  bool   `json:"can_execute"`
@@ -394,24 +285,15 @@ func (s *Server) handleCreateGrant(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apierr.BadRequest("invalid JSON body")
 	}
-	if req.UserGroupID == "" {
-		return apierr.Unprocessable("user_group_id is required")
-	}
-	if (req.ServerID == "") == (req.GroupName == "") {
-		return apierr.Unprocessable("exactly one of server_id or group_name is required")
+	if req.UserGroupID == "" || req.GroupName == "" {
+		return apierr.Unprocessable("user_group_id and group_name are required")
 	}
 	if _, err := s.db.GetUserGroup(req.UserGroupID); err != nil {
 		return apierr.NotFoundf("user group not found")
 	}
-	if req.ServerID != "" {
-		if _, err := s.db.GetServer(req.ServerID); err != nil {
-			return apierr.NotFoundf("server not found")
-		}
-	}
 	grant := &domain.HostGrant{
 		ID:          storage.GenerateID("grant"),
 		UserGroupID: req.UserGroupID,
-		ServerID:    req.ServerID,
 		GroupName:   req.GroupName,
 		CanConnect:  req.CanConnect,
 		CanExecute:  req.CanExecute,

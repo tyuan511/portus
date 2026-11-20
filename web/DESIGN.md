@@ -12,7 +12,7 @@ colors:
   ink-mute: "#707070"
   ink-mute-2: "#9a9a9a"
   ink-faint: "#b2b2b2"
-  on-primary: "#171717"
+  on-primary: "#ffffff"
   on-dark: "#ffffff"
   canvas: "#ffffff"
   canvas-soft: "#fafafa"
@@ -268,7 +268,7 @@ The product itself appears as composited UI screenshots on every page: dashboard
 - **Ink Mute** (`{colors.ink-mute}` — `#707070`): Secondary text and helper copy.
 - **Ink Mute 2** (`{colors.ink-mute-2}` — `#9a9a9a`): Tertiary text.
 - **Ink Faint** (`{colors.ink-faint}` — `#b2b2b2`): Disabled / placeholder text.
-- **On Primary** (`{colors.on-primary}` — `#171717`): Text on the emerald primary fill — near-black, not white. The button reads as a "lit" surface with dark type, not a colored chip.
+- **On Primary** (`{colors.on-primary}` — `#ffffff`): Text on the emerald primary fill — white. The filled CTA reads as a solid colored action, with white type for maximum legibility.
 - **On Dark** (`{colors.on-dark}` — `#ffffff`): Text on canvas-night surfaces.
 
 ## Typography
@@ -355,7 +355,7 @@ The brand uses minimal photography. Customer logo strips display wordmarks at un
 ### Buttons
 
 **`button-primary-green`** — the signature CTA.
-- Background `{colors.primary}`, text `{colors.on-primary}` (near-black, NOT white), type `{typography.button-md}`, padding `{spacing.sm} {spacing.lg}` (8px 16px), rounded `{rounded.sm}` 6px.
+- Background `{colors.primary}`, text `{colors.on-primary}` (white), type `{typography.button-md}`, padding `{spacing.sm} {spacing.lg}` (8px 16px), rounded `{rounded.sm}` 6px.
 - Pressed state `button-primary-green-pressed` shifts to `{colors.primary-deep}`.
 
 **`button-secondary-outline`** — outline alternative on white.
@@ -426,7 +426,7 @@ The brand uses minimal photography. Customer logo strips display wordmarks at un
 - Don't introduce additional accent colors as system colors — purples, yellows, and pinks belong inside chart points and integration logos only.
 - Don't bump display weight above 500 — the brand's calibrated mid-weight breaks at 600+.
 - Don't use pill-shaped buttons; the brand's button radius is square-ish 6px.
-- Don't use white text on the emerald button — the brand specifically uses near-black on green.
+- Use white text on the emerald fill — the brand's CTA carries white type on green.
 - Don't add atmospheric gradients to hero bands — the white canvas is the design.
 
 ## Responsive Behavior

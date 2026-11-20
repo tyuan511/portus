@@ -6,11 +6,13 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useI18n } from "@/lib/i18n";
 import { ErrorText } from "@/components/ui/shared";
 import type { CommandSnippet } from "@/types";
 
 export default function Snippets() {
   const auth = useAuth();
+  const { t } = useI18n();
   const canManage = auth.hasPermission("snippets.manage");
   const [snippets, setSnippets] = useState<CommandSnippet[]>([]);
   const [error, setError] = useState<string>();
@@ -38,7 +40,7 @@ export default function Snippets() {
   };
 
   const remove = async (id: string) => {
-    if (!confirm("Delete snippet?")) return;
+    if (!confirm(t("snippets.deleteConfirm"))) return;
     try {
       await api.del(`/api/snippets/${id}`);
       await load();
@@ -51,7 +53,7 @@ export default function Snippets() {
     <div className="space-y-3">
       {canManage && (
         <Button size="sm" onClick={() => setForm({ name: "", command: "", description: "" })}>
-          <Plus className="size-3.5" /> New snippet
+          <Plus className="size-3.5" /> {t("snippets.new")}
         </Button>
       )}
       <ErrorText>{error}</ErrorText>
@@ -63,25 +65,25 @@ export default function Snippets() {
               <code className="block truncate text-xs text-muted-foreground" title={s.command}>{s.command}</code>
             </div>
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="xs" onClick={() => void navigator.clipboard.writeText(s.command)}>Copy</Button>
+              <Button variant="outline" size="xs" onClick={() => void navigator.clipboard.writeText(s.command)}>{t("common.copy")}</Button>
               {canManage && <Button variant="destructive" size="icon-xs" onClick={() => void remove(s.id)}><Trash2 className="size-3" /></Button>}
             </div>
           </div>
         ))}
-        {snippets.length === 0 && <p className="mt-8 text-center text-sm text-muted-foreground">No snippets.</p>}
+        {snippets.length === 0 && <p className="mt-8 text-center text-sm text-muted-foreground">{t("snippets.empty")}</p>}
       </div>
 
       <Dialog open={form !== null} onOpenChange={(o) => !o && setForm(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>New snippet</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{t("snippets.new")}</DialogTitle></DialogHeader>
           <div className="space-y-3">
-            <div className="space-y-1"><Label>Name</Label><Input value={form?.name ?? ""} onChange={(e) => setForm({ ...form!, name: e.target.value })} /></div>
-            <div className="space-y-1"><Label>Command</Label><Input value={form?.command ?? ""} onChange={(e) => setForm({ ...form!, command: e.target.value })} /></div>
+            <div className="space-y-1"><Label>{t("common.name")}</Label><Input value={form?.name ?? ""} onChange={(e) => setForm({ ...form!, name: e.target.value })} /></div>
+            <div className="space-y-1"><Label>{t("snippets.command")}</Label><Input value={form?.command ?? ""} onChange={(e) => setForm({ ...form!, command: e.target.value })} /></div>
             <ErrorText>{error}</ErrorText>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setForm(null)}>Cancel</Button>
-            <Button onClick={() => void save()}>Save</Button>
+            <Button variant="outline" onClick={() => setForm(null)}>{t("common.cancel")}</Button>
+            <Button onClick={() => void save()}>{t("common.save")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

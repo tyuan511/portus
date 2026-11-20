@@ -103,7 +103,7 @@ export default function Login() {
 
       <footer className="border-t border-border py-6">
         <div className="mx-auto max-w-6xl px-6 text-xs text-muted-foreground">
-          SSHield Enterprise · RBAC-scoped access with a tamper-evident audit trail
+          {t("login.footer")}
         </div>
       </footer>
     </div>

@@ -20,59 +20,57 @@ const (
 	PermApprovalsDecide Permission = "approvals.decide"
 	PermMCPAccess       Permission = "mcp.access"
 	PermUsersManage     Permission = "users.manage"
-	PermRolesManage     Permission = "roles.manage"
-	PermGroupsManage    Permission = "groups.manage"
 	PermAccessManage    Permission = "access.manage"
 	PermSettingsManage  Permission = "settings.manage"
 )
 
-// AllPermissions lists every permission key (stable order for the admin matrix UI).
+// AllPermissions lists every permission key. RBAC is an internal mechanism:
+// roles are built in and never shown to users as an editable matrix.
 func AllPermissions() []Permission {
 	return []Permission{
 		PermHostRead, PermHostConnect, PermHostExecute, PermHostManage,
 		PermVaultManage, PermRulesRead, PermRulesManage,
 		PermSnippetsUse, PermSnippetsManage,
 		PermAuditViewSelf, PermAuditViewAll, PermApprovalsDecide, PermMCPAccess,
-		PermUsersManage, PermRolesManage, PermGroupsManage, PermAccessManage, PermSettingsManage,
+		PermUsersManage, PermAccessManage, PermSettingsManage,
 	}
 }
 
-// Role names of the two built-in roles.
+// Names of the two built-in roles. Permission sets are fixed in code.
 const (
 	BuiltinRoleAdmin  = "admin"
 	BuiltinRoleMember = "member"
 )
 
-// Role groups a set of permissions and is assigned to users.
-type Role struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	Permissions []Permission `json:"permissions"`
-	IsBuiltin   bool         `json:"is_builtin"`
-	Description string       `json:"description,omitempty"`
-	CreatedAt   time.Time    `json:"created_at"`
+// AllRoles lists the built-in roles in UI order.
+func AllRoles() []string { return []string{BuiltinRoleAdmin, BuiltinRoleMember} }
+
+// IsValidRole reports whether name is one of the built-in roles.
+func IsValidRole(name string) bool {
+	return name == BuiltinRoleAdmin || name == BuiltinRoleMember
 }
 
-// BuiltinAdminPermissions returns the full permission set for the admin role.
-func BuiltinAdminPermissions() []Permission { return AllPermissions() }
-
-// BuiltinMemberPermissions returns the default member permission set:
-// connect to granted hosts, execute commands, and use MCP — per product spec.
-func BuiltinMemberPermissions() []Permission {
-	return []Permission{
-		PermHostRead, PermHostConnect, PermHostExecute,
-		PermRulesRead, PermSnippetsUse,
-		PermAuditViewSelf, PermMCPAccess,
+// RolePermissions returns the fixed permission set of a built-in role
+// (nil for unknown names).
+func RolePermissions(name string) []Permission {
+	switch name {
+	case BuiltinRoleAdmin:
+		return AllPermissions()
+	case BuiltinRoleMember:
+		// Members only consume the platform: connect to hosts granted via
+		// user groups, execute commands, and use MCP.
+		return []Permission{PermHostRead, PermHostConnect, PermHostExecute, PermMCPAccess}
+	default:
+		return nil
 	}
 }
 
-// User is a platform account.
+// User is a platform account. Role is one of the built-in role names.
 type User struct {
 	ID          string `json:"id"`
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
-	RoleID      string `json:"role_id"`
-	Role        *Role  `json:"role,omitempty"` // hydrated for API responses
+	Role        string `json:"role"`
 	IsActive    bool   `json:"is_active"`
 	// MustChangePassword forces a password change at next login.
 	MustChangePassword bool       `json:"must_change_password"`
@@ -104,14 +102,13 @@ type UserGroupMember struct {
 	User    *User  `json:"user,omitempty"`
 }
 
-// HostGrant authorizes a user group against one host or one host group.
-// Exactly one of ServerID / GroupName must be set.
+// HostGrant authorizes a user group against a machine group (the group_name
+// of servers). Access is provisioned at machine-group granularity only.
 type HostGrant struct {
 	ID          string     `json:"id"`
 	UserGroupID string     `json:"user_group_id"`
 	UserGroup   *UserGroup `json:"user_group,omitempty"`
-	ServerID    string     `json:"server_id,omitempty"`
-	GroupName   string     `json:"group_name,omitempty"`
+	GroupName   string     `json:"group_name"`
 	CanConnect  bool       `json:"can_connect"`
 	CanExecute  bool       `json:"can_execute"`
 	CreatedBy   string     `json:"created_by,omitempty"`
@@ -154,8 +151,7 @@ type Identity struct {
 	UserID      string       `json:"user_id"`
 	Username    string       `json:"username"`
 	DisplayName string       `json:"display_name"`
-	RoleID      string       `json:"role_id"`
-	RoleName    string       `json:"role_name"`
+	Role        string       `json:"role"`
 	Permissions []Permission `json:"permissions"`
 	// IsAdmin is true only for the built-in admin role (bypasses grants).
 	IsAdmin bool `json:"is_admin"`

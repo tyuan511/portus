@@ -11,28 +11,10 @@ import (
 	"github.com/yuantang/sshield/internal/storage"
 )
 
-// Bootstrap seeds built-in roles, the initial admin account (from config or
-// a generated password), and the default security rules. It is idempotent:
-// existing databases are upgraded in place without touching users.
+// Bootstrap seeds the initial admin account (from config or a generated
+// password) and the default security rules. It is idempotent: existing
+// databases are upgraded in place without touching users.
 func Bootstrap(db *storage.DB, cfg *config.Config) (generatedPassword string, err error) {
-	// Built-in roles.
-	if err := db.UpsertRole(&domain.Role{
-		ID: "role-admin", Name: domain.BuiltinRoleAdmin, IsBuiltin: true,
-		Permissions: domain.BuiltinAdminPermissions(),
-		Description: "Full platform administration (immutable)",
-		CreatedAt:   timeNowUTC(),
-	}); err != nil {
-		return "", fmt.Errorf("seed admin role: %w", err)
-	}
-	if err := db.UpsertRole(&domain.Role{
-		ID: "role-member", Name: domain.BuiltinRoleMember, IsBuiltin: true,
-		Permissions: domain.BuiltinMemberPermissions(),
-		Description: "Connect to granted hosts, execute commands, and use MCP (editable)",
-		CreatedAt:   timeNowUTC(),
-	}); err != nil {
-		return "", fmt.Errorf("seed member role: %w", err)
-	}
-
 	// Default L1 rules.
 	if n, err := db.CountRules(); err == nil && n == 0 {
 		for _, rule := range security.DefaultRules() {
@@ -78,7 +60,7 @@ func Bootstrap(db *storage.DB, cfg *config.Config) (generatedPassword string, er
 		ID:                 storage.GenerateID("usr"),
 		Username:           username,
 		DisplayName:        "Administrator",
-		RoleID:             "role-admin",
+		Role:               domain.BuiltinRoleAdmin,
 		IsActive:           true,
 		MustChangePassword: password == generatedPassword, // forced reset for generated secrets
 	}

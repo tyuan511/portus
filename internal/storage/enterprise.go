@@ -12,97 +12,6 @@ import (
 	"github.com/yuantang/sshield/internal/storage/db"
 )
 
-// --- roles ---
-
-func roleToDomain(r db.Role) *domain.Role {
-	role := &domain.Role{
-		ID:          r.ID,
-		Name:        r.Name,
-		IsBuiltin:   r.IsBuiltin == 1,
-		Description: r.Description,
-	}
-	_ = json.Unmarshal([]byte(r.PermissionsJson), &role.Permissions)
-	if role.Permissions == nil {
-		role.Permissions = []domain.Permission{}
-	}
-	role.CreatedAt, _ = parseRFC3339(r.CreatedAt)
-	return role
-}
-
-// UpsertRole inserts or updates a role.
-func (h *DB) UpsertRole(r *domain.Role) error {
-	if r.Permissions == nil {
-		r.Permissions = []domain.Permission{}
-	}
-	if r.CreatedAt.IsZero() {
-		r.CreatedAt = nowUTC()
-	}
-	perms, _ := json.Marshal(r.Permissions)
-	err := h.q.UpsertRole(context.Background(), db.UpsertRoleParams{
-		ID:              r.ID,
-		Name:            r.Name,
-		PermissionsJson: string(perms),
-		IsBuiltin:       int32(boolToInt(r.IsBuiltin)),
-		Description:     r.Description,
-		CreatedAt:       formatRFC3339(r.CreatedAt),
-	})
-	if err != nil {
-		return fmt.Errorf("upsert role: %w", err)
-	}
-	return nil
-}
-
-// GetRole fetches a role by id.
-func (h *DB) GetRole(id string) (*domain.Role, error) {
-	r, err := h.q.GetRoleByID(context.Background(), id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get role: %w", err)
-	}
-	return roleToDomain(r), nil
-}
-
-// ListRoles returns all roles.
-func (h *DB) ListRoles() ([]*domain.Role, error) {
-	rows, err := h.q.ListRoles(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("list roles: %w", err)
-	}
-	out := make([]*domain.Role, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, roleToDomain(r))
-	}
-	return out, nil
-}
-
-// DeleteRole removes a non-builtin role; fails when users still reference it.
-func (h *DB) DeleteRole(id string) (bool, error) {
-	builtin, err := h.q.GetRoleBuiltin(context.Background(), id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, ErrNotFound
-	}
-	if err != nil {
-		return false, fmt.Errorf("get role: %w", err)
-	}
-	if builtin == 1 {
-		return false, errors.New("built-in roles cannot be deleted")
-	}
-	n, err := h.q.CountRoleUsers(context.Background(), id)
-	if err != nil {
-		return false, fmt.Errorf("count role users: %w", err)
-	}
-	if n > 0 {
-		return false, fmt.Errorf("role still assigned to %d user(s)", n)
-	}
-	deleted, err := h.q.DeleteRole(context.Background(), id)
-	if err != nil {
-		return false, fmt.Errorf("delete role: %w", err)
-	}
-	return deleted > 0, nil
-}
-
 // CountUsers returns the number of user accounts (bootstrap detection).
 func (h *DB) CountUsers() (int, error) {
 	n, err := h.q.CountUsers(context.Background())
@@ -116,7 +25,7 @@ type userCredentialsRow struct {
 	Username           string
 	DisplayName        string
 	PasswordHash       string
-	RoleID             string
+	Role               string
 	IsActive           int32
 	MustChangePassword int32
 	TotpSecret         string
@@ -132,7 +41,7 @@ type UserCredentials struct {
 	Username           string
 	DisplayName        string
 	PasswordHash       string
-	RoleID             string
+	Role               string
 	IsActive           bool
 	TOTPSecret         string
 	TOTPEnabled        bool
@@ -148,7 +57,7 @@ func credentialsFromRow(r userCredentialsRow) *UserCredentials {
 		Username:           r.Username,
 		DisplayName:        r.DisplayName,
 		PasswordHash:       r.PasswordHash,
-		RoleID:             r.RoleID,
+		Role:               r.Role,
 		IsActive:           r.IsActive == 1,
 		TOTPSecret:         r.TotpSecret,
 		TOTPEnabled:        r.TotpEnabled == 1,
@@ -169,7 +78,7 @@ func userToDomain(u db.User) *domain.User {
 		ID:                 u.ID,
 		Username:           u.Username,
 		DisplayName:        u.DisplayName,
-		RoleID:             u.RoleID,
+		Role:               u.Role,
 		IsActive:           u.IsActive == 1,
 		MustChangePassword: u.MustChangePassword == 1,
 		TOTPEnabled:        u.TotpEnabled == 1,
@@ -196,7 +105,7 @@ func (h *DB) CreateUser(u *domain.User, passwordHash, totpSecret string, recover
 		Username:           u.Username,
 		DisplayName:        u.DisplayName,
 		PasswordHash:       passwordHash,
-		RoleID:             u.RoleID,
+		Role:               u.Role,
 		IsActive:           int32(boolToInt(u.IsActive)),
 		MustChangePassword: int32(boolToInt(u.MustChangePassword)),
 		TotpSecret:         totpSecret,
@@ -250,7 +159,7 @@ func (h *DB) GetCredentialsByUsername(username string) (*UserCredentials, error)
 	}
 	return credentialsFromRow(userCredentialsRow{
 		ID: r.ID, Username: r.Username, DisplayName: r.DisplayName,
-		PasswordHash: r.PasswordHash, RoleID: r.RoleID,
+		PasswordHash: r.PasswordHash, Role: r.Role,
 		IsActive: r.IsActive, MustChangePassword: r.MustChangePassword,
 		TotpSecret: r.TotpSecret, TotpEnabled: r.TotpEnabled,
 		RecoveryCodesJson: r.RecoveryCodesJson, FailedAttempts: r.FailedAttempts,
@@ -269,7 +178,7 @@ func (h *DB) GetCredentialsByID(id string) (*UserCredentials, error) {
 	}
 	return credentialsFromRow(userCredentialsRow{
 		ID: r.ID, Username: r.Username, DisplayName: r.DisplayName,
-		PasswordHash: r.PasswordHash, RoleID: r.RoleID,
+		PasswordHash: r.PasswordHash, Role: r.Role,
 		IsActive: r.IsActive, MustChangePassword: r.MustChangePassword,
 		TotpSecret: r.TotpSecret, TotpEnabled: r.TotpEnabled,
 		RecoveryCodesJson: r.RecoveryCodesJson, FailedAttempts: r.FailedAttempts,
@@ -295,33 +204,22 @@ func (h *DB) ConsumeRecoveryCode(id string, remainingHashes []string) error {
 	return nil
 }
 
-// ListUsers returns all accounts with their roles hydrated.
+// ListUsers returns all accounts.
 func (h *DB) ListUsers() ([]*domain.User, error) {
-	rows, err := h.q.ListUsersWithRoles(context.Background())
+	rows, err := h.q.ListUsers(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
 	out := make([]*domain.User, 0, len(rows))
 	for _, row := range rows {
-		u := userRowToDomain(row)
-		perms := []domain.Permission{}
-		_ = json.Unmarshal([]byte(row.RolePermissionsJson), &perms)
-		u.Role = &domain.Role{
-			ID:          u.RoleID,
-			Name:        row.RoleName,
-			Permissions: perms,
-			IsBuiltin:   row.RoleIsBuiltin == 1,
-			Description: row.RoleDescription,
-		}
-		u.Role.CreatedAt, _ = parseRFC3339(row.RoleCreatedAt)
-		out = append(out, u)
+		out = append(out, userToDomain(row))
 	}
 	return out, nil
 }
 
 // UpdateUserProfile mutates display name / role / active / must-change flags.
 // All fields are set; callers hydrate the current values first.
-func (h *DB) UpdateUserProfile(id string, displayName *string, roleID *string, isActive *bool, mustChange *bool) error {
+func (h *DB) UpdateUserProfile(id string, displayName *string, role *string, isActive *bool, mustChange *bool) error {
 	current, err := h.GetUser(id)
 	if err != nil {
 		return err
@@ -330,9 +228,9 @@ func (h *DB) UpdateUserProfile(id string, displayName *string, roleID *string, i
 	if displayName != nil {
 		name = *displayName
 	}
-	role := current.RoleID
-	if roleID != nil {
-		role = *roleID
+	roleName := current.Role
+	if role != nil {
+		roleName = *role
 	}
 	active := current.IsActive
 	if isActive != nil {
@@ -345,7 +243,7 @@ func (h *DB) UpdateUserProfile(id string, displayName *string, roleID *string, i
 	err = h.q.UpdateUserProfile(context.Background(), db.UpdateUserProfileParams{
 		ID:                 id,
 		DisplayName:        name,
-		RoleID:             role,
+		Role:               roleName,
 		IsActive:           int32(boolToInt(active)),
 		MustChangePassword: int32(boolToInt(mustChangeFlag)),
 		UpdatedAt:          nowRFC3339(),
@@ -612,7 +510,7 @@ func (h *DB) ListGroupMembers(groupID string) ([]*domain.User, error) {
 			ID:                 u.ID,
 			Username:           u.Username,
 			DisplayName:        u.DisplayName,
-			RoleID:             u.RoleID,
+			Role:               u.Role,
 			IsActive:           u.IsActive == 1,
 			MustChangePassword: u.MustChangePassword == 1,
 			TOTPEnabled:        u.TotpEnabled == 1,
@@ -651,13 +549,12 @@ func (h *DB) CreateHostGrant(g *domain.HostGrant) error {
 	if g.CreatedAt.IsZero() {
 		g.CreatedAt = nowUTC()
 	}
-	if (g.ServerID == "") == (g.GroupName == "") {
-		return errors.New("grant must target exactly one of server_id or group_name")
+	if g.GroupName == "" {
+		return errors.New("grant must target a machine group")
 	}
 	err := h.q.CreateHostGrant(context.Background(), db.CreateHostGrantParams{
 		ID:          g.ID,
 		UserGroupID: g.UserGroupID,
-		ServerID:    g.ServerID,
 		GroupName:   g.GroupName,
 		CanConnect:  int32(boolToInt(g.CanConnect)),
 		CanExecute:  int32(boolToInt(g.CanExecute)),
@@ -681,7 +578,6 @@ func (h *DB) ListHostGrants() ([]*domain.HostGrant, error) {
 		grant := &domain.HostGrant{
 			ID:          g.ID,
 			UserGroupID: g.UserGroupID,
-			ServerID:    g.ServerID,
 			GroupName:   g.GroupName,
 			CanConnect:  g.CanConnect == 1,
 			CanExecute:  g.CanExecute == 1,
@@ -741,21 +637,6 @@ func (h *DB) DeleteHostGrant(id string) (bool, error) {
 		return false, fmt.Errorf("delete grant: %w", err)
 	}
 	return n > 0, nil
-}
-
-// GrantsForServer lists the grants targeting a specific server (admin UI).
-func (h *DB) GrantsForServer(serverID, groupName string) ([]*domain.HostGrant, error) {
-	all, err := h.ListHostGrants()
-	if err != nil {
-		return nil, err
-	}
-	var out []*domain.HostGrant
-	for _, g := range all {
-		if (g.ServerID != "" && g.ServerID == serverID) || (g.GroupName != "" && g.GroupName == groupName) {
-			out = append(out, g)
-		}
-	}
-	return out, nil
 }
 
 // --- api tokens ---

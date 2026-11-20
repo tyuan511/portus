@@ -78,7 +78,6 @@ type Credential struct {
 type HostGrant struct {
 	ID          string
 	UserGroupID string
-	ServerID    string
 	GroupName   string
 	CanConnect  int32
 	CanExecute  int32
@@ -97,15 +96,6 @@ type L2Config struct {
 	RiskThresholdAsk   int32
 	RiskThresholdDeny  int32
 	Enabled            int32
-}
-
-type Role struct {
-	ID              string
-	Name            string
-	PermissionsJson string
-	IsBuiltin       int32
-	Description     string
-	CreatedAt       string
 }
 
 type SecurityRule struct {
@@ -161,7 +151,6 @@ type User struct {
 	Username           string
 	DisplayName        string
 	PasswordHash       string
-	RoleID             string
 	IsActive           int32
 	MustChangePassword int32
 	TotpSecret         string
@@ -172,6 +161,7 @@ type User struct {
 	CreatedAt          string
 	UpdatedAt          string
 	LastLoginAt        sql.NullString
+	Role               string
 }
 
 type UserGroup struct {

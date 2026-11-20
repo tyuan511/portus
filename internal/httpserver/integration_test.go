@@ -107,7 +107,7 @@ func newFixture(t *testing.T) *fixture {
 		IPMaxAttempts: cfg.Security.IPMaxAttempts, IPWindowMinutes: cfg.Security.IPWindowMinutes,
 	})
 	authSvc := auth.NewService(db, totpMgr, guard, cfg.SessionIdle(), cfg.SessionAbsolute(),
-		cfg.Security.EnforceTOTP, func(roleID string) (*domain.Role, error) { return db.GetRole(roleID) })
+		cfg.Security.EnforceTOTP)
 	rbacSvc := rbac.NewService(db)
 	pool := sshpool.NewPool(db)
 	engine := security.NewEngine()
@@ -200,7 +200,7 @@ func TestBootstrapAdminLoginAndMe(t *testing.T) {
 		t.Fatalf("me: %d %v", status, body)
 	}
 	user := c.data(body)["user"].(map[string]any)
-	if user["role_name"] != "admin" || user["is_admin"] != true {
+	if user["role"] != "admin" || user["is_admin"] != true {
 		t.Fatalf("admin identity wrong: %v", user)
 	}
 
@@ -243,7 +243,7 @@ func TestMemberSeesOnlyGrantedServers(t *testing.T) {
 	}
 
 	// Member user + group + grants.
-	_ = f.db.CreateUser(&domain.User{ID: "usr-bob", Username: "bob", RoleID: "role-member", IsActive: true}, "not-a-real-hash", "", nil)
+	_ = f.db.CreateUser(&domain.User{ID: "usr-bob", Username: "bob", Role: domain.BuiltinRoleMember, IsActive: true}, "not-a-real-hash", "", nil)
 	if err := f.db.CreateUserGroup(&domain.UserGroup{ID: "grp-ops", Name: "ops"}); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestAdminSeesAllAndManagesUsers(t *testing.T) {
 
 	// Create a member through the API.
 	status, body := admin.do("POST", "/api/admin/users", map[string]any{
-		"username": "carol", "password": "orange-tree-99", "role_id": "role-member", "display_name": "Carol",
+		"username": "carol", "password": "orange-tree-99", "role": "member", "display_name": "Carol",
 	})
 	if status != 201 {
 		t.Fatalf("create user: %d %v", status, body)
@@ -310,7 +310,7 @@ func TestAdminSeesAllAndManagesUsers(t *testing.T) {
 
 	// Weak password rejected.
 	status, _ = admin.do("POST", "/api/admin/users", map[string]any{
-		"username": "dave", "password": "short", "role_id": "role-member",
+		"username": "dave", "password": "short", "role": "member",
 	})
 	if status != 422 {
 		t.Fatalf("weak password must 422, got %d", status)
@@ -375,31 +375,13 @@ func TestAuditScoping(t *testing.T) {
 		t.Fatalf("admin must see all audits, got %d", got)
 	}
 
-	// Member sees only own events.
-	_ = f.db.CreateUser(&domain.User{ID: "usr-b", Username: "bob", RoleID: "role-member", IsActive: true}, auth.HashPassword("bob-password-1"), "", nil)
+	// Members only consume hosts and MCP: no audit surface at all.
+	_ = f.db.CreateUser(&domain.User{ID: "usr-b", Username: "bob", Role: domain.BuiltinRoleMember, IsActive: true}, auth.HashPassword("bob-password-1"), "", nil)
 	bob := loginAs(f, "bob", "bob-password-1")
-	status, body = bob.do("GET", "/api/audit-logs", nil)
-	if status != 200 {
-		t.Fatalf("member audit: %d %v", status, body)
+	status, _ = bob.do("GET", "/api/audit-logs", nil)
+	if status != 403 {
+		t.Fatalf("member audit list must 403, got %d", status)
 	}
-	events := bob.list(body)
-	for _, item := range events {
-		cmd := item.(map[string]any)["command"].(string)
-		if strings.Contains(cmd, "alice") {
-			t.Fatalf("bob must not see alice events, got %v", item)
-		}
-	}
-	var sawOwn bool
-	for _, item := range events {
-		if item.(map[string]any)["command"] == "bob-cmd" {
-			sawOwn = true
-		}
-	}
-	if !sawOwn {
-		t.Fatalf("bob must see his own command event, got %v", events)
-	}
-
-	// Member cannot verify the chain (audit.view_all only).
 	status, _ = bob.do("GET", "/api/audit-logs/verify", nil)
 	if status != 403 {
 		t.Fatalf("member verify must 403, got %d", status)
@@ -408,7 +390,7 @@ func TestAuditScoping(t *testing.T) {
 
 func TestLoginLockoutAfterMaxAttempts(t *testing.T) {
 	f := newFixture(t)
-	_ = f.db.CreateUser(&domain.User{ID: "usr-x", Username: "mallory", RoleID: "role-member", IsActive: true},
+	_ = f.db.CreateUser(&domain.User{ID: "usr-x", Username: "mallory", Role: domain.BuiltinRoleMember, IsActive: true},
 		auth.HashPassword("mallory-pass-123"), "", nil)
 
 	c := f.client()

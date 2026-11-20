@@ -54,7 +54,7 @@
     --popover: #ffffff;
     --popover-foreground: #171717;
     --primary: #3ecf8e;
-    --primary-foreground: #171717;
+    --primary-foreground: #ffffff;
     --secondary: #fafafa;
     --secondary-foreground: #171717;
     --muted: #fafafa;
@@ -68,7 +68,7 @@
     --sidebar: #fafafa;
     --sidebar-foreground: #171717;
     --sidebar-primary: #3ecf8e;
-    --sidebar-primary-foreground: #171717;
+    --sidebar-primary-foreground: #ffffff;
     --sidebar-accent: #ededed;
     --sidebar-accent-foreground: #171717;
     --sidebar-border: #ededed;
@@ -87,7 +87,7 @@
     --popover: #202020;
     --popover-foreground: #ffffff;
     --primary: #3ecf8e;
-    --primary-foreground: #171717;
+    --primary-foreground: #ffffff;
     --secondary: #202020;
     --secondary-foreground: #ffffff;
     --muted: #262626;
@@ -101,7 +101,7 @@
     --sidebar: #1c1c1c;
     --sidebar-foreground: #ffffff;
     --sidebar-primary: #3ecf8e;
-    --sidebar-primary-foreground: #171717;
+    --sidebar-primary-foreground: #ffffff;
     --sidebar-accent: #262626;
     --sidebar-accent-foreground: #ffffff;
     --sidebar-border: #343434;
@@ -147,4 +147,18 @@
   ::-webkit-scrollbar-corner {
     background: transparent;
   }
+}
+
+/* Web terminal: inset the xterm surface from its host edges. FitAddon
+   subtracts this element padding when computing rows/columns, so the text
+   block fits the content box and the padding shows the host background. */
+.terminal-host .xterm {
+  padding: 12px;
+}
+/* xterm paints its scroll viewport with the DEFAULT theme background
+   (inline, set at open time) — it would cover our themed host color and the
+   padding ring with stale black. The canvas already paints the real theme
+   background, so make the viewport see-through. */
+.terminal-host .xterm-viewport {
+  background: transparent !important;
 }

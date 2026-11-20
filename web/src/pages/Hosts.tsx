@@ -133,7 +133,7 @@ export default function Hosts() {
   };
 
   const remove = async (id: string) => {
-    if (!confirm("Delete this host?")) return;
+    if (!confirm(t("hosts.deleteConfirm"))) return;
     try {
       await api.del(`/api/servers/${id}`);
       await load();
@@ -159,7 +159,7 @@ export default function Hosts() {
       setImportText(text);
       setError(undefined);
     } catch {
-      setError("failed to read the selected file");
+      setError(t("hosts.fileReadFailed"));
     }
   };
 
@@ -179,7 +179,6 @@ export default function Hosts() {
       header={
         <PageHeader
           title={t("hosts.title")}
-          subtitle={canManage ? t("hosts.subtitle") : "Hosts granted to you by your administrator"}
           actions={
             canManage && (
               <>
@@ -214,7 +213,7 @@ export default function Hosts() {
                         <div className="font-medium">{s.name}</div>
                         <div className="text-xs text-muted-foreground">
                           {s.username}@{s.host}:{s.port}
-                          {!s.enabled && <Badge variant="secondary" className="ml-2">disabled</Badge>}
+                          {!s.enabled && <Badge variant="secondary" className="ml-2">{t("hosts.disabled")}</Badge>}
                         </div>
                       </td>
                       <td className="px-3 py-2 text-xs text-muted-foreground">
@@ -249,68 +248,68 @@ export default function Hosts() {
       <Dialog open={form !== null} onOpenChange={(o) => !o && setForm(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>{form?.id ? "Edit host" : "Add host"}</DialogTitle>
+            <DialogTitle>{form?.id ? t("hosts.editHost") : t("hosts.add")}</DialogTitle>
           </DialogHeader>
           {form && (
             <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1"><Label>Name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
-              <div className="space-y-1"><Label>Group</Label><Input value={form.group_name} placeholder="prod / staging…" onChange={(e) => setForm({ ...form, group_name: e.target.value })} /></div>
-              <div className="space-y-1"><Label>Host</Label><Input value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} /></div>
-              <div className="space-y-1"><Label>Port</Label><Input type="number" value={form.port} onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} /></div>
-              <div className="space-y-1"><Label>SSH user</Label><Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></div>
+              <div className="space-y-1"><Label>{t("common.name")}</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
+              <div className="space-y-1"><Label>{t("hosts.f.group")}</Label><Input value={form.group_name} placeholder={t("hosts.phGroup")} onChange={(e) => setForm({ ...form, group_name: e.target.value })} /></div>
+              <div className="space-y-1"><Label>{t("hosts.f.host")}</Label><Input value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} /></div>
+              <div className="space-y-1"><Label>{t("hosts.f.port")}</Label><Input type="number" value={form.port} onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} /></div>
+              <div className="space-y-1"><Label>{t("hosts.f.sshUser")}</Label><Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></div>
               <div className="space-y-1">
-                <Label>Auth</Label>
+                <Label>{t("hosts.f.auth")}</Label>
                 <select className="h-8 w-full rounded-lg border bg-background px-2 text-sm" value={form.auth_kind}
                   onChange={(e) => setForm({ ...form, auth_kind: e.target.value as ServerAsset["auth_kind"] })}>
-                  <option value="agent_or_default_key">Agent / default key</option>
-                  <option value="identity_file">Identity file</option>
-                  <option value="keyring_password">Stored credential</option>
+                  <option value="agent_or_default_key">{t("hosts.authAgent")}</option>
+                  <option value="identity_file">{t("hosts.authIdentity")}</option>
+                  <option value="keyring_password">{t("hosts.authCred")}</option>
                 </select>
               </div>
               {form.auth_kind === "identity_file" && (
-                <div className="col-span-2 space-y-1"><Label>Identity file path (on server host machine)</Label><Input value={form.identity_file} onChange={(e) => setForm({ ...form, identity_file: e.target.value })} /></div>
+                <div className="col-span-2 space-y-1"><Label>{t("hosts.f.identityPath")}</Label><Input value={form.identity_file} onChange={(e) => setForm({ ...form, identity_file: e.target.value })} /></div>
               )}
               {form.auth_kind === "keyring_password" && (
                 <div className="col-span-2 space-y-1.5">
-                  <Label>Stored credential (encrypted with the server key)</Label>
+                  <Label>{t("hosts.f.cred")}</Label>
                   <select className="h-8 w-full rounded-lg border bg-background px-2 text-sm"
                     value={form.credential_id}
                     onChange={(e) => setForm({ ...form, credential_id: e.target.value })}>
-                    <option value="">Select a stored credential…</option>
+                    <option value="">{t("hosts.selectCred")}</option>
                     {credentials.map((c) => (
                       <option key={c.id} value={c.id}>{c.label}{c.username ? ` (${c.username})` : ""}</option>
                     ))}
                   </select>
                   {!newCred ? (
                     <Button variant="outline" size="xs" onClick={() => setNewCred({ label: "", username: "root", secret: "" })}>
-                      <Plus className="size-3" /> New password credential
+                      <Plus className="size-3" /> {t("hosts.newCred")}
                     </Button>
                   ) : (
                     <div className="space-y-2 rounded-lg border p-3">
-                      <Input placeholder="Label (e.g. prod root)" value={newCred.label} onChange={(e) => setNewCred({ ...newCred, label: e.target.value })} />
-                      <Input placeholder="SSH username (optional)" value={newCred.username} onChange={(e) => setNewCred({ ...newCred, username: e.target.value })} />
-                      <Input type="password" placeholder="Password (sealed server-side, never stored in plain text)" value={newCred.secret} onChange={(e) => setNewCred({ ...newCred, secret: e.target.value })} />
+                      <Input placeholder={t("hosts.phLabel")} value={newCred.label} onChange={(e) => setNewCred({ ...newCred, label: e.target.value })} />
+                      <Input placeholder={t("hosts.phCredUser")} value={newCred.username} onChange={(e) => setNewCred({ ...newCred, username: e.target.value })} />
+                      <Input type="password" placeholder={t("hosts.phPassword")} value={newCred.secret} onChange={(e) => setNewCred({ ...newCred, secret: e.target.value })} />
                       {credError && <p className="text-xs text-destructive">{credError}</p>}
                       <div className="flex gap-2">
-                        <Button size="xs" onClick={() => void createCredential()} disabled={!newCred.label || !newCred.secret}>Create &amp; select</Button>
-                        <Button size="xs" variant="outline" onClick={() => setNewCred(null)}>Cancel</Button>
+                        <Button size="xs" onClick={() => void createCredential()} disabled={!newCred.label || !newCred.secret}>{t("hosts.createSelect")}</Button>
+                        <Button size="xs" variant="outline" onClick={() => setNewCred(null)}>{t("common.cancel")}</Button>
                       </div>
                     </div>
                   )}
                 </div>
               )}
-              <div className="space-y-1"><Label>Jump host id</Label><Input value={form.jump_host_id} onChange={(e) => setForm({ ...form, jump_host_id: e.target.value })} /></div>
-              <div className="space-y-1"><Label>Tags (comma sep.)</Label><Input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} /></div>
+              <div className="space-y-1"><Label>{t("hosts.f.jump")}</Label><Input value={form.jump_host_id} onChange={(e) => setForm({ ...form, jump_host_id: e.target.value })} /></div>
+              <div className="space-y-1"><Label>{t("hosts.f.tags")}</Label><Input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} /></div>
               <label className="col-span-2 flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
-                Enabled
+                {t("common.enabled")}
               </label>
               <div className="col-span-2"><ErrorText>{error}</ErrorText></div>
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setForm(null)}>Cancel</Button>
-            <Button onClick={() => void saveForm()}>Save</Button>
+            <Button variant="outline" onClick={() => setForm(null)}>{t("common.cancel")}</Button>
+            <Button onClick={() => void saveForm()}>{t("common.save")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

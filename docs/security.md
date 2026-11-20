@@ -27,11 +27,11 @@ must not expose every service at once.**
   leaked agent token are therefore disjoint.
 
 ### Authorization (RBAC)
-- 18 permission keys; the built-in `admin` role is immutable, `member` and custom roles are
-  editable matrices. Host access requires an explicit **grant** (per host or per host group)
-  with `connect` / `execute` levels, evaluated server-side on every REST call, websocket
-  upgrade, and MCP tool invocation. Members cannot even list ungranted hosts, and host
-  payloads omit all credential metadata.
+- Two built-in roles with permission sets fixed in code (not editable): `admin` manages
+  everything; `member` only uses hosts and MCP. Host access requires an explicit **grant**
+  of a machine group to a user group with `connect` / `execute` levels, evaluated
+  server-side on every REST call, websocket upgrade, and MCP tool invocation. Members
+  cannot even list ungranted hosts, and host payloads omit all credential metadata.
 - Deactivating a user or changing their role immediately drops their sessions.
 
 ### Transport & browser attack surface

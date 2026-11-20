@@ -112,15 +112,14 @@ func (q *Queries) CreateApiToken(ctx context.Context, arg CreateApiTokenParams) 
 }
 
 const createHostGrant = `-- name: CreateHostGrant :exec
-INSERT INTO host_grants (id, user_group_id, server_id, group_name,
+INSERT INTO host_grants (id, user_group_id, group_name,
     can_connect, can_execute, created_by, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type CreateHostGrantParams struct {
 	ID          string
 	UserGroupID string
-	ServerID    string
 	GroupName   string
 	CanConnect  int32
 	CanExecute  int32
@@ -132,7 +131,6 @@ func (q *Queries) CreateHostGrant(ctx context.Context, arg CreateHostGrantParams
 	_, err := q.db.ExecContext(ctx, createHostGrant,
 		arg.ID,
 		arg.UserGroupID,
-		arg.ServerID,
 		arg.GroupName,
 		arg.CanConnect,
 		arg.CanExecute,
@@ -377,7 +375,7 @@ func (q *Queries) ListApiTokensForUser(ctx context.Context, userID string) ([]Ap
 }
 
 const listGroupMembers = `-- name: ListGroupMembers :many
-SELECT u.id, u.username, u.display_name, u.role_id, u.is_active,
+SELECT u.id, u.username, u.display_name, u.role, u.is_active,
        u.must_change_password, u.totp_enabled, u.created_at, u.updated_at, u.last_login_at
 FROM users u JOIN user_group_members m ON m.user_id = u.id
 WHERE m.group_id = $1 ORDER BY u.username
@@ -387,7 +385,7 @@ type ListGroupMembersRow struct {
 	ID                 string
 	Username           string
 	DisplayName        string
-	RoleID             string
+	Role               string
 	IsActive           int32
 	MustChangePassword int32
 	TotpEnabled        int32
@@ -409,7 +407,7 @@ func (q *Queries) ListGroupMembers(ctx context.Context, groupID string) ([]ListG
 			&i.ID,
 			&i.Username,
 			&i.DisplayName,
-			&i.RoleID,
+			&i.Role,
 			&i.IsActive,
 			&i.MustChangePassword,
 			&i.TotpEnabled,
@@ -465,7 +463,7 @@ func (q *Queries) ListGroupsForUser(ctx context.Context, userID string) ([]UserG
 }
 
 const listHostGrants = `-- name: ListHostGrants :many
-SELECT g.id, g.user_group_id, g.server_id, g.group_name, g.can_connect, g.can_execute, g.created_by, g.created_at, ug.id AS ug_id, ug.name AS ug_name, ug.description AS ug_description,
+SELECT g.id, g.user_group_id, g.group_name, g.can_connect, g.can_execute, g.created_by, g.created_at, ug.id AS ug_id, ug.name AS ug_name, ug.description AS ug_description,
        ug.created_at AS ug_created_at
 FROM host_grants g JOIN user_groups ug ON ug.id = g.user_group_id
 ORDER BY g.created_at DESC
@@ -474,7 +472,6 @@ ORDER BY g.created_at DESC
 type ListHostGrantsRow struct {
 	ID            string
 	UserGroupID   string
-	ServerID      string
 	GroupName     string
 	CanConnect    int32
 	CanExecute    int32
@@ -498,7 +495,6 @@ func (q *Queries) ListHostGrants(ctx context.Context) ([]ListHostGrantsRow, erro
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserGroupID,
-			&i.ServerID,
 			&i.GroupName,
 			&i.CanConnect,
 			&i.CanExecute,

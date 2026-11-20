@@ -1,12 +1,10 @@
 import type { ReactNode } from "react";
 
-export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {
+export function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) {
+  // h-12 matches the sidebar brand row so both bottom borders align.
   return (
-    <div className="flex items-center justify-between border-b px-4 py-3">
-      <div>
-        <h1 className="text-base font-semibold">{title}</h1>
-        {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
-      </div>
+    <div className="flex h-12 shrink-0 items-center justify-between border-b px-4">
+      <h1 className="text-base font-semibold">{title}</h1>
       {actions && <div className="flex items-center gap-2">{actions}</div>}
     </div>
   );

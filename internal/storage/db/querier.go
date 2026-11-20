@@ -23,7 +23,6 @@ type Querier interface {
 	CountCredentials(ctx context.Context) (int64, error)
 	CountFailedAttemptsByIP(ctx context.Context, arg CountFailedAttemptsByIPParams) (int64, error)
 	CountFailedAttemptsByUser(ctx context.Context, arg CountFailedAttemptsByUserParams) (int64, error)
-	CountRoleUsers(ctx context.Context, roleID string) (int64, error)
 	CountRules(ctx context.Context) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateApiToken(ctx context.Context, arg CreateApiTokenParams) error
@@ -34,7 +33,6 @@ type Querier interface {
 	CreateUserGroup(ctx context.Context, arg CreateUserGroupParams) error
 	DeleteCredential(ctx context.Context, id string) (int64, error)
 	DeleteHostGrant(ctx context.Context, id string) (int64, error)
-	DeleteRole(ctx context.Context, id string) (int64, error)
 	DeleteRule(ctx context.Context, id string) (int64, error)
 	DeleteServer(ctx context.Context, id string) (int64, error)
 	DeleteSession(ctx context.Context, id string) (int64, error)
@@ -47,8 +45,6 @@ type Querier interface {
 	GetAuditTailHash(ctx context.Context) (string, error)
 	GetCredential(ctx context.Context, id string) (Credential, error)
 	GetL2Config(ctx context.Context) (L2Config, error)
-	GetRoleBuiltin(ctx context.Context, id string) (int32, error)
-	GetRoleByID(ctx context.Context, id string) (Role, error)
 	GetServer(ctx context.Context, id string) (Server, error)
 	GetSessionByHash(ctx context.Context, tokenHash string) (Session, error)
 	GetSetting(ctx context.Context, key string) (string, error)
@@ -66,7 +62,6 @@ type Querier interface {
 	ListGroupMembers(ctx context.Context, groupID string) ([]ListGroupMembersRow, error)
 	ListGroupsForUser(ctx context.Context, userID string) ([]UserGroup, error)
 	ListHostGrants(ctx context.Context) ([]ListHostGrantsRow, error)
-	ListRoles(ctx context.Context) ([]Role, error)
 	ListRules(ctx context.Context) ([]SecurityRule, error)
 	ListServers(ctx context.Context) ([]Server, error)
 	ListServersForUser(ctx context.Context, userID string) ([]Server, error)
@@ -75,7 +70,7 @@ type Querier interface {
 	ListSessionsForUser(ctx context.Context, userID string) ([]Session, error)
 	ListSnippets(ctx context.Context) ([]Snippet, error)
 	ListUserGroups(ctx context.Context) ([]UserGroup, error)
-	ListUsersWithRoles(ctx context.Context) ([]ListUsersWithRolesRow, error)
+	ListUsers(ctx context.Context) ([]User, error)
 	RecordAuthAttempt(ctx context.Context, arg RecordAuthAttemptParams) error
 	RecordLoginSuccess(ctx context.Context, arg RecordLoginSuccessParams) error
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) (int64, error)
@@ -96,7 +91,6 @@ type Querier interface {
 	UpdateUserGroup(ctx context.Context, arg UpdateUserGroupParams) (int64, error)
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 	UpsertL2Config(ctx context.Context, arg UpsertL2ConfigParams) error
-	UpsertRole(ctx context.Context, arg UpsertRoleParams) error
 	UpsertRule(ctx context.Context, arg UpsertRuleParams) error
 	UpsertServer(ctx context.Context, arg UpsertServerParams) error
 	UpsertSnippet(ctx context.Context, arg UpsertSnippetParams) error

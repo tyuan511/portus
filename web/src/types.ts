@@ -190,24 +190,16 @@ export type Permission =
   | "vault.manage" | "rules.read" | "rules.manage"
   | "snippets.use" | "snippets.manage"
   | "audit.view_self" | "audit.view_all" | "approvals.decide" | "mcp.access"
-  | "users.manage" | "roles.manage" | "groups.manage" | "access.manage"
-  | "settings.manage";
+  | "users.manage" | "access.manage" | "settings.manage";
 
-export interface Role {
-  id: string;
-  name: string;
-  permissions: Permission[];
-  is_builtin: boolean;
-  description?: string;
-  created_at?: string;
-}
+// Built-in role names; permission sets are fixed on the server.
+export type Role = "admin" | "member";
 
 export interface User {
   id: string;
   username: string;
   display_name: string;
-  role_id: string;
-  role?: Role;
+  role: Role;
   is_active: boolean;
   must_change_password: boolean;
   totp_enabled: boolean;
@@ -220,8 +212,7 @@ export interface Identity {
   user_id: string;
   username: string;
   display_name: string;
-  role_id: string;
-  role_name: string;
+  role: string;
   permissions: Permission[];
   is_admin: boolean;
   totp_enabled: boolean;
@@ -238,8 +229,7 @@ export interface HostGrant {
   id: string;
   user_group_id: string;
   user_group?: UserGroup;
-  server_id?: string;
-  group_name?: string;
+  group_name: string;
   can_connect: boolean;
   can_execute: boolean;
   created_by?: string;

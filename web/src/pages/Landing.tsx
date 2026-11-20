@@ -18,51 +18,20 @@ import { useI18n } from "@/lib/i18n";
 // Supabaze-inspired landing (DESIGN.md): white canvas, ink ladder, a single
 // emerald CTA per viewport, weight-500 display with negative tracking, and
 // composited product panels in canvas-night instead of photography.
+// Copy lives in i18n under landing.<key>.title / landing.<key>.body.
 const PIPELINE = [
-  {
-    icon: ShieldCheck,
-    title: "L1 — Shell AST rules",
-    body: "Every command is parsed into a bash AST before it ever reaches a host. Destructive programs are denied, unknown commands escalate — fail-closed by construction.",
-  },
-  {
-    icon: Activity,
-    title: "L2 — AI semantic review",
-    body: "Optional second opinion from OpenAI, Anthropic or a dedicated decision model. Risk scoring and intent alignment; any provider failure fails closed.",
-  },
-  {
-    icon: KeyRound,
-    title: "Human approval",
-    body: "Escalated commands pause in a live approval feed. Admins approve or reject in real time — the agent simply waits.",
-  },
-  {
-    icon: ScrollText,
-    title: "Tamper-evident audit",
-    body: "Every execution, login and decision lands in a SHA-256 hash chain. Verify the whole history with one click.",
-  },
-];
+  { icon: ShieldCheck, key: "l1" },
+  { icon: Activity, key: "l2" },
+  { icon: KeyRound, key: "approval" },
+  { icon: ScrollText, key: "audit" },
+] as const;
 
 const FEATURES = [
-  {
-    icon: GitBranch,
-    title: "RBAC down to the host",
-    body: "Users, roles and user groups; hosts and host groups grant connect / execute levels. Members see exactly what is granted — nothing else.",
-  },
-  {
-    icon: FileTerminal,
-    title: "Audited web terminal",
-    body: "Full PTY sessions in the browser over websocket, with every submitted command recorded per user.",
-  },
-  {
-    icon: Database,
-    title: "MCP for AI agents",
-    body: "Twelve scoped tools over streamable HTTP with personal access tokens. Agents inherit the same RBAC as humans.",
-  },
-  {
-    icon: Lock,
-    title: "Hardened by default",
-    body: "Argon2id passwords, TOTP two-factor, persisted brute-force lockouts, session revocation, and a sealed credential vault with idle auto-lock.",
-  },
-];
+  { icon: GitBranch, key: "fRbac" },
+  { icon: FileTerminal, key: "fTerminal" },
+  { icon: Database, key: "fMcp" },
+  { icon: Lock, key: "fHardened" },
+] as const;
 
 export default function Landing() {
   const auth = useAuth();
@@ -121,7 +90,7 @@ export default function Landing() {
             <span className="size-2.5 rounded-full bg-border" />
             <span className="size-2.5 rounded-full bg-border" />
             <span className="size-2.5 rounded-full bg-primary" />
-            <span className="ml-2 font-mono text-xs text-muted-foreground">mcp.json — agent config</span>
+            <span className="ml-2 font-mono text-xs text-muted-foreground">{t("landing.mockCaption")}</span>
           </div>
           <pre className="overflow-x-auto bg-[#1c1c1c] p-5 font-mono text-[13px] leading-relaxed text-[#ededed]">
 {`{
@@ -145,13 +114,13 @@ export default function Landing() {
           <p className="mt-2 max-w-2xl text-muted-foreground">{t("landing.pipeline.sub")}</p>
           <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {PIPELINE.map((item, i) => (
-              <div key={item.title} className="rounded-xl border border-border bg-card p-6">
+              <div key={item.key} className="rounded-xl border border-border bg-card p-6">
                 <div className="mb-3 flex items-center justify-between">
                   <item.icon className="size-5 text-primary" />
                   <span className="font-mono text-xs text-muted-foreground">0{i + 1}</span>
                 </div>
-                <h3 className="text-sm font-medium">{item.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{item.body}</p>
+                <h3 className="text-sm font-medium">{t(`landing.${item.key}.title`)}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{t(`landing.${item.key}.body`)}</p>
               </div>
             ))}
           </div>
@@ -164,10 +133,10 @@ export default function Landing() {
           <h2 className="text-3xl font-medium tracking-tight">{t("landing.features.title")}</h2>
           <div className="mt-10 grid gap-4 sm:grid-cols-2">
             {FEATURES.map((f) => (
-              <div key={f.title} className="rounded-xl border border-border bg-card p-8">
+              <div key={f.key} className="rounded-xl border border-border bg-card p-8">
                 <f.icon className="mb-4 size-5 text-primary" />
-                <h3 className="text-lg font-medium tracking-tight">{f.title}</h3>
-                <p className="mt-2 leading-relaxed text-muted-foreground">{f.body}</p>
+                <h3 className="text-lg font-medium tracking-tight">{t(`landing.${f.key}.title`)}</h3>
+                <p className="mt-2 leading-relaxed text-muted-foreground">{t(`landing.${f.key}.body`)}</p>
               </div>
             ))}
           </div>
@@ -182,7 +151,7 @@ export default function Landing() {
             SSHield Enterprise
           </div>
           <div className="flex items-center gap-6">
-            <Link to="/login" className="hover:text-foreground">Sign in</Link>
+            <Link to="/login" className="hover:text-foreground">{t("landing.cta.signin")}</Link>
             <span>PostgreSQL · Go · React</span>
           </div>
         </div>

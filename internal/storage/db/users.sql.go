@@ -43,17 +43,6 @@ func (q *Queries) ConsumeRecoveryCode(ctx context.Context, arg ConsumeRecoveryCo
 	return err
 }
 
-const countRoleUsers = `-- name: CountRoleUsers :one
-SELECT COUNT(*) FROM users WHERE role_id = $1
-`
-
-func (q *Queries) CountRoleUsers(ctx context.Context, roleID string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countRoleUsers, roleID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countUsers = `-- name: CountUsers :one
 SELECT COUNT(*) FROM users
 `
@@ -66,7 +55,7 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 }
 
 const createUser = `-- name: CreateUser :exec
-INSERT INTO users (id, username, display_name, password_hash, role_id,
+INSERT INTO users (id, username, display_name, password_hash, role,
     is_active, must_change_password, totp_secret, totp_enabled, recovery_codes_json,
     failed_attempts, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
@@ -77,7 +66,7 @@ type CreateUserParams struct {
 	Username           string
 	DisplayName        string
 	PasswordHash       string
-	RoleID             string
+	Role               string
 	IsActive           int32
 	MustChangePassword int32
 	TotpSecret         string
@@ -94,7 +83,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
 		arg.Username,
 		arg.DisplayName,
 		arg.PasswordHash,
-		arg.RoleID,
+		arg.Role,
 		arg.IsActive,
 		arg.MustChangePassword,
 		arg.TotpSecret,
@@ -105,18 +94,6 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
 		arg.UpdatedAt,
 	)
 	return err
-}
-
-const deleteRole = `-- name: DeleteRole :execrows
-DELETE FROM roles WHERE id = $1
-`
-
-func (q *Queries) DeleteRole(ctx context.Context, id string) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteRole, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }
 
 const deleteUser = `-- name: DeleteUser :execrows
@@ -131,37 +108,8 @@ func (q *Queries) DeleteUser(ctx context.Context, id string) (int64, error) {
 	return result.RowsAffected()
 }
 
-const getRoleBuiltin = `-- name: GetRoleBuiltin :one
-SELECT is_builtin FROM roles WHERE id = $1
-`
-
-func (q *Queries) GetRoleBuiltin(ctx context.Context, id string) (int32, error) {
-	row := q.db.QueryRowContext(ctx, getRoleBuiltin, id)
-	var is_builtin int32
-	err := row.Scan(&is_builtin)
-	return is_builtin, err
-}
-
-const getRoleByID = `-- name: GetRoleByID :one
-SELECT id, name, permissions_json, is_builtin, description, created_at FROM roles WHERE id = $1
-`
-
-func (q *Queries) GetRoleByID(ctx context.Context, id string) (Role, error) {
-	row := q.db.QueryRowContext(ctx, getRoleByID, id)
-	var i Role
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.PermissionsJson,
-		&i.IsBuiltin,
-		&i.Description,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, username, display_name, password_hash, role_id, is_active, must_change_password, totp_secret, totp_enabled, recovery_codes_json, failed_attempts, locked_until, created_at, updated_at, last_login_at FROM users WHERE id = $1
+SELECT id, username, display_name, password_hash, is_active, must_change_password, totp_secret, totp_enabled, recovery_codes_json, failed_attempts, locked_until, created_at, updated_at, last_login_at, role FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
@@ -172,7 +120,6 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
 		&i.Username,
 		&i.DisplayName,
 		&i.PasswordHash,
-		&i.RoleID,
 		&i.IsActive,
 		&i.MustChangePassword,
 		&i.TotpSecret,
@@ -183,12 +130,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastLoginAt,
+		&i.Role,
 	)
 	return i, err
 }
 
 const getUserByUsername = `-- name: GetUserByUsername :one
-SELECT id, username, display_name, password_hash, role_id, is_active, must_change_password, totp_secret, totp_enabled, recovery_codes_json, failed_attempts, locked_until, created_at, updated_at, last_login_at FROM users WHERE username = $1
+SELECT id, username, display_name, password_hash, is_active, must_change_password, totp_secret, totp_enabled, recovery_codes_json, failed_attempts, locked_until, created_at, updated_at, last_login_at, role FROM users WHERE username = $1
 `
 
 func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User, error) {
@@ -199,7 +147,6 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User,
 		&i.Username,
 		&i.DisplayName,
 		&i.PasswordHash,
-		&i.RoleID,
 		&i.IsActive,
 		&i.MustChangePassword,
 		&i.TotpSecret,
@@ -210,12 +157,13 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastLoginAt,
+		&i.Role,
 	)
 	return i, err
 }
 
 const getUserCredentialsByID = `-- name: GetUserCredentialsByID :one
-SELECT id, username, display_name, password_hash, role_id, is_active,
+SELECT id, username, display_name, password_hash, role, is_active,
        must_change_password, totp_secret, totp_enabled, recovery_codes_json,
        failed_attempts, locked_until
 FROM users WHERE id = $1
@@ -226,7 +174,7 @@ type GetUserCredentialsByIDRow struct {
 	Username           string
 	DisplayName        string
 	PasswordHash       string
-	RoleID             string
+	Role               string
 	IsActive           int32
 	MustChangePassword int32
 	TotpSecret         string
@@ -244,7 +192,7 @@ func (q *Queries) GetUserCredentialsByID(ctx context.Context, id string) (GetUse
 		&i.Username,
 		&i.DisplayName,
 		&i.PasswordHash,
-		&i.RoleID,
+		&i.Role,
 		&i.IsActive,
 		&i.MustChangePassword,
 		&i.TotpSecret,
@@ -257,7 +205,7 @@ func (q *Queries) GetUserCredentialsByID(ctx context.Context, id string) (GetUse
 }
 
 const getUserCredentialsByUsername = `-- name: GetUserCredentialsByUsername :one
-SELECT id, username, display_name, password_hash, role_id, is_active,
+SELECT id, username, display_name, password_hash, role, is_active,
        must_change_password, totp_secret, totp_enabled, recovery_codes_json,
        failed_attempts, locked_until
 FROM users WHERE username = $1
@@ -268,7 +216,7 @@ type GetUserCredentialsByUsernameRow struct {
 	Username           string
 	DisplayName        string
 	PasswordHash       string
-	RoleID             string
+	Role               string
 	IsActive           int32
 	MustChangePassword int32
 	TotpSecret         string
@@ -286,7 +234,7 @@ func (q *Queries) GetUserCredentialsByUsername(ctx context.Context, username str
 		&i.Username,
 		&i.DisplayName,
 		&i.PasswordHash,
-		&i.RoleID,
+		&i.Role,
 		&i.IsActive,
 		&i.MustChangePassword,
 		&i.TotpSecret,
@@ -309,86 +257,24 @@ func (q *Queries) GetUserFailedAttempts(ctx context.Context, id string) (int32, 
 	return failed_attempts, err
 }
 
-const listRoles = `-- name: ListRoles :many
-SELECT id, name, permissions_json, is_builtin, description, created_at FROM roles ORDER BY is_builtin DESC, name
+const listUsers = `-- name: ListUsers :many
+SELECT id, username, display_name, password_hash, is_active, must_change_password, totp_secret, totp_enabled, recovery_codes_json, failed_attempts, locked_until, created_at, updated_at, last_login_at, role FROM users ORDER BY created_at
 `
 
-func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
-	rows, err := q.db.QueryContext(ctx, listRoles)
+func (q *Queries) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := q.db.QueryContext(ctx, listUsers)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Role{}
+	items := []User{}
 	for rows.Next() {
-		var i Role
-		if err := rows.Scan(
-			&i.ID,
-			&i.Name,
-			&i.PermissionsJson,
-			&i.IsBuiltin,
-			&i.Description,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listUsersWithRoles = `-- name: ListUsersWithRoles :many
-SELECT u.id, u.username, u.display_name, u.password_hash, u.role_id, u.is_active, u.must_change_password, u.totp_secret, u.totp_enabled, u.recovery_codes_json, u.failed_attempts, u.locked_until, u.created_at, u.updated_at, u.last_login_at, r.name AS role_name, r.permissions_json AS role_permissions_json,
-       r.is_builtin AS role_is_builtin, r.description AS role_description,
-       r.created_at AS role_created_at
-FROM users u JOIN roles r ON r.id = u.role_id
-ORDER BY u.created_at
-`
-
-type ListUsersWithRolesRow struct {
-	ID                  string
-	Username            string
-	DisplayName         string
-	PasswordHash        string
-	RoleID              string
-	IsActive            int32
-	MustChangePassword  int32
-	TotpSecret          string
-	TotpEnabled         int32
-	RecoveryCodesJson   string
-	FailedAttempts      int32
-	LockedUntil         sql.NullString
-	CreatedAt           string
-	UpdatedAt           string
-	LastLoginAt         sql.NullString
-	RoleName            string
-	RolePermissionsJson string
-	RoleIsBuiltin       int32
-	RoleDescription     string
-	RoleCreatedAt       string
-}
-
-func (q *Queries) ListUsersWithRoles(ctx context.Context) ([]ListUsersWithRolesRow, error) {
-	rows, err := q.db.QueryContext(ctx, listUsersWithRoles)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListUsersWithRolesRow{}
-	for rows.Next() {
-		var i ListUsersWithRolesRow
+		var i User
 		if err := rows.Scan(
 			&i.ID,
 			&i.Username,
 			&i.DisplayName,
 			&i.PasswordHash,
-			&i.RoleID,
 			&i.IsActive,
 			&i.MustChangePassword,
 			&i.TotpSecret,
@@ -399,11 +285,7 @@ func (q *Queries) ListUsersWithRoles(ctx context.Context) ([]ListUsersWithRolesR
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LastLoginAt,
-			&i.RoleName,
-			&i.RolePermissionsJson,
-			&i.RoleIsBuiltin,
-			&i.RoleDescription,
-			&i.RoleCreatedAt,
+			&i.Role,
 		); err != nil {
 			return nil, err
 		}
@@ -500,7 +382,7 @@ func (q *Queries) SetUserTOTP(ctx context.Context, arg SetUserTOTPParams) error 
 }
 
 const updateUserProfile = `-- name: UpdateUserProfile :exec
-UPDATE users SET display_name = $2, role_id = $3, is_active = $4,
+UPDATE users SET display_name = $2, role = $3, is_active = $4,
     must_change_password = $5, updated_at = $6
 WHERE id = $1
 `
@@ -508,7 +390,7 @@ WHERE id = $1
 type UpdateUserProfileParams struct {
 	ID                 string
 	DisplayName        string
-	RoleID             string
+	Role               string
 	IsActive           int32
 	MustChangePassword int32
 	UpdatedAt          string
@@ -518,39 +400,10 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 	_, err := q.db.ExecContext(ctx, updateUserProfile,
 		arg.ID,
 		arg.DisplayName,
-		arg.RoleID,
+		arg.Role,
 		arg.IsActive,
 		arg.MustChangePassword,
 		arg.UpdatedAt,
-	)
-	return err
-}
-
-const upsertRole = `-- name: UpsertRole :exec
-INSERT INTO roles (id, name, permissions_json, is_builtin, description, created_at)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (id) DO UPDATE SET
-    name = excluded.name, permissions_json = excluded.permissions_json,
-    is_builtin = excluded.is_builtin, description = excluded.description
-`
-
-type UpsertRoleParams struct {
-	ID              string
-	Name            string
-	PermissionsJson string
-	IsBuiltin       int32
-	Description     string
-	CreatedAt       string
-}
-
-func (q *Queries) UpsertRole(ctx context.Context, arg UpsertRoleParams) error {
-	_, err := q.db.ExecContext(ctx, upsertRole,
-		arg.ID,
-		arg.Name,
-		arg.PermissionsJson,
-		arg.IsBuiltin,
-		arg.Description,
-		arg.CreatedAt,
 	)
 	return err
 }

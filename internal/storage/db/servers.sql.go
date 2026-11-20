@@ -164,8 +164,7 @@ WHERE s.enabled = 1 AND EXISTS (
     SELECT 1 FROM host_grants g
     JOIN user_group_members m ON m.group_id = g.user_group_id
     WHERE m.user_id = $1
-      AND ((g.server_id <> '' AND g.server_id = s.id)
-        OR (g.group_name <> '' AND g.group_name = s.group_name))
+      AND g.group_name <> '' AND g.group_name = s.group_name
 ) ORDER BY s.group_name, s.name
 `
 
@@ -213,8 +212,7 @@ WHERE s.enabled = 1 AND EXISTS (
     SELECT 1 FROM host_grants g
     JOIN user_group_members m ON m.group_id = g.user_group_id
     WHERE m.user_id = $1
-      AND ((g.server_id <> '' AND g.server_id = s.id)
-        OR (g.group_name <> '' AND g.group_name = s.group_name))
+      AND g.group_name <> '' AND g.group_name = s.group_name
       AND (($2::int = 0 AND g.can_connect = 1) OR ($2::int = 1 AND g.can_execute = 1))
 ) ORDER BY s.group_name, s.name
 `
@@ -270,13 +268,11 @@ SELECT
 FROM host_grants g
 JOIN user_group_members m ON m.group_id = g.user_group_id
 WHERE m.user_id = $1
-  AND ((g.server_id <> '' AND g.server_id = $2)
-    OR (g.group_name <> '' AND g.group_name = $3))
+  AND g.group_name <> '' AND g.group_name = $2
 `
 
 type ServerGrantDecisionParams struct {
 	UserID    string
-	ServerID  string
 	GroupName string
 }
 
@@ -286,7 +282,7 @@ type ServerGrantDecisionRow struct {
 }
 
 func (q *Queries) ServerGrantDecision(ctx context.Context, arg ServerGrantDecisionParams) (ServerGrantDecisionRow, error) {
-	row := q.db.QueryRowContext(ctx, serverGrantDecision, arg.UserID, arg.ServerID, arg.GroupName)
+	row := q.db.QueryRowContext(ctx, serverGrantDecision, arg.UserID, arg.GroupName)
 	var i ServerGrantDecisionRow
 	err := row.Scan(&i.CanConnect, &i.CanExecute)
 	return i, err

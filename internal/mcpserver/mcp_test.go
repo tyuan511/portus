@@ -93,8 +93,7 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 	totpMgr := auth.NewTOTPManagerWithKey(serverKey, "SSHield")
 	guard := auth.NewLoginGuard(db, auth.GuardConfig{LoginMaxAttempts: 5, LockoutMinutes: 15,
 		IPMaxAttempts: 1000, IPWindowMinutes: 60})
-	authSvc := auth.NewService(db, totpMgr, guard, time.Hour, 24*time.Hour, false,
-		func(roleID string) (*domain.Role, error) { return db.GetRole(roleID) })
+	authSvc := auth.NewService(db, totpMgr, guard, time.Hour, 24*time.Hour, false)
 	rbacSvc := rbac.NewService(db)
 	pool := sshpool.NewPool(db)
 	engine := security.NewEngine()
@@ -174,7 +173,7 @@ func TestMCPRejectsInvalidToken(t *testing.T) {
 
 func TestMCPInitializeAndToolsList(t *testing.T) {
 	f := newMCPFixture(t)
-	_ = f.db.CreateUser(&domain.User{ID: "usr-1", Username: "agent", RoleID: "role-member", IsActive: true},
+	_ = f.db.CreateUser(&domain.User{ID: "usr-1", Username: "agent", Role: domain.BuiltinRoleMember, IsActive: true},
 		auth.HashPassword("agent-pass-123"), "", nil)
 	token := f.issueToken("usr-1")
 
@@ -221,7 +220,7 @@ func TestMCPExecuteRequiresGrantAndAudits(t *testing.T) {
 		Host: "10.0.0.1", Port: 22, Username: "root", Tags: []string{}, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	_ = f.db.CreateUser(&domain.User{ID: "usr-bob", Username: "bob", RoleID: "role-member", IsActive: true},
+	_ = f.db.CreateUser(&domain.User{ID: "usr-bob", Username: "bob", Role: domain.BuiltinRoleMember, IsActive: true},
 		auth.HashPassword("bob-pass-123"), "", nil)
 	token := f.issueToken("usr-bob")
 
@@ -257,18 +256,18 @@ func TestMCPExecuteRequiresGrantAndAudits(t *testing.T) {
 func TestMCPExecuteDryRunAllowsAndAudits(t *testing.T) {
 	f := newMCPFixture(t)
 
-	if err := f.db.UpsertServer(&domain.ServerAsset{ID: "srv-1", Name: "web-1",
+	if err := f.db.UpsertServer(&domain.ServerAsset{ID: "srv-1", Name: "web-1", GroupName: "prod",
 		Host: "10.0.0.1", Port: 22, Username: "root", Tags: []string{}, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.db.CreateUserGroup(&domain.UserGroup{ID: "grp-ops", Name: "ops"}); err != nil {
 		t.Fatal(err)
 	}
-	_ = f.db.CreateUser(&domain.User{ID: "usr-bob", Username: "bob", RoleID: "role-member", IsActive: true},
+	_ = f.db.CreateUser(&domain.User{ID: "usr-bob", Username: "bob", Role: domain.BuiltinRoleMember, IsActive: true},
 		auth.HashPassword("bob-pass-123"), "", nil)
 	_ = f.db.AddGroupMember("grp-ops", "usr-bob")
 	if err := f.db.CreateHostGrant(&domain.HostGrant{ID: "g1", UserGroupID: "grp-ops",
-		ServerID: "srv-1", CanConnect: true, CanExecute: true}); err != nil {
+		GroupName: "prod", CanConnect: true, CanExecute: true}); err != nil {
 		t.Fatal(err)
 	}
 	token := f.issueToken("usr-bob")
@@ -321,7 +320,7 @@ func TestMCPExecuteDryRunAllowsAndAudits(t *testing.T) {
 
 func TestMCPAdminScopedToolsBlockedForMember(t *testing.T) {
 	f := newMCPFixture(t)
-	_ = f.db.CreateUser(&domain.User{ID: "usr-bob", Username: "bob", RoleID: "role-member", IsActive: true},
+	_ = f.db.CreateUser(&domain.User{ID: "usr-bob", Username: "bob", Role: domain.BuiltinRoleMember, IsActive: true},
 		auth.HashPassword("bob-pass-123"), "", nil)
 	token := f.issueToken("usr-bob")
 

@@ -149,21 +149,9 @@ func TestRBACGrantEvaluation(t *testing.T) {
 	db := testDB(t)
 	ctx := t.Context()
 
-	// Roles.
-	adminRole := &domain.Role{ID: "role-admin", Name: "admin", IsBuiltin: true,
-		Permissions: domain.BuiltinAdminPermissions(), CreatedAt: time.Now().UTC()}
-	memberRole := &domain.Role{ID: "role-member", Name: "member", IsBuiltin: true,
-		Permissions: domain.BuiltinMemberPermissions(), CreatedAt: time.Now().UTC()}
-	if err := db.UpsertRole(adminRole); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.UpsertRole(memberRole); err != nil {
-		t.Fatal(err)
-	}
-
 	// Users: alice admin, bob member.
-	alice := &domain.User{ID: "usr-alice", Username: "alice", RoleID: "role-admin", IsActive: true}
-	bob := &domain.User{ID: "usr-bob", Username: "bob", RoleID: "role-member", IsActive: true}
+	alice := &domain.User{ID: "usr-alice", Username: "alice", Role: domain.BuiltinRoleAdmin, IsActive: true}
+	bob := &domain.User{ID: "usr-bob", Username: "bob", Role: domain.BuiltinRoleMember, IsActive: true}
 	if err := db.CreateUser(alice, "hash-a", "", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -180,14 +168,14 @@ func TestRBACGrantEvaluation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Servers: two in group "prod", one standalone.
+	// Servers: two in machine group "prod", one in "db".
 	servers := []*domain.ServerAsset{
 		{ID: "srv-1", Name: "web-1", Host: "10.0.0.1", Port: 22, Username: "root",
 			AuthKind: domain.AuthAgentOrDefaultKey, GroupName: "prod", Tags: []string{}, Enabled: true},
 		{ID: "srv-2", Name: "web-2", Host: "10.0.0.2", Port: 22, Username: "root",
 			AuthKind: domain.AuthAgentOrDefaultKey, GroupName: "prod", Tags: []string{}, Enabled: true},
 		{ID: "srv-3", Name: "db-1", Host: "10.0.0.3", Port: 22, Username: "root",
-			AuthKind: domain.AuthAgentOrDefaultKey, Tags: []string{}, Enabled: true},
+			AuthKind: domain.AuthAgentOrDefaultKey, GroupName: "db", Tags: []string{}, Enabled: true},
 	}
 	for _, s := range servers {
 		if err := db.UpsertServer(s); err != nil {
@@ -195,7 +183,7 @@ func TestRBACGrantEvaluation(t *testing.T) {
 		}
 	}
 
-	// Grant group "ops": connect on "prod" group, execute on srv-3 only.
+	// Grant group "ops": connect on "prod", connect+execute on "db".
 	if err := db.CreateHostGrant(&domain.HostGrant{
 		ID: "grant-1", UserGroupID: "grp-ops", GroupName: "prod",
 		CanConnect: true, CanExecute: false,
@@ -203,7 +191,7 @@ func TestRBACGrantEvaluation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.CreateHostGrant(&domain.HostGrant{
-		ID: "grant-2", UserGroupID: "grp-ops", ServerID: "srv-3",
+		ID: "grant-2", UserGroupID: "grp-ops", GroupName: "db",
 		CanConnect: true, CanExecute: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -240,11 +228,6 @@ func TestRBACGrantEvaluation(t *testing.T) {
 	// Grant decision on srv-1: connect yes, execute no.
 	asset := servers[0]
 	d, err := db.ServerGrantDecision("usr-bob", asset)
-	var cnt int
-	_ = db.sqlDB.QueryRow(`SELECT COUNT(*) FROM host_grants`).Scan(&cnt)
-	var mcnt int
-	_ = db.sqlDB.QueryRow(`SELECT COUNT(*) FROM user_group_members`).Scan(&mcnt)
-	t.Logf("DEBUG rows grants=%d members=%d", cnt, mcnt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,13 +249,8 @@ func TestRBACGrantEvaluation(t *testing.T) {
 
 func TestUserLifecycleAndLockout(t *testing.T) {
 	db := testDB(t)
-	if err := db.UpsertRole(&domain.Role{ID: "role-member", Name: "member", IsBuiltin: true,
-		Permissions: domain.BuiltinMemberPermissions(), CreatedAt: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
-
 	u := &domain.User{ID: "usr-1", Username: "carol", DisplayName: "Carol",
-		RoleID: "role-member", IsActive: true, MustChangePassword: true}
+		Role: domain.BuiltinRoleMember, IsActive: true, MustChangePassword: true}
 	if err := db.CreateUser(u, "argon2id$hash", "TOTPSECRET", []string{"rc1", "rc2"}); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +298,7 @@ func TestUserLifecycleAndLockout(t *testing.T) {
 	}
 
 	// Duplicate username rejected.
-	dup := &domain.User{ID: "usr-2", Username: "carol", RoleID: "role-member", IsActive: true}
+	dup := &domain.User{ID: "usr-2", Username: "carol", Role: domain.BuiltinRoleMember, IsActive: true}
 	if err := db.CreateUser(dup, "h", "", nil); err == nil {
 		t.Fatal("duplicate username must be rejected")
 	}
@@ -328,8 +306,7 @@ func TestUserLifecycleAndLockout(t *testing.T) {
 
 func TestSessionsAndCleanup(t *testing.T) {
 	db := testDB(t)
-	_ = db.UpsertRole(&domain.Role{ID: "role-member", Name: "member", CreatedAt: time.Now().UTC()})
-	_ = db.CreateUser(&domain.User{ID: "usr-1", Username: "u1", RoleID: "role-member", IsActive: true}, "h", "", nil)
+	_ = db.CreateUser(&domain.User{ID: "usr-1", Username: "u1", Role: domain.BuiltinRoleMember, IsActive: true}, "h", "", nil)
 	now := time.Now().UTC()
 	s := &domain.UserSession{ID: GenerateID("sess"), UserID: "usr-1", IP: "1.2.3.4",
 		UserAgent: "test", CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(time.Hour)}
@@ -394,21 +371,17 @@ func TestServerCRUD(t *testing.T) {
 	}
 }
 
-func TestListUsersWithRoles(t *testing.T) {
+func TestListUsers(t *testing.T) {
 	db := testDB(t)
-	if err := db.UpsertRole(&domain.Role{ID: "role-member", Name: "member", IsBuiltin: true,
-		Permissions: domain.BuiltinMemberPermissions(), CreatedAt: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
 	if err := db.CreateUser(&domain.User{ID: "usr-1", Username: "zed", DisplayName: "Z",
-		RoleID: "role-member", IsActive: true}, "h", "", nil); err != nil {
+		Role: domain.BuiltinRoleMember, IsActive: true}, "h", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	users, err := db.ListUsers()
 	if err != nil {
 		t.Fatalf("list users: %v", err)
 	}
-	if len(users) != 1 || users[0].Username != "zed" || users[0].Role == nil || users[0].Role.Name != "member" {
+	if len(users) != 1 || users[0].Username != "zed" || users[0].Role != domain.BuiltinRoleMember {
 		t.Fatalf("users: %+v", users)
 	}
 }

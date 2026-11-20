@@ -32,8 +32,8 @@ type CredentialStore interface {
 	GetUser(id string) (*domain.User, error)
 }
 
-// Service orchestrates the full authentication lifecycle. Identity hydration
-// (role → permissions) is provided by the RoleResolver callback.
+// Service orchestrates the full authentication lifecycle. Identity
+// permissions derive from the account's built-in role.
 type Service struct {
 	store       CredentialStore
 	totp        *TOTPManager
@@ -41,15 +41,14 @@ type Service struct {
 	idle        time.Duration
 	absolute    time.Duration
 	enforceTOTP bool
-	roleResolve func(roleID string) (*domain.Role, error)
 }
 
 // NewService wires the auth service.
 func NewService(store CredentialStore, totpMgr *TOTPManager, guard *LoginGuard,
-	idle, absolute time.Duration, enforceTOTP bool, roleResolve func(roleID string) (*domain.Role, error)) *Service {
+	idle, absolute time.Duration, enforceTOTP bool) *Service {
 	return &Service{
 		store: store, totp: totpMgr, guard: guard,
-		idle: idle, absolute: absolute, enforceTOTP: enforceTOTP, roleResolve: roleResolve,
+		idle: idle, absolute: absolute, enforceTOTP: enforceTOTP,
 	}
 }
 
@@ -171,20 +170,7 @@ func (s *Service) isTOTPCode(creds *storage.UserCredentials, code string) bool {
 }
 
 func (s *Service) buildIdentity(creds *storage.UserCredentials) (*domain.Identity, error) {
-	role, err := s.roleResolve(creds.RoleID)
-	if err != nil {
-		return nil, apierr.StorageErr(err)
-	}
-	return &domain.Identity{
-		UserID:      creds.UserID,
-		Username:    creds.Username,
-		DisplayName: creds.DisplayName,
-		RoleID:      role.ID,
-		RoleName:    role.Name,
-		Permissions: role.Permissions,
-		IsAdmin:     role.Name == domain.BuiltinRoleAdmin,
-		TOTPEnabled: creds.TOTPEnabled,
-	}, nil
+	return identityFor(creds.UserID, creds.Username, creds.DisplayName, creds.Role, creds.TOTPEnabled), nil
 }
 
 // ChangePassword verifies the old password, applies policy, rotates the hash,
@@ -326,20 +312,20 @@ func (s *Service) ResolveApiToken(token string) (*domain.Identity, *domain.ApiTo
 }
 
 func (s *Service) identityForUser(user *domain.User) (*domain.Identity, error) {
-	role, err := s.roleResolve(user.RoleID)
-	if err != nil {
-		return nil, apierr.StorageErr(err)
-	}
+	return identityFor(user.ID, user.Username, user.DisplayName, user.Role, user.TOTPEnabled), nil
+}
+
+// identityFor resolves a built-in role name into a hydrated principal.
+func identityFor(userID, username, displayName, role string, totpEnabled bool) *domain.Identity {
 	return &domain.Identity{
-		UserID:      user.ID,
-		Username:    user.Username,
-		DisplayName: user.DisplayName,
-		RoleID:      role.ID,
-		RoleName:    role.Name,
-		Permissions: role.Permissions,
-		IsAdmin:     role.Name == domain.BuiltinRoleAdmin,
-		TOTPEnabled: user.TOTPEnabled,
-	}, nil
+		UserID:      userID,
+		Username:    username,
+		DisplayName: displayName,
+		Role:        role,
+		Permissions: domain.RolePermissions(role),
+		IsAdmin:     role == domain.BuiltinRoleAdmin,
+		TOTPEnabled: totpEnabled,
+	}
 }
 
 // EnforceTOTP reports the global enforcement switch (new logins must enroll).

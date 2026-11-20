@@ -21,7 +21,7 @@ ON CONFLICT (group_id, user_id) DO NOTHING;
 DELETE FROM user_group_members WHERE group_id = $1 AND user_id = $2;
 
 -- name: ListGroupMembers :many
-SELECT u.id, u.username, u.display_name, u.role_id, u.is_active,
+SELECT u.id, u.username, u.display_name, u.role, u.is_active,
        u.must_change_password, u.totp_enabled, u.created_at, u.updated_at, u.last_login_at
 FROM users u JOIN user_group_members m ON m.user_id = u.id
 WHERE m.group_id = $1 ORDER BY u.username;
@@ -32,9 +32,9 @@ JOIN user_group_members m ON m.group_id = g.id
 WHERE m.user_id = $1 ORDER BY g.name;
 
 -- name: CreateHostGrant :exec
-INSERT INTO host_grants (id, user_group_id, server_id, group_name,
+INSERT INTO host_grants (id, user_group_id, group_name,
     can_connect, can_execute, created_by, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- name: ListHostGrants :many
 SELECT g.*, ug.id AS ug_id, ug.name AS ug_name, ug.description AS ug_description,

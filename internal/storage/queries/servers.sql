@@ -25,8 +25,7 @@ WHERE s.enabled = 1 AND EXISTS (
     SELECT 1 FROM host_grants g
     JOIN user_group_members m ON m.group_id = g.user_group_id
     WHERE m.user_id = $1
-      AND ((g.server_id <> '' AND g.server_id = s.id)
-        OR (g.group_name <> '' AND g.group_name = s.group_name))
+      AND g.group_name <> '' AND g.group_name = s.group_name
 ) ORDER BY s.group_name, s.name;
 
 -- name: ListServersForUserFiltered :many
@@ -36,8 +35,7 @@ WHERE s.enabled = 1 AND EXISTS (
     SELECT 1 FROM host_grants g
     JOIN user_group_members m ON m.group_id = g.user_group_id
     WHERE m.user_id = $1
-      AND ((g.server_id <> '' AND g.server_id = s.id)
-        OR (g.group_name <> '' AND g.group_name = s.group_name))
+      AND g.group_name <> '' AND g.group_name = s.group_name
       AND ((sqlc.arg('need_execute')::int = 0 AND g.can_connect = 1) OR (sqlc.arg('need_execute')::int = 1 AND g.can_execute = 1))
 ) ORDER BY s.group_name, s.name;
 
@@ -48,8 +46,7 @@ SELECT
 FROM host_grants g
 JOIN user_group_members m ON m.group_id = g.user_group_id
 WHERE m.user_id = $1
-  AND ((g.server_id <> '' AND g.server_id = $2)
-    OR (g.group_name <> '' AND g.group_name = $3));
+  AND g.group_name <> '' AND g.group_name = $2;
 
 -- name: DeleteServer :execrows
 DELETE FROM servers WHERE id = $1;

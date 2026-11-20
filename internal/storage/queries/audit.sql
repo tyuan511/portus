@@ -50,7 +50,7 @@ SELECT
     COALESCE(SUM(CASE WHEN approval_status = 'approved' THEN 1 ELSE 0 END), 0)::bigint AS approval_count,
     COALESCE(SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END), 0)::bigint AS denied_count,
     COALESCE(SUM(CASE WHEN (exit_code IS NOT NULL AND exit_code <> 0) OR (error IS NOT NULL AND error <> '') THEN 1 ELSE 0 END), 0)::bigint AS failed_count,
-    AVG(duration_ms)::float8 AS avg_duration_ms
+    COALESCE(AVG(duration_ms), 0)::float8 AS avg_duration_ms
 FROM audit_logs
 WHERE (sqlc.narg('server_id')::text IS NULL OR server_id = sqlc.narg('server_id')::text)
   AND (sqlc.narg('user_id')::text IS NULL OR user_id = sqlc.narg('user_id')::text)

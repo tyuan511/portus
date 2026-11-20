@@ -68,11 +68,7 @@ export default function App() {
       to: "/admin",
       label: t("nav.admin"),
       icon: Users,
-      show:
-        auth.hasPermission("users.manage") ||
-        auth.hasPermission("roles.manage") ||
-        auth.hasPermission("groups.manage") ||
-        auth.hasPermission("access.manage"),
+      show: auth.hasPermission("users.manage") || auth.hasPermission("access.manage"),
     },
     { to: "/settings", label: t("nav.settings"), icon: Settings, show: true },
   ].filter((n) => n.show);
@@ -105,7 +101,7 @@ export default function App() {
         <div className="border-t p-1.5">
           <div className="hidden px-2.5 pb-1 text-xs text-muted-foreground sm:block">
             {auth.identity.display_name || auth.identity.username}
-            <span className="ml-1 rounded bg-muted px-1 py-0.5 text-[10px]">{auth.identity.role_name}</span>
+            <span className="ml-1 rounded bg-muted px-1 py-0.5 text-[10px]">{t(auth.identity.role === "admin" ? "role.admin" : "role.member")}</span>
           </div>
           <Button variant="ghost" size="sm" className="w-full justify-start" onClick={() => void auth.logout()}>
             <LogOut className="size-4" />
