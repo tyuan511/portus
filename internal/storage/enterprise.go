@@ -156,6 +156,7 @@ func (u *userRow) toUser(withSecret bool) *domain.User {
 type UserCredentials struct {
 	UserID           string
 	Username         string
+	DisplayName      string
 	PasswordHash     string
 	RoleID           string
 	IsActive         bool
@@ -169,7 +170,8 @@ type UserCredentials struct {
 
 func (u *userRow) toCredentials() *UserCredentials {
 	c := &UserCredentials{
-		UserID: u.ID, Username: u.Username, PasswordHash: u.PasswordHash, RoleID: u.RoleID,
+		UserID: u.ID, Username: u.Username, DisplayName: u.DisplayName,
+		PasswordHash: u.PasswordHash, RoleID: u.RoleID,
 		IsActive: intToBool(u.IsActive), TOTPSecret: u.TOTPSecret, TOTPEnabled: intToBool(u.TOTPEnabled),
 		FailedAttempts: u.FailedAttempts, MustChangePassword: intToBool(u.MustChange),
 	}
@@ -242,6 +244,31 @@ func (db *DB) GetCredentialsByUsername(username string) (*UserCredentials, error
 		return nil, err
 	}
 	return u.toCredentials(), nil
+}
+
+// GetCredentialsByID loads the authentication record by user id.
+func (db *DB) GetCredentialsByID(id string) (*UserCredentials, error) {
+	row := db.sql.QueryRow(`SELECT `+userCols+` FROM users WHERE id = ?`, id)
+	u, err := scanUser(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return u.toCredentials(), nil
+}
+
+// ConsumeRecoveryCode replaces the stored recovery code hashes after one is
+// used (the consumed code is removed from the list by the caller).
+func (db *DB) ConsumeRecoveryCode(id string, remainingHashes []string) error {
+	if remainingHashes == nil {
+		remainingHashes = []string{}
+	}
+	conv, _ := json.Marshal(remainingHashes)
+	_, err := db.sql.Exec(`UPDATE users SET recovery_codes_json = ?, updated_at = ? WHERE id = ?`,
+		string(conv), nowRFC3339(), id)
+	return err
 }
 
 // ListUsers returns all accounts with their roles hydrated.
