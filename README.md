@@ -1,32 +1,76 @@
-# Sshield
+# SSHield Enterprise
 
-**AI 时代的轻量级安全运维网关与堡垒机（Rust 全栈）**
+Multi-user, RBAC-hardened SSH operations platform: **Go server + embedded Web UI + MCP endpoint**.
 
-> *SSH + Shield* —— 守在 AI Agent 与生产服务器之间的安全护盾。
+Teams connect to granted hosts through an audited web terminal; AI agents operate the same
+hosts through MCP — every command passes the layered security pipeline (L1 shell-AST rules →
+optional L2 AI semantic review → human approval → execution with output masking) and lands in
+a tamper-evident audit chain.
 
-## 核心特性
-- **多服务器与跳板机管理**：无侵入（Agentless）SSH/SFTP 连接，支持 `~/.ssh/config` 导入与多级 `ProxyJump` 跳板链路。
-- **双层命令安全引擎**：
-  - **L1 确定性规则引擎**：基于 Shell AST 语法树解析（`brush-parser`），防止管道/子命令绕过，严格执行分级黑白名单。
-  - **L2 AI 智能语义审核**：意图-命令一致性校验、风险评分与自然语言解读、返回结果敏感信息自动脱敏（Masking）。
-- **人机协同审批（HITL）**：高危命令自动挂起，支持桌面弹窗 / Web / IM 交互式审批。
-- **原生 MCP Server**：支持 `stdio`（本地客户端）与 `Streamable HTTP`（团队服务端），无缝接入 Cursor / Claude / 自研 Agent。
-- **双端形态**：
-  - **单人桌面版**：`Tauri v2` + `React`（本地 SQLite + 系统密钥链 + 原生审批弹窗）
-  - **团队服务端**：`Axum` + `React`（单二进制部署 + PostgreSQL + RBAC + 统一审计）
+## Quick start
 
-## 目录结构
-- `crates/sshield-core`：核心领域模型与策略抽象
-- `crates/sshield-ssh`：纯 Rust SSH/SFTP 与多级跳板机隧道（`russh`）
-- `crates/sshield-security`：Shell AST 规则引擎、AI 审核与输出脱敏
-- `crates/sshield-mcp`：原生 MCP Server（`rmcp`）
-- `crates/sshield-storage`：SQLite / PostgreSQL 持久层（`sqlx`）
-- `apps/server`：团队版服务端（`axum`）
-- `apps/desktop`（待初始化）：单人版客户端（`Tauri v2`）
-- `apps/web`（待初始化）：React + TypeScript 前端工作台
+```bash
+make build            # builds web/ then the single static binary
+./bin/sshield-server  # listens on 127.0.0.1:8787
+```
 
-详细调研与产品规划见 [docs/ARCHITECTURE_AND_PLAN.md](docs/ARCHITECTURE_AND_PLAN.md)。
+First boot bootstraps (idempotent):
 
-## 开源协议
+- built-in roles `admin` (immutable, all permissions) and `member`
+  (connect/execute on granted hosts + MCP by default, editable)
+- the initial admin account — password comes from `bootstrap.admin_password`,
+  `bootstrap.admin_password_file`, or is **generated** and printed to stderr plus
+  `~/.local/share/sshield/bootstrap-admin-password.txt` (0600, delete after first login)
+- the default L1 command rule set
 
-本项目基于 [Apache-2.0](LICENSE) 协议开源。
+Open http://127.0.0.1:8787, sign in as the bootstrap admin, change the password, then:
+create **user groups**, grant **hosts / host groups** to them in *Access*, and invite
+**users**. Members see exactly what is granted to them — nothing else.
+
+## What's inside
+
+| Area | Details |
+|---|---|
+| Auth | Argon2id passwords, DB-backed sessions (HttpOnly cookie, idle+absolute expiry, revocation on password change/disable), TOTP 2FA with hashed recovery codes, brute-force guard (per-user lockout + per-IP sliding window, persisted) |
+| RBAC | 18 fine-grained permission keys, editable `member` role, custom roles, user groups, host/host-group grants with connect/execute levels; enforced on REST, websockets, and every MCP tool call |
+| Audit | Full hash chain (SHA-256 `prev_hash`), per-user attribution, members see only their own trail (incl. their MCP activity), admins see everything, chain verification endpoint |
+| MCP | Official Go SDK, streamable HTTP at `/mcp`, bearer PAT only (never cookies), stateless JSON mode, per-token rate limit, all 14 tools RBAC-scoped |
+| SSH | ProxyJump chains with cycle detection, credential fallback vault→identity-file→agent→default keys, PTY terminals over websocket, exec with timeout + output masking |
+| Vault | AES-256-GCM sealed credential store, Argon2id master key, idle auto-lock, admin-only management |
+| Web | React 19 + Vite + Tailwind v4 SPA, 17 themes, embedded into the binary via `go:embed`, xterm.js terminal, permission-aware navigation |
+
+## Layout
+
+```
+cmd/sshield-server/    entrypoint
+internal/
+  config/              viper TOML + SSHIELD_* env overrides
+  domain/              shared models (snake_case JSON contract)
+  storage/             SQLite (modernc, cgo-free), versioned migrations, audit chain
+  vault/               sealed credential vault
+  security/            L1 engine (mvdan/sh), masking, L2 reviewers
+  sshpool/             connection pool, jump chains, exec, PTY
+  auth/                passwords, sessions, TOTP, PATs, brute-force guard
+  rbac/                permission + host-grant evaluation
+  approvals/           human-in-the-loop broker with WS fan-out
+  mcpserver/           MCP tools + per-call identity
+  httpserver/          fiber app, middleware, handlers, WS hubs, embedded SPA
+  webui/               go:embed target for web/dist
+web/                   React frontend source
+```
+
+## Docs
+
+- [docs/config.md](docs/config.md) — full configuration reference
+- [docs/security.md](docs/security.md) — security model & hardening checklist
+- [docs/mcp.md](docs/mcp.md) — connecting MCP clients with personal access tokens
+- [docs/deploy.md](docs/deploy.md) — production deployment (TLS, reverse proxy)
+
+## Development
+
+```bash
+make dev    # go server on :8787 + vite dev server on :5173 (proxy /api,/ws,/mcp)
+make test   # go test ./...
+```
+
+Legacy Rust/Tauri single-user implementation: archived on the `rust-legacy` branch.
