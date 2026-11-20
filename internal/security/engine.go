@@ -19,7 +19,7 @@ import (
 
 // Engine evaluates shell commands against security rules using the AST.
 type Engine struct {
-	parser *syntax.Parser
+	parser  *syntax.Parser
 	printer *syntax.Printer
 }
 

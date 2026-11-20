@@ -23,11 +23,11 @@ const (
 	CodeOK Code = 0
 
 	// 40xxx — generic request errors.
-	CodeInvalidRequest  Code = 40001 // malformed JSON / bad params (400)
-	CodeUnauthorized    Code = 40002 // missing or invalid session/token (401)
-	CodeForbidden       Code = 40003 // insufficient permission (403)
-	CodeNotFound        Code = 40004 // resource not found (404)
-	CodeConflict        Code = 40005 // duplicate resource (409)
+	CodeInvalidRequest   Code = 40001 // malformed JSON / bad params (400)
+	CodeUnauthorized     Code = 40002 // missing or invalid session/token (401)
+	CodeForbidden        Code = 40003 // insufficient permission (403)
+	CodeNotFound         Code = 40004 // resource not found (404)
+	CodeConflict         Code = 40005 // duplicate resource (409)
 	CodeValidationFailed Code = 40006 // semantic validation failure (422)
 	CodeMethodNotAllowed Code = 40007
 
@@ -61,7 +61,7 @@ const (
 	CodeTerminalFailure Code = 44004 // PTY session could not be established (502)
 
 	// 50xxx — server faults.
-	CodeInternal Code = 50001 // unexpected internal error (500)
+	CodeInternal  Code = 50001 // unexpected internal error (500)
 	CodeStorage   Code = 50002 // persistence layer failure (500)
 	CodeConfigErr Code = 50003 // server misconfiguration (500)
 )
@@ -95,18 +95,24 @@ func Wrap(code Code, status int, message string, cause error) *E {
 
 // --- constructors for the common cases ---
 
-func BadRequest(msg string) *E  { return New(CodeInvalidRequest, http.StatusBadRequest, msg) }
+func BadRequest(msg string) *E { return New(CodeInvalidRequest, http.StatusBadRequest, msg) }
 func BadRequestf(format string, a ...any) *E {
 	return New(CodeInvalidRequest, http.StatusBadRequest, fmt.Sprintf(format, a...))
 }
-func Unauthorized(msg string) *E { return New(CodeUnauthorized, http.StatusUnauthorized, or(msg, "authentication required")) }
-func Forbidden(msg string) *E    { return New(CodeForbidden, http.StatusForbidden, or(msg, "permission denied")) }
+func Unauthorized(msg string) *E {
+	return New(CodeUnauthorized, http.StatusUnauthorized, or(msg, "authentication required"))
+}
+func Forbidden(msg string) *E {
+	return New(CodeForbidden, http.StatusForbidden, or(msg, "permission denied"))
+}
 func NotFoundf(format string, a ...any) *E {
 	return New(CodeNotFound, http.StatusNotFound, fmt.Sprintf(format, a...))
 }
 func Conflict(msg string) *E { return New(CodeConflict, http.StatusConflict, msg) }
-func Unprocessable(msg string) *E { return New(CodeValidationFailed, http.StatusUnprocessableEntity, msg) }
-func Locked(code Code, msg string) *E { return New(code, http.StatusLocked, msg) }
+func Unprocessable(msg string) *E {
+	return New(CodeValidationFailed, http.StatusUnprocessableEntity, msg)
+}
+func Locked(code Code, msg string) *E          { return New(code, http.StatusLocked, msg) }
 func TooManyRequests(code Code, msg string) *E { return New(code, http.StatusTooManyRequests, msg) }
 func Internal(msg string, cause error) *E {
 	return Wrap(CodeInternal, http.StatusInternalServerError, or(msg, "internal error"), cause)

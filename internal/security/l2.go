@@ -29,9 +29,9 @@ type Reviewer interface {
 // L2Reviewer dispatches to LLM protocols or SystemOne fast-decision endpoints.
 // Strictly fail-closed: any error escalates to ask_approval via the caller.
 type L2Reviewer struct {
-	http    *http.Client
-	vault   SecretResolver
-	config  domain.L2ProviderConfig
+	http   *http.Client
+	vault  SecretResolver
+	config domain.L2ProviderConfig
 }
 
 // SecretResolver resolves the provider API key from the vault.

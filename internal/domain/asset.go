@@ -66,20 +66,20 @@ func FromAsset(a *ServerAsset) AuthorizedServerInfo {
 type VaultCredentialKind string
 
 const (
-	CredPassword    VaultCredentialKind = "password"
-	CredPrivateKey  VaultCredentialKind = "private_key"
-	CredAPIKey      VaultCredentialKind = "api_key"
+	CredPassword   VaultCredentialKind = "password"
+	CredPrivateKey VaultCredentialKind = "private_key"
+	CredAPIKey     VaultCredentialKind = "api_key"
 )
 
 // VaultCredentialMeta is non-secret metadata for a vault credential.
 type VaultCredentialMeta struct {
-	ID        string              `json:"id"`
-	Label     string              `json:"label"`
-	Kind      VaultCredentialKind `json:"kind"`
-	Username  string              `json:"username,omitempty"`
+	ID       string              `json:"id"`
+	Label    string              `json:"label"`
+	Kind     VaultCredentialKind `json:"kind"`
+	Username string              `json:"username,omitempty"`
 	// Preview is a masked preview (e.g. "sk-***9a2f"), never the plaintext secret.
-	Preview   string              `json:"preview"`
-	CreatedAt time.Time           `json:"created_at"`
+	Preview   string    `json:"preview"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // VaultLockState is the lifecycle state of the sealed vault.
@@ -127,12 +127,12 @@ const (
 // ApprovalRequest is sent to the human approval handler when a command
 // is classified as ask_approval.
 type ApprovalRequest struct {
-	ID         string                 `json:"id"`
-	TraceID    string                 `json:"trace_id"`
-	CreatedAt  time.Time              `json:"created_at"`
-	ServerID   string                 `json:"server_id"`
-	ServerName string                 `json:"server_name"`
-	Host       string                 `json:"host"`
+	ID         string    `json:"id"`
+	TraceID    string    `json:"trace_id"`
+	CreatedAt  time.Time `json:"created_at"`
+	ServerID   string    `json:"server_id"`
+	ServerName string    `json:"server_name"`
+	Host       string    `json:"host"`
 	// Username is the remote SSH login user (e.g. "root").
 	Username    string                 `json:"username"`
 	Command     string                 `json:"command"`

@@ -27,20 +27,20 @@ func TestAuditChainAppendAndVerify(t *testing.T) {
 			code = 2
 		}
 		ev := &domain.AuditEvent{
-			ID:        GenerateID("aud"),
-			Actor:     "mcp-http",
-			Timestamp: time.Now().UTC(),
-			ServerID:  "srv-1",
+			ID:         GenerateID("aud"),
+			Actor:      "mcp-http",
+			Timestamp:  time.Now().UTC(),
+			ServerID:   "srv-1",
 			ServerName: "web-1",
-			SSHUser:   "root",
+			SSHUser:    "root",
 			ServerHost: "10.0.0.1:22",
-			Operator:  "alice",
-			UserID:    "usr-1",
-			Username:  "alice",
-			Command:   "ls -la",
-			Intent:    "listing",
-			Decision:  domain.DecisionAllow,
-			ExitCode:  &code,
+			Operator:   "alice",
+			UserID:     "usr-1",
+			Username:   "alice",
+			Command:    "ls -la",
+			Intent:     "listing",
+			Decision:   domain.DecisionAllow,
+			ExitCode:   &code,
 		}
 		if err := db.AppendAudit(ev); err != nil {
 			t.Fatalf("append %d: %v", i, err)
@@ -354,5 +354,24 @@ func TestServerCRUD(t *testing.T) {
 	}
 	if _, err := db.GetServer(s.ID); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestListUsersWithRoles(t *testing.T) {
+	db := testDB(t)
+	if err := db.UpsertRole(&domain.Role{ID: "role-member", Name: "member", IsBuiltin: true,
+		Permissions: domain.BuiltinMemberPermissions(), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateUser(&domain.User{ID: "usr-1", Username: "zed", DisplayName: "Z",
+		RoleID: "role-member", IsActive: true}, "h", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	users, err := db.ListUsers()
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) != 1 || users[0].Username != "zed" || users[0].Role == nil || users[0].Role.Name != "member" {
+		t.Fatalf("users: %+v", users)
 	}
 }

@@ -297,7 +297,7 @@ func (db *DB) VerifyAuditChain() (*domain.AuditChainStatus, error) {
 			ID: r.ID, TraceID: r.TraceID, Actor: r.Actor, Timestamp: mustParse(r.Timestamp),
 			ServerID: r.ServerID, Command: r.Command, Intent: r.Intent,
 			Decision: domain.PolicyDecision(r.Decision),
-			SSHUser: r.SSHUser, ServerHost: r.ServerHost, Operator: r.Operator,
+			SSHUser:  r.SSHUser, ServerHost: r.ServerHost, Operator: r.Operator,
 			UserID: r.UserID, Username: r.Username,
 			PrevHash: r.PrevHash,
 			ExitCode: nullIntToPtr(r.ExitCode),

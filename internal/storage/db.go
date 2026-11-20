@@ -18,7 +18,7 @@ import (
 
 // DB wraps the SQLite handle plus the optional audit JSONL mirror path.
 type DB struct {
-	sql          *sql.DB
+	sql            *sql.DB
 	auditJSONLPath string
 }
 

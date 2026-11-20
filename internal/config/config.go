@@ -102,6 +102,15 @@ func Defaults(v *viper.Viper) {
 	v.SetDefault("security.token_ttl_hours", 0)
 }
 
+// Bare returns the default configuration as a plain struct (tests, tooling).
+func Bare() *Config {
+	v := viper.New()
+	Defaults(v)
+	cfg := &Config{}
+	_ = v.Unmarshal(cfg)
+	return cfg
+}
+
 // Load reads the configuration. path empty = $SSHIELD_CONFIG = <data_dir>/sshield-server.toml.
 func Load(path string) (*Config, error) {
 	v := viper.New()

@@ -3,7 +3,6 @@
 // web frontend and MCP clients.
 package domain
 
-
 // PolicyDecision is the outcome of the layered security policy for a command.
 type PolicyDecision string
 
@@ -72,36 +71,36 @@ type ParsedCommandInfo struct {
 
 // CommandVerdict is the result of the L1 AST security evaluation.
 type CommandVerdict struct {
-	Decision       PolicyDecision     `json:"decision"`
-	ParseOK        bool               `json:"parse_ok"`
+	Decision       PolicyDecision      `json:"decision"`
+	ParseOK        bool                `json:"parse_ok"`
 	ParsedCommands []ParsedCommandInfo `json:"parsed_commands"`
-	MatchedRules   []string           `json:"matched_rules"`
-	Reason         string             `json:"reason"`
+	MatchedRules   []string            `json:"matched_rules"`
+	Reason         string              `json:"reason"`
 }
 
 // L2Protocol enumerates the supported L2 semantic reviewer protocols.
 type L2Protocol string
 
 const (
-	L2OpenAiChat       L2Protocol = "openai_chat"
-	L2OpenAiResponses  L2Protocol = "openai_responses"
-	L2AnthropicMsgs    L2Protocol = "anthropic_messages"
-	L2SystemOneFast    L2Protocol = "system_one_fast"
+	L2OpenAiChat      L2Protocol = "openai_chat"
+	L2OpenAiResponses L2Protocol = "openai_responses"
+	L2AnthropicMsgs   L2Protocol = "anthropic_messages"
+	L2SystemOneFast   L2Protocol = "system_one_fast"
 )
 
 // L2ProviderConfig configures the L2 AI semantic review provider.
 // The API key itself lives in the vault, referenced by credential id.
 type L2ProviderConfig struct {
-	ID                  string     `json:"id"`
-	Name                string     `json:"name"`
-	Protocol            L2Protocol `json:"protocol"`
-	BaseURL             string     `json:"base_url"`
-	Model               string     `json:"model"`
-	APIKeyCredentialID  string     `json:"api_key_credential_id,omitempty"`
-	TimeoutMs           int64      `json:"timeout_ms"`
-	RiskThresholdAsk    int        `json:"risk_threshold_ask"`
-	RiskThresholdDeny   int        `json:"risk_threshold_deny"`
-	Enabled             bool       `json:"enabled"`
+	ID                 string     `json:"id"`
+	Name               string     `json:"name"`
+	Protocol           L2Protocol `json:"protocol"`
+	BaseURL            string     `json:"base_url"`
+	Model              string     `json:"model"`
+	APIKeyCredentialID string     `json:"api_key_credential_id,omitempty"`
+	TimeoutMs          int64      `json:"timeout_ms"`
+	RiskThresholdAsk   int        `json:"risk_threshold_ask"`
+	RiskThresholdDeny  int        `json:"risk_threshold_deny"`
+	Enabled            bool       `json:"enabled"`
 }
 
 // DefaultL2ProviderConfig returns the default (disabled) L2 configuration.

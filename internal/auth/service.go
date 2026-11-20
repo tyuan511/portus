@@ -55,10 +55,10 @@ func NewService(store CredentialStore, totpMgr *TOTPManager, guard *LoginGuard,
 
 // LoginResult carries the outcome of a successful login.
 type LoginResult struct {
-	SessionToken   string
-	Session        *domain.UserSession
-	Identity       *domain.Identity
-	MustChangePass bool
+	SessionToken     string
+	Session          *domain.UserSession
+	Identity         *domain.Identity
+	MustChangePass   bool
 	RecoveryCodeUsed bool
 }
 

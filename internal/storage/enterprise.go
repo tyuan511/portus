@@ -19,7 +19,8 @@ func scanRole(row interface{ Scan(...any) error }) (*domain.Role, error) {
 	var r domain.Role
 	var permsJSON string
 	var builtin int
-	if err := row.Scan(&r.ID, &r.Name, &permsJSON, &builtin, &r.Description, &r.CreatedAt); err != nil {
+	var createdAt string
+	if err := row.Scan(&r.ID, &r.Name, &permsJSON, &builtin, &r.Description, &createdAt); err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal([]byte(permsJSON), &r.Permissions)
@@ -27,6 +28,7 @@ func scanRole(row interface{ Scan(...any) error }) (*domain.Role, error) {
 		r.Permissions = []domain.Permission{}
 	}
 	r.IsBuiltin = intToBool(builtin)
+	r.CreatedAt, _ = parseRFC3339(createdAt)
 	return &r, nil
 }
 
@@ -154,17 +156,17 @@ func (u *userRow) toUser(withSecret bool) *domain.User {
 
 // UserCredentials is the internal authentication record (hash + TOTP material).
 type UserCredentials struct {
-	UserID           string
-	Username         string
-	DisplayName      string
-	PasswordHash     string
-	RoleID           string
-	IsActive         bool
-	TOTPSecret       string
-	TOTPEnabled      bool
-	RecoveryCodes    []string
-	FailedAttempts   int
-	LockedUntil      *time.Time
+	UserID             string
+	Username           string
+	DisplayName        string
+	PasswordHash       string
+	RoleID             string
+	IsActive           bool
+	TOTPSecret         string
+	TOTPEnabled        bool
+	RecoveryCodes      []string
+	FailedAttempts     int
+	LockedUntil        *time.Time
 	MustChangePassword bool
 }
 
@@ -273,7 +275,7 @@ func (db *DB) ConsumeRecoveryCode(id string, remainingHashes []string) error {
 
 // ListUsers returns all accounts with their roles hydrated.
 func (db *DB) ListUsers() ([]*domain.User, error) {
-	rows, err := db.sql.Query(`SELECT u.` + qualifyCols(userCols, "u") + `, r.` +
+	rows, err := db.sql.Query(`SELECT ` + qualifyCols(userCols, "u") + `, ` +
 		qualifyCols(roleCols, "r") + `
 		FROM users u JOIN roles r ON r.id = u.role_id ORDER BY u.created_at`)
 	if err != nil {
