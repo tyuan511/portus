@@ -5,6 +5,7 @@
 package storage
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"embed"
@@ -14,6 +15,7 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/stdlib"
@@ -33,7 +35,14 @@ type DB struct {
 	q              *db.Queries
 	sqlDB          *sql.DB
 	auditJSONLPath string
+
+	// mu guards encKey; it seals credential secrets at rest.
+	mu     sync.RWMutex
+	encKey []byte
 }
+
+// Credential lookup used by secret resolvers; kept on the context path.
+var _ = context.Background
 
 // Open connects to PostgreSQL and ensures the schema exists.
 // dsn is a pgx URL, e.g. "postgres://user:pass@host:5432/sshield?sslmode=disable".

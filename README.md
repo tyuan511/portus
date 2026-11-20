@@ -41,9 +41,9 @@ create **user groups**, grant **hosts / host groups** to them in *Access*, and i
 | Auth | Argon2id passwords, DB-backed sessions (HttpOnly cookie, idle+absolute expiry, revocation on password change/disable), TOTP 2FA with hashed recovery codes, brute-force guard (per-user lockout + per-IP sliding window, persisted) |
 | RBAC | 18 fine-grained permission keys, editable `member` role, custom roles, user groups, host/host-group grants with connect/execute levels; enforced on REST, websockets, and every MCP tool call |
 | Audit | Full hash chain (SHA-256 `prev_hash`), per-user attribution, members see only their own trail (incl. their MCP activity), admins see everything, chain verification endpoint |
-| MCP | Official Go SDK, streamable HTTP at `/mcp`, bearer PAT only (never cookies), stateless JSON mode, per-token rate limit, all 14 tools RBAC-scoped |
+| MCP | Official Go SDK, streamable HTTP at `/mcp`, bearer PAT only (never cookies), stateless JSON mode, per-token rate limit, 12 tools RBAC-scoped |
 | SSH | ProxyJump chains with cycle detection, credential fallback vault→identity-file→agent→default keys, PTY terminals over websocket, exec with timeout + output masking |
-| Vault | AES-256-GCM sealed credential store, Argon2id master key, idle auto-lock, admin-only management |
+| Credentials | Per-host passwords/keys sealed with AES-256-GCM under the server key and stored in PostgreSQL — a stolen database dump alone is undecryptable |
 | Databases | SQLite (default, cgo-free), MySQL, PostgreSQL — same schema, versioned migrations, chosen by config |
 | Web | React 19 + Vite + Tailwind v4 SPA, 17 themes, embedded into the binary via `go:embed`, xterm.js terminal, permission-aware navigation |
 

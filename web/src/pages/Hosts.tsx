@@ -10,7 +10,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
 import { ErrorText, Page, PageHeader } from "@/components/ui/shared";
-import type { ServerAsset } from "@/types";
+import type { ServerAsset, CredentialMeta } from "@/types";
 
 const EMPTY_FORM = {
   id: "",
@@ -37,6 +37,9 @@ export default function Hosts() {
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
   const [testResult, setTestResult] = useState<Record<string, string>>({});
+  const [credentials, setCredentials] = useState<CredentialMeta[]>([]);
+  const [newCred, setNewCred] = useState<{ label: string; username: string; secret: string } | null>(null);
+  const [credError, setCredError] = useState<string>();
 
   const canManage = auth.hasPermission("host.manage");
   const canConnect = auth.hasPermission("host.connect");
@@ -64,7 +67,33 @@ export default function Hosts() {
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [servers]);
 
+  const loadCredentials = useCallback(async () => {
+    if (!auth.hasPermission("host.manage")) return;
+    try {
+      setCredentials(await api.get<CredentialMeta[]>("/api/credentials"));
+    } catch {
+      setCredentials([]);
+    }
+  }, [auth.identity?.user_id]);
+
+  const createCredential = async () => {
+    if (!newCred?.label || !newCred?.secret) return;
+    setCredError(undefined);
+    try {
+      const meta = await api.post<CredentialMeta>("/api/credentials", {
+        kind: "password", label: newCred.label, username: newCred.username, secret: newCred.secret,
+      });
+      setNewCred(null);
+      await loadCredentials();
+      setForm((f) => (f ? { ...f, credential_id: meta.id } : f));
+    } catch (err) {
+      setCredError(err instanceof Error ? err.message : "create credential failed");
+    }
+  };
+
   const openForm = (s?: ServerAsset) => {
+    void loadCredentials();
+    setCredError(undefined);
     setForm(
       s
         ? {
@@ -235,14 +264,40 @@ export default function Hosts() {
                   onChange={(e) => setForm({ ...form, auth_kind: e.target.value as ServerAsset["auth_kind"] })}>
                   <option value="agent_or_default_key">Agent / default key</option>
                   <option value="identity_file">Identity file</option>
-                  <option value="keyring_password">Vault credential</option>
+                  <option value="keyring_password">Stored credential</option>
                 </select>
               </div>
               {form.auth_kind === "identity_file" && (
                 <div className="col-span-2 space-y-1"><Label>Identity file path (on server host machine)</Label><Input value={form.identity_file} onChange={(e) => setForm({ ...form, identity_file: e.target.value })} /></div>
               )}
               {form.auth_kind === "keyring_password" && (
-                <div className="col-span-2 space-y-1"><Label>Vault credential id</Label><Input value={form.credential_id} onChange={(e) => setForm({ ...form, credential_id: e.target.value })} /></div>
+                <div className="col-span-2 space-y-1.5">
+                  <Label>Stored credential (encrypted with the server key)</Label>
+                  <select className="h-8 w-full rounded-lg border bg-background px-2 text-sm"
+                    value={form.credential_id}
+                    onChange={(e) => setForm({ ...form, credential_id: e.target.value })}>
+                    <option value="">Select a stored credential…</option>
+                    {credentials.map((c) => (
+                      <option key={c.id} value={c.id}>{c.label}{c.username ? ` (${c.username})` : ""}</option>
+                    ))}
+                  </select>
+                  {!newCred ? (
+                    <Button variant="outline" size="xs" onClick={() => setNewCred({ label: "", username: "root", secret: "" })}>
+                      <Plus className="size-3" /> New password credential
+                    </Button>
+                  ) : (
+                    <div className="space-y-2 rounded-lg border p-3">
+                      <Input placeholder="Label (e.g. prod root)" value={newCred.label} onChange={(e) => setNewCred({ ...newCred, label: e.target.value })} />
+                      <Input placeholder="SSH username (optional)" value={newCred.username} onChange={(e) => setNewCred({ ...newCred, username: e.target.value })} />
+                      <Input type="password" placeholder="Password (sealed server-side, never stored in plain text)" value={newCred.secret} onChange={(e) => setNewCred({ ...newCred, secret: e.target.value })} />
+                      {credError && <p className="text-xs text-destructive">{credError}</p>}
+                      <div className="flex gap-2">
+                        <Button size="xs" onClick={() => void createCredential()} disabled={!newCred.label || !newCred.secret}>Create &amp; select</Button>
+                        <Button size="xs" variant="outline" onClick={() => setNewCred(null)}>Cancel</Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
               <div className="space-y-1"><Label>Jump host id</Label><Input value={form.jump_host_id} onChange={(e) => setForm({ ...form, jump_host_id: e.target.value })} /></div>
               <div className="space-y-1"><Label>Tags (comma sep.)</Label><Input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} /></div>

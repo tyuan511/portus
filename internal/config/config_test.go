@@ -105,7 +105,7 @@ func TestLegacyEnvOverrides(t *testing.T) {
 	if cfg.Server.Bind != "127.0.0.1:9999" {
 		t.Fatalf("legacy addr: %s", cfg.Server.Bind)
 	}
-	if cfg.VaultPath() != "/tmp/legacy-vault.enc" {
-		t.Fatalf("legacy vault path: %s", cfg.VaultPath())
+	if cfg.ServerKeyPath() == "" {
+		t.Fatal("server key path must resolve")
 	}
 }

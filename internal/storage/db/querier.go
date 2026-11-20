@@ -20,16 +20,19 @@ type Querier interface {
 	CleanupExpiredSessions(ctx context.Context, expiresAt string) (int64, error)
 	CleanupStaleAuthAttempts(ctx context.Context, createdAt string) (int64, error)
 	ConsumeRecoveryCode(ctx context.Context, arg ConsumeRecoveryCodeParams) error
+	CountCredentials(ctx context.Context) (int64, error)
 	CountFailedAttemptsByIP(ctx context.Context, arg CountFailedAttemptsByIPParams) (int64, error)
 	CountFailedAttemptsByUser(ctx context.Context, arg CountFailedAttemptsByUserParams) (int64, error)
 	CountRoleUsers(ctx context.Context, roleID string) (int64, error)
 	CountRules(ctx context.Context) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateApiToken(ctx context.Context, arg CreateApiTokenParams) error
+	CreateCredential(ctx context.Context, arg CreateCredentialParams) error
 	CreateHostGrant(ctx context.Context, arg CreateHostGrantParams) error
 	CreateSession(ctx context.Context, arg CreateSessionParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
 	CreateUserGroup(ctx context.Context, arg CreateUserGroupParams) error
+	DeleteCredential(ctx context.Context, id string) (int64, error)
 	DeleteHostGrant(ctx context.Context, id string) (int64, error)
 	DeleteRole(ctx context.Context, id string) (int64, error)
 	DeleteRule(ctx context.Context, id string) (int64, error)
@@ -42,6 +45,7 @@ type Querier interface {
 	DistinctServerGroups(ctx context.Context) ([]string, error)
 	GetApiTokenByHash(ctx context.Context, tokenHash string) (ApiToken, error)
 	GetAuditTailHash(ctx context.Context) (string, error)
+	GetCredential(ctx context.Context, id string) (Credential, error)
 	GetL2Config(ctx context.Context) (L2Config, error)
 	GetRoleBuiltin(ctx context.Context, id string) (int32, error)
 	GetRoleByID(ctx context.Context, id string) (Role, error)
@@ -57,6 +61,7 @@ type Querier interface {
 	InsertAudit(ctx context.Context, arg InsertAuditParams) error
 	ListAllSessions(ctx context.Context) ([]Session, error)
 	ListApiTokensForUser(ctx context.Context, userID string) ([]ApiToken, error)
+	ListCredentials(ctx context.Context) ([]ListCredentialsRow, error)
 	ListEnabledServers(ctx context.Context) ([]Server, error)
 	ListGroupMembers(ctx context.Context, groupID string) ([]ListGroupMembersRow, error)
 	ListGroupsForUser(ctx context.Context, userID string) ([]UserGroup, error)

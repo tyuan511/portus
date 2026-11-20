@@ -41,7 +41,7 @@ Requirements: `Content-Type: application/json` and
 | `query_audit_logs`, `get_audit_stats` | scoped to the caller's own trail unless `audit.view_all` |
 | `verify_audit_chain` | `audit.view_all` (admin) |
 | `list_pending_approvals` | `approvals.decide` (admin) |
-| `get_vault_status`, `list_vault_credentials` | `vault.manage` (admin) |
+| — 12 tools total — | vault tools were removed; credentials are managed in the host form |
 
 `execute_command` runs the full pipeline: L1 AST rules → optional L2 review → human approval
 (surfaced live in the web UI's Approvals page) → SSH execution with masked output → audit

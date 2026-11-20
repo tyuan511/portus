@@ -23,9 +23,9 @@ import (
 	"github.com/yuantang/sshield/internal/logging"
 	"github.com/yuantang/sshield/internal/rbac"
 	"github.com/yuantang/sshield/internal/security"
+	"github.com/yuantang/sshield/internal/serverkey"
 	"github.com/yuantang/sshield/internal/sshpool"
 	"github.com/yuantang/sshield/internal/storage"
-	"github.com/yuantang/sshield/internal/vault"
 )
 
 // fixture is a fully wired server over a temp database.
@@ -94,11 +94,14 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	sealedVault := vault.New(filepath.Join(dir, "vault.enc"), time.Minute)
-	totpMgr, err := auth.NewTOTPManager(filepath.Join(dir, "server.key"), "SSHield")
+	serverKey, err := serverkey.LoadOrCreate(filepath.Join(dir, "server.key"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.SetEncryptionKey(serverKey); err != nil {
+		t.Fatal(err)
+	}
+	totpMgr := auth.NewTOTPManagerWithKey(serverKey, "SSHield")
 	guard := auth.NewLoginGuard(db, auth.GuardConfig{
 		LoginMaxAttempts: cfg.Security.LoginMaxAttempts, LockoutMinutes: cfg.Security.LockoutMinutes,
 		IPMaxAttempts: cfg.Security.IPMaxAttempts, IPWindowMinutes: cfg.Security.IPWindowMinutes,
@@ -106,12 +109,12 @@ func newFixture(t *testing.T) *fixture {
 	authSvc := auth.NewService(db, totpMgr, guard, cfg.SessionIdle(), cfg.SessionAbsolute(),
 		cfg.Security.EnforceTOTP, func(roleID string) (*domain.Role, error) { return db.GetRole(roleID) })
 	rbacSvc := rbac.NewService(db)
-	pool := sshpool.NewPool(sealedVault)
+	pool := sshpool.NewPool(db)
 	engine := security.NewEngine()
 	broker := approvals.NewBroker()
 
 	log := logging.NewNop()
-	server := httpserver.New(log, cfg, db, authSvc, rbacSvc, pool, engine, broker, sealedVault)
+	server := httpserver.New(log, cfg, db, authSvc, rbacSvc, pool, engine, broker)
 
 	return &fixture{t: t, app: server.App(), db: db, auth: authSvc, cfg: cfg}
 }
@@ -286,10 +289,10 @@ func TestMemberSeesOnlyGrantedServers(t *testing.T) {
 		t.Fatalf("member users.manage must 403, got %d", status)
 	}
 
-	// Member cannot read the vault.
-	status, _ = bob.do("GET", "/api/vault/status", nil)
+	// Member cannot manage credentials.
+	status, _ = bob.do("POST", "/api/credentials", map[string]any{"kind": "password", "label": "x", "secret": "y"})
 	if status != 403 {
-		t.Fatalf("member vault must 403, got %d", status)
+		t.Fatalf("member credential management must 403, got %d", status)
 	}
 }
 

@@ -267,6 +267,15 @@ export interface UserSession {
   expires_at: string;
 }
 
+export interface CredentialMeta {
+  id: string;
+  kind: "password" | "private_key" | "api_key";
+  label: string;
+  username?: string;
+  created_by?: string;
+  created_at: string;
+}
+
 export interface LoginResponse {
   user: Identity;
   must_change_password: boolean;

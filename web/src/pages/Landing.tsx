@@ -55,7 +55,7 @@ const FEATURES = [
   {
     icon: Database,
     title: "MCP for AI agents",
-    body: "Fourteen scoped tools over streamable HTTP with personal access tokens. Agents inherit the same RBAC as humans.",
+    body: "Twelve scoped tools over streamable HTTP with personal access tokens. Agents inherit the same RBAC as humans.",
   },
   {
     icon: Lock,

@@ -21,7 +21,6 @@ import (
 	"github.com/yuantang/sshield/internal/security"
 	"github.com/yuantang/sshield/internal/sshpool"
 	"github.com/yuantang/sshield/internal/storage"
-	"github.com/yuantang/sshield/internal/vault"
 )
 
 // IdentityResolver validates a bearer PAT into an identity (auth.Service).
@@ -37,7 +36,6 @@ type Deps struct {
 	Pool   *sshpool.Pool
 	Engine *security.Engine
 	Broker *approvals.Broker
-	Vault  *vault.Vault
 	Rules  func() []*domain.SecurityRule
 	L2     func() security.Reviewer
 	Audit  func(ev *domain.AuditEvent)
@@ -69,8 +67,6 @@ func NewHandler(d Deps) http.Handler {
 		{"get_audit_stats", "Aggregated audit statistics (scoped to the caller unless admin)", `{"type":"object","properties":{}}`, tGetAuditStats},
 		{"verify_audit_chain", "Verify the tamper-evident audit hash chain (admin)", `{"type":"object","properties":{}}`, tVerifyAuditChain},
 		{"list_pending_approvals", "List pending command approvals (approvals.decide permission)", `{"type":"object","properties":{}}`, tListPendingApprovals},
-		{"get_vault_status", "Credential vault lock status (vault.manage permission)", `{"type":"object","properties":{}}`, tGetVaultStatus},
-		{"list_vault_credentials", "List credential metadata without secrets (vault.manage permission)", `{"type":"object","properties":{}}`, tListVaultCredentials},
 		{"get_l2_config", "Get the L2 AI semantic review configuration (rules.read permission)", `{"type":"object","properties":{}}`, tGetL2Config},
 		{"execute_command", "Execute a shell command on a server through the layered security pipeline (L1 → L2 → approval → SSH)", `{"type":"object","properties":{"server_id":{"type":"string"},"command":{"type":"string"},"intent":{"type":"string"},"dry_run":{"type":"boolean"},"timeout_secs":{"type":"integer"}},"required":["server_id","command"]}`, tExecuteCommand},
 	}

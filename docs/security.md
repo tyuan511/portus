@@ -61,10 +61,15 @@ must not expose every service at once.**
 - The audit log has no delete/update API.
 
 ### Secrets at rest
-- Vault: AES-256-GCM per-credential sealing (credential id as AEAD), Argon2id master key,
-  idle auto-lock, 0600 file. Plaintext secrets never leave the vault package except through
-  `GetSecret` for SSH auth; outputs are masked.
-- TOTP secrets additionally sealed under `server.key`; all data files chmod 0600.
+- Per-host credentials (SSH passwords / private keys) are sealed with **AES-256-GCM under
+  the server key** and stored in PostgreSQL — a stolen database dump alone is mathematically
+  undecryptable. The credential id is bound as AEAD associated data so rows cannot be swapped.
+- `server.key` is a 32-byte random file (0600) created on first boot; it also seals TOTP
+  enrollment secrets. Plaintext secrets exist only in process memory during SSH auth.
+- Trade-off to understand: anyone who compromises the server host (filesystem + API) can
+  decrypt credentials — that is inherent to server-side-managed credentials. The former
+  master-passphrase vault was removed in favor of this zero-friction model; recovery of the
+  "separation" requires an external KMS/HSM integration.
 
 ## Residual risks & recommendations
 - Run behind a TLS-terminating reverse proxy (see deploy.md); enable `tls_cert`/`tls_key` if bare.

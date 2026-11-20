@@ -85,9 +85,6 @@ func Defaults(v *viper.Viper) {
 	v.SetDefault("storage.data_dir", defaultDataDir())
 	v.SetDefault("storage.audit_jsonl", "")
 
-	v.SetDefault("vault.auto_lock_secs", 900)
-	v.SetDefault("vault.unlock_passphrase_file", "")
-
 	v.SetDefault("bootstrap.admin_username", "admin")
 	v.SetDefault("bootstrap.admin_password", "")
 	v.SetDefault("bootstrap.admin_password_file", "")
@@ -183,7 +180,6 @@ func (c *Config) expandPaths(configPath string) {
 		return filepath.Join(c.Storage.DataDir, p)
 	}
 	c.Storage.AuditJSONL = rel(c.Storage.AuditJSONL)
-	c.Vault.UnlockPassphraseFile = rel(c.Vault.UnlockPassphraseFile)
 	c.Bootstrap.AdminPasswordFile = rel(c.Bootstrap.AdminPasswordFile)
 	c.Server.TLSCert = rel(c.Server.TLSCert)
 	c.Server.TLSKey = rel(c.Server.TLSKey)
@@ -208,9 +204,6 @@ func (c *Config) validate() error {
 	if c.Storage.DBURL == "" {
 		return fmt.Errorf("storage.db_url must not be empty")
 	}
-	if c.Vault.AutoLockSecs < 60 {
-		return fmt.Errorf("vault.auto_lock_secs must be >= 60")
-	}
 	if c.Security.SessionIdleMinutes < 5 {
 		return fmt.Errorf("security.session_idle_minutes must be >= 5")
 	}
@@ -231,14 +224,6 @@ func (c *Config) DataDirPath() string { return c.Storage.DataDir }
 
 // AuditJSONLPath returns the audit mirror path ("" disables mirroring).
 func (c *Config) AuditJSONLPath() string { return c.Storage.AuditJSONL }
-
-// VaultPath returns the vault file path.
-func (c *Config) VaultPath() string {
-	if p := c.pathOverride(); p != "" {
-		return p
-	}
-	return filepath.Join(c.Storage.DataDir, "vault.enc")
-}
 
 // ServerKeyPath returns the path of the server-side AEAD key file.
 func (c *Config) ServerKeyPath() string {

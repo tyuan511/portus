@@ -20,9 +20,9 @@ import (
 	"github.com/yuantang/sshield/internal/mcpserver"
 	"github.com/yuantang/sshield/internal/rbac"
 	"github.com/yuantang/sshield/internal/security"
+	"github.com/yuantang/sshield/internal/serverkey"
 	"github.com/yuantang/sshield/internal/sshpool"
 	"github.com/yuantang/sshield/internal/storage"
-	"github.com/yuantang/sshield/internal/vault"
 )
 
 func main() {
@@ -62,22 +62,15 @@ func run() error {
 			"username", cfg.Bootstrap.AdminUsername)
 	}
 
-	// Vault.
-	sealedVault := vault.New(cfg.VaultPath(), time.Duration(cfg.Vault.AutoLockSecs)*time.Second)
-	if cfg.Vault.UnlockPassphraseFile != "" {
-		if raw, err := os.ReadFile(cfg.Vault.UnlockPassphraseFile); err == nil { // #nosec G304 -- configured path
-			if err := sealedVault.Unlock(string(raw)); err != nil {
-				log.Warnw("vault auto-unlock failed", "error", err.Error())
-			} else {
-				log.Info("vault auto-unlocked from configured passphrase file")
-			}
-		} else {
-			log.Warnw("vault passphrase file unreadable", "path", cfg.Vault.UnlockPassphraseFile)
-		}
+	// Process-local encryption root (server.key): seals TOTP secrets and
+	// per-host SSH credentials stored in PostgreSQL.
+	serverKey, err := serverkey.LoadOrCreate(cfg.ServerKeyPath())
+	if err != nil {
+		return fmt.Errorf("load server key: %w", err)
 	}
 
 	// Auth + security + access subsystems.
-	totpMgr, err := auth.NewTOTPManager(cfg.ServerKeyPath(), "SSHield")
+	totpMgr := auth.NewTOTPManagerWithKey(serverKey, "SSHield")
 	if err != nil {
 		return fmt.Errorf("init TOTP manager: %w", err)
 	}
@@ -91,12 +84,17 @@ func run() error {
 		cfg.SessionIdle(), cfg.SessionAbsolute(), cfg.Security.EnforceTOTP,
 		func(roleID string) (*domain.Role, error) { return db.GetRole(roleID) })
 
+	// Credential secrets at rest are sealed with the server key.
+	if err := db.SetEncryptionKey(serverKey); err != nil {
+		return err
+	}
+
 	rbacSvc := rbac.NewService(db)
-	pool := sshpool.NewPool(sealedVault)
+	pool := sshpool.NewPool(db)
 	engine := security.NewEngine()
 	broker := approvals.NewBroker()
 
-	server := httpserver.New(logger, cfg, db, authSvc, rbacSvc, pool, engine, broker, sealedVault)
+	server := httpserver.New(logger, cfg, db, authSvc, rbacSvc, pool, engine, broker)
 
 	// MCP endpoint: bearer-PAT gate at the fiber layer; tools resolve identity
 	// per call from the request's Authorization header.
@@ -107,7 +105,6 @@ func run() error {
 		Pool:   pool,
 		Engine: engine,
 		Broker: broker,
-		Vault:  sealedVault,
 		Rules:  server.CachedRules,
 		L2:     server.L2Reviewer,
 		Audit:  server.Audit,

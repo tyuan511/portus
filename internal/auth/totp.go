@@ -4,8 +4,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/hex"
-	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -13,6 +11,7 @@ import (
 	"github.com/pquerna/otp/totp"
 
 	"github.com/yuantang/sshield/internal/apierr"
+	"github.com/yuantang/sshield/internal/serverkey"
 )
 
 // TOTPManager handles second-factor enrollment and verification. Secrets are
@@ -26,21 +25,19 @@ type TOTPManager struct {
 }
 
 // NewTOTPManager loads (or creates) the server key at keyPath.
+// Prefer NewTOTPManagerWithKey when the process already owns the shared
+// server key (same file encrypts credentials too).
 func NewTOTPManager(keyPath, issuer string) (*TOTPManager, error) {
-	m := &TOTPManager{keyPath: keyPath, issuer: issuer}
-	if raw, err := os.ReadFile(keyPath); err == nil {
-		if len(raw) != 32 {
-			return nil, fmt.Errorf("server key %s has wrong size (%d bytes, want 32)", keyPath, len(raw))
-		}
-		m.key = raw
-		return m, nil
+	key, err := serverkey.LoadOrCreate(keyPath)
+	if err != nil {
+		return nil, err
 	}
-	key := randomBytes(32)
-	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
-		return nil, fmt.Errorf("write server key: %w", err)
-	}
-	m.key = key
-	return m, nil
+	return NewTOTPManagerWithKey(key, issuer), nil
+}
+
+// NewTOTPManagerWithKey builds a manager over an existing server key.
+func NewTOTPManagerWithKey(key []byte, issuer string) *TOTPManager {
+	return &TOTPManager{key: key, issuer: issuer}
 }
 
 func (m *TOTPManager) seal(plaintext string) string {

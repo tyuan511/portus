@@ -28,7 +28,6 @@ import (
 	"github.com/yuantang/sshield/internal/security"
 	"github.com/yuantang/sshield/internal/sshpool"
 	"github.com/yuantang/sshield/internal/storage"
-	"github.com/yuantang/sshield/internal/vault"
 )
 
 // AuditSink persists audit events (storage.DB).
@@ -50,7 +49,6 @@ type Server struct {
 	mcpNext http.Handler // optional net/http MCP handler mounted at /mcp
 
 	// Security subsystems with light caching.
-	sealedVault  *vault.Vault
 	rulesMu      sync.Mutex
 	rulesCache   []*domain.SecurityRule
 	rulesLoaded  time.Time
@@ -61,12 +59,10 @@ type Server struct {
 
 // New wires the full HTTP server.
 func New(log *zap.Logger, cfg *config.Config, db *storage.DB, authSvc *auth.Service,
-	rbacSvc *rbac.Service, pool *sshpool.Pool, engine *security.Engine, broker *approvals.Broker,
-	sealedVault *vault.Vault) *Server {
+	rbacSvc *rbac.Service, pool *sshpool.Pool, engine *security.Engine, broker *approvals.Broker) *Server {
 	s := &Server{
 		log: log, cfg: cfg, db: db,
 		authSvc: authSvc, rbac: rbacSvc, pool: pool, engine: engine, broker: broker,
-		sealedVault: sealedVault,
 	}
 
 	s.app = fiber.New(fiber.Config{
@@ -124,7 +120,7 @@ func (s *Server) L2Reviewer() security.Reviewer {
 	if s.l2Config == nil || !s.l2Config.Enabled {
 		return nil
 	}
-	return security.NewL2Reviewer(s.sealedVault, *s.l2Config)
+	return security.NewL2Reviewer(s.db, *s.l2Config)
 }
 
 // SetMCPHandler mounts a net/http handler (the MCP streamable endpoint) at
@@ -375,8 +371,8 @@ func (s *Server) registerRoutes() {
 
 	authGroup := app.Group("/api", s.requireAuth())
 	s.registerAuthRoutes(authGroup)
+	s.registerCredentialRoutes(authGroup)
 	s.registerServerRoutes(app, authGroup)
-	s.registerVaultRoutes(authGroup)
 	s.registerSecurityRoutes(authGroup)
 	s.registerContentRoutes(app, authGroup)
 	s.registerAuditRoutes(authGroup)

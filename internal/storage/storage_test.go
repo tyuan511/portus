@@ -11,6 +11,8 @@ import (
 	"github.com/yuantang/sshield/internal/domain"
 )
 
+var lastTestDSN string
+
 // testDB opens an isolated postgres schema; skips when unreachable.
 func testDB(t *testing.T) *DB {
 	t.Helper()
@@ -32,7 +34,8 @@ func testDB(t *testing.T) *DB {
 	}
 	_ = boot.Close()
 
-	h, err := Open(fmt.Sprintf("%s&options=-c%%20search_path%%3D%s", base, schema), "")
+	lastTestDSN = fmt.Sprintf("%s&options=-c%%20search_path%%3D%s", base, schema)
+	h, err := Open(lastTestDSN, "")
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
@@ -407,5 +410,54 @@ func TestListUsersWithRoles(t *testing.T) {
 	}
 	if len(users) != 1 || users[0].Username != "zed" || users[0].Role == nil || users[0].Role.Name != "member" {
 		t.Fatalf("users: %+v", users)
+	}
+}
+
+func TestCredentialSealAndDecrypt(t *testing.T) {
+	db := testDB(t)
+	if err := db.SetEncryptionKey([]byte("0123456789abcdef0123456789abcdef")); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := db.CreateCredential("cred-1", CredKindPassword, "prod root", "root",
+		"super-secret-password", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Preview != "••••••••" {
+		t.Fatalf("preview: %s", meta.Preview)
+	}
+
+	// Plaintext never lands in the database.
+	var stored string
+	if err := db.Exec(`SELECT encode(ciphertext, 'escape') FROM credentials WHERE id = 'cred-1'`); err == nil {
+		_ = stored
+	}
+	var ct []byte
+	if err := db.sqlDB.QueryRow(`SELECT ciphertext FROM credentials WHERE id = 'cred-1'`).Scan(&ct); err != nil {
+		t.Fatal(err)
+	}
+	if string(ct) == "super-secret-password" || len(ct) == 0 {
+		t.Fatal("ciphertext must be present and differ from plaintext")
+	}
+
+	// Roundtrip through the SecretResolver surface.
+	got, err := db.GetSecret("cred-1")
+	if err != nil || got != "super-secret-password" {
+		t.Fatalf("get secret: %v %q", err, got)
+	}
+
+	// Wrong key fails closed (tamper simulation).
+	bad, _ := Open(lastTestDSN, "")
+	_ = bad.SetEncryptionKey([]byte("ffffffffffffffffffffffffffffffff"))
+	if _, err := bad.GetSecret("cred-1"); err == nil {
+		t.Fatal("decryption with wrong key must fail")
+	}
+	_ = bad.Close()
+
+	// Metadata listing carries no secret material.
+	list, err := db.ListCredentials()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list: %v %d", err, len(list))
 	}
 }

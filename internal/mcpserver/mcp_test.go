@@ -24,9 +24,9 @@ import (
 	"github.com/yuantang/sshield/internal/mcpserver"
 	"github.com/yuantang/sshield/internal/rbac"
 	"github.com/yuantang/sshield/internal/security"
+	"github.com/yuantang/sshield/internal/serverkey"
 	"github.com/yuantang/sshield/internal/sshpool"
 	"github.com/yuantang/sshield/internal/storage"
-	"github.com/yuantang/sshield/internal/vault"
 )
 
 type mcpFixture struct {
@@ -83,26 +83,29 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 		t.Fatal(err)
 	}
 
-	sealedVault := vault.New(filepath.Join(dir, "vault.enc"), time.Minute)
-	totpMgr, err := auth.NewTOTPManager(filepath.Join(dir, "server.key"), "SSHield")
+	serverKey, err := serverkey.LoadOrCreate(filepath.Join(dir, "server.key"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.SetEncryptionKey(serverKey); err != nil {
+		t.Fatal(err)
+	}
+	totpMgr := auth.NewTOTPManagerWithKey(serverKey, "SSHield")
 	guard := auth.NewLoginGuard(db, auth.GuardConfig{LoginMaxAttempts: 5, LockoutMinutes: 15,
 		IPMaxAttempts: 1000, IPWindowMinutes: 60})
 	authSvc := auth.NewService(db, totpMgr, guard, time.Hour, 24*time.Hour, false,
 		func(roleID string) (*domain.Role, error) { return db.GetRole(roleID) })
 	rbacSvc := rbac.NewService(db)
-	pool := sshpool.NewPool(sealedVault)
+	pool := sshpool.NewPool(db)
 	engine := security.NewEngine()
 	broker := approvals.NewBroker()
 	log := logging.NewNop()
-	server := httpserver.New(log, cfg, db, authSvc, rbacSvc, pool, engine, broker, sealedVault)
+	server := httpserver.New(log, cfg, db, authSvc, rbacSvc, pool, engine, broker)
 
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
 		DB: db, Auth: authSvc, RBAC: rbacSvc, Pool: pool, Engine: engine,
-		Broker: broker, Vault: sealedVault,
-		Rules: server.CachedRules, L2: server.L2Reviewer,
+		Broker: broker,
+		Rules:  server.CachedRules, L2: server.L2Reviewer,
 		Audit: server.Audit, Log: log,
 	})
 	server.SetMCPHandler(mcpHandler)
@@ -196,8 +199,8 @@ func TestMCPInitializeAndToolsList(t *testing.T) {
 	}
 	result := body["result"].(map[string]any)
 	tools := result["tools"].([]any)
-	if len(tools) != 14 {
-		t.Fatalf("want 14 tools, got %d", len(tools))
+	if len(tools) != 12 {
+		t.Fatalf("want 12 tools, got %d", len(tools))
 	}
 	names := map[string]bool{}
 	for _, tl := range tools {

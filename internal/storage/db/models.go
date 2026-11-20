@@ -64,6 +64,17 @@ type AuthAttempt struct {
 	CreatedAt string
 }
 
+type Credential struct {
+	ID         string
+	Kind       string
+	Label      string
+	Username   string
+	Nonce      []byte
+	Ciphertext []byte
+	CreatedBy  string
+	CreatedAt  string
+}
+
 type HostGrant struct {
 	ID          string
 	UserGroupID string

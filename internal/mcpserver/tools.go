@@ -188,26 +188,6 @@ func tListPendingApprovals(ctx context.Context, d *Deps, id *domain.Identity, ar
 	return map[string]any{"approvals": d.Broker.ListPending()}, nil
 }
 
-// --- vault tools (admin) ---
-
-func tGetVaultStatus(ctx context.Context, d *Deps, id *domain.Identity, args map[string]any) (any, *apierr.E) {
-	if !id.HasPermission(domain.PermVaultManage) {
-		return nil, apierr.Forbidden("missing vault.manage permission")
-	}
-	return d.Vault.Status(), nil
-}
-
-func tListVaultCredentials(ctx context.Context, d *Deps, id *domain.Identity, args map[string]any) (any, *apierr.E) {
-	if !id.HasPermission(domain.PermVaultManage) {
-		return nil, apierr.Forbidden("missing vault.manage permission")
-	}
-	metas, err := d.Vault.ListCredentialsMeta()
-	if err != nil {
-		return nil, apierr.From(err)
-	}
-	return map[string]any{"credentials": metas}, nil
-}
-
 func tGetL2Config(ctx context.Context, d *Deps, id *domain.Identity, args map[string]any) (any, *apierr.E) {
 	cfgL2, err := d.DB.GetL2Config()
 	if err != nil {
