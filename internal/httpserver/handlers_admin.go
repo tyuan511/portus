@@ -9,6 +9,8 @@ import (
 	"github.com/yuantang/sshield/internal/auth"
 	"github.com/yuantang/sshield/internal/domain"
 	"github.com/yuantang/sshield/internal/httpserver/resp"
+	"github.com/yuantang/sshield/internal/metrics"
+	"github.com/yuantang/sshield/internal/notify"
 	"github.com/yuantang/sshield/internal/storage"
 )
 
@@ -40,9 +42,8 @@ func (s *Server) registerAdminRoutes(g fiber.Router) {
 	g.Get("/admin/sessions", requirePerm(domain.PermUsersManage), s.handleListAllSessions)
 	g.Delete("/admin/sessions/:id", requirePerm(domain.PermUsersManage), s.handleKickSession)
 
-	// Approvals.
-	g.Get("/approvals", requirePerm(domain.PermApprovalsDecide), s.handleListApprovals)
-	g.Post("/approvals/:id/decide", requirePerm(domain.PermApprovalsDecide), s.handleDecideApproval)
+	// Approvals are registered separately (pending + history).
+	s.registerApprovalRoutes(g)
 }
 
 // --- users ---
@@ -281,6 +282,7 @@ type grantRequest struct {
 	GroupName   string `json:"group_name"`
 	CanConnect  bool   `json:"can_connect"`
 	CanExecute  bool   `json:"can_execute"`
+	CanTransfer bool   `json:"can_transfer"`
 }
 
 func (s *Server) handleCreateGrant(c *fiber.Ctx) error {
@@ -294,12 +296,28 @@ func (s *Server) handleCreateGrant(c *fiber.Ctx) error {
 	if _, err := s.db.GetUserGroup(req.UserGroupID); err != nil {
 		return apierr.NotFoundf("user group not found")
 	}
+	// The machine group must exist so typos don't silently create dead grants.
+	groups, err := s.db.DistinctServerGroups()
+	if err != nil {
+		return apierr.StorageErr(err)
+	}
+	valid := false
+	for _, g := range groups {
+		if g == req.GroupName {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return apierr.Unprocessable("group_name does not match any existing machine group")
+	}
 	grant := &domain.HostGrant{
 		ID:          storage.GenerateID("grant"),
 		UserGroupID: req.UserGroupID,
 		GroupName:   req.GroupName,
 		CanConnect:  req.CanConnect,
 		CanExecute:  req.CanExecute,
+		CanTransfer: req.CanTransfer,
 		CreatedBy:   identityFrom(c).Username,
 	}
 	if err := s.db.CreateHostGrant(grant); err != nil {
@@ -310,8 +328,9 @@ func (s *Server) handleCreateGrant(c *fiber.Ctx) error {
 }
 
 type patchGrantRequest struct {
-	CanConnect *bool `json:"can_connect"`
-	CanExecute *bool `json:"can_execute"`
+	CanConnect  *bool `json:"can_connect"`
+	CanExecute  *bool `json:"can_execute"`
+	CanTransfer *bool `json:"can_transfer"`
 }
 
 func (s *Server) handlePatchGrant(c *fiber.Ctx) error {
@@ -319,7 +338,7 @@ func (s *Server) handlePatchGrant(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apierr.BadRequest("invalid JSON body")
 	}
-	if err := s.db.UpdateHostGrant(c.Params("id"), req.CanConnect, req.CanExecute); err != nil {
+	if err := s.db.UpdateHostGrant(c.Params("id"), req.CanConnect, req.CanExecute, req.CanTransfer); err != nil {
 		if err == storage.ErrNotFound {
 			return apierr.NotFoundf("grant not found")
 		}
@@ -356,12 +375,36 @@ func (s *Server) handleKickSession(c *fiber.Ctx) error {
 
 // --- approvals ---
 
+// registerApprovalRoutes mounts pending approvals and their resolved history.
+func (s *Server) registerApprovalRoutes(g fiber.Router) {
+	g.Get("/approvals", s.handleListApprovals)
+	g.Post("/approvals/:id/decide", requirePerm(domain.PermApprovalsDecide), s.handleDecideApproval)
+	g.Get("/approvals/history", s.handleApprovalHistory)
+}
+
 func (s *Server) handleListApprovals(c *fiber.Ctx) error {
-	return resp.OK(c, s.broker.ListPending())
+	id := identityFrom(c)
+	pending := s.broker.ListPending()
+	metrics.PendingApprovals.Set(float64(len(pending)))
+	// Approvers see the full queue; ordinary users see their own requests.
+	if !id.HasPermission(domain.PermApprovalsDecide) {
+		if !id.HasPermission(domain.PermAuditViewSelf) {
+			return apierr.Forbidden("missing approval permission")
+		}
+		own := make([]domain.ApprovalRequest, 0)
+		for _, req := range pending {
+			if req.UserID == id.UserID {
+				own = append(own, req)
+			}
+		}
+		return resp.OK(c, own)
+	}
+	return resp.OK(c, pending)
 }
 
 type decideRequest struct {
-	Approved bool `json:"approved"`
+	Approved bool   `json:"approved"`
+	Reason   string `json:"reason"`
 }
 
 func (s *Server) handleDecideApproval(c *fiber.Ctx) error {
@@ -369,21 +412,55 @@ func (s *Server) handleDecideApproval(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apierr.BadRequest("invalid JSON body")
 	}
-	decision, ok := s.broker.Decide(c.Params("id"), req.Approved)
+	reqID := c.Params("id")
+	reqPending, pendingExists := s.broker.GetPending(reqID)
+	decision, ok := s.broker.Decide(reqID, req.Approved)
 	if !ok {
 		return apierr.NotFoundf("approval request not found or already resolved")
 	}
+	metrics.ApprovalsDecisionsTotal.WithLabelValues(string(decision)).Inc()
 	id := identityFrom(c)
-	if reqPending, exists := s.broker.GetPending(c.Params("id")); exists {
+	if pendingExists {
+		outcome := "approved"
+		if !req.Approved {
+			outcome = "denied"
+		}
+		s.notify.Send("approval.decided",
+			"Approval "+outcome+" by "+id.Username+" for "+reqPending.ServerName,
+			map[string]any{
+				"approval_id": reqID, "server": reqPending.ServerName,
+				"decided_by": id.Username, "reason": req.Reason,
+				"command": notify.TruncateCommand(reqPending.Command),
+			})
 		s.Audit(&domain.AuditEvent{
 			ID: newAuditID(), Actor: "approval", Timestamp: time.Now().UTC(),
 			ServerID: reqPending.ServerID, ServerName: reqPending.ServerName,
 			Command: "approval.decide", Intent: "decision: " + string(decision),
 			Decision: domain.DecisionAllow,
 			UserID:   id.UserID, Username: id.Username,
+			Note:       req.Reason,
+			ApprovalID: reqID, ApprovalStatus: decision,
 		})
 	}
 	return resp.OK(c, fiber.Map{"decision": decision})
+}
+
+// handleApprovalHistory lists resolved approval requests from the audit trail.
+func (s *Server) handleApprovalHistory(c *fiber.Ctx) error {
+	id := identityFrom(c)
+	userID := ""
+	if !id.HasPermission(domain.PermAuditViewAll) {
+		if !id.HasPermission(domain.PermAuditViewSelf) {
+			return apierr.Forbidden("missing audit permission")
+		}
+		userID = id.UserID
+	}
+	limit, offset := pageParams(c, 50, 500)
+	items, total, err := s.db.QueryApprovalHistory(userID, c.Query("status"), limit, offset)
+	if err != nil {
+		return apierr.StorageErr(err)
+	}
+	return resp.OK(c, fiber.Map{"items": items, "total": total})
 }
 
 // --- tokens (PAT for MCP) ---

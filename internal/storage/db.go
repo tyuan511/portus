@@ -206,7 +206,7 @@ func parseTags(s string) []string {
 	return tags
 }
 
-// actorMatches reproduces the legacy actor filter semantics inside the audit
+
 // query: ” = all; 'mcp' = every mcp-* channel; 'terminal'/'manual' =
 // interactive actors; anything else = exact match.
 func actorMatches(actor string) bool { return actor != "" }

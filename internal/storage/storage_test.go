@@ -207,8 +207,9 @@ func TestRBACGrantEvaluation(t *testing.T) {
 		t.Fatalf("admin sees all servers, got %d", len(all))
 	}
 
-	// Bob's visible set = web-1, web-2 (group grant) + db-1 (direct grant).
-	granted, err := db.ListServersForUser("usr-bob")
+	// Bob's visible set = web-1, web-2 (group grant) + db-1 (direct grant):
+	// the connect-filtered query returns the same set.
+	granted, err := db.ListServersForUserFiltered("usr-bob", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,5 +469,74 @@ func TestHostSessionLifecycle(t *testing.T) {
 	}
 	if _, err := db.ValidateHostSession("mcpsess-2", "usr-a"); err != ErrSessionInvalid {
 		t.Fatalf("expired session must be invalid: %v", err)
+	}
+}
+
+func TestTerminalSessionRecordingLifecycle(t *testing.T) {
+	db := testDB(t)
+
+	sess := &domain.TerminalSession{
+		ID: "tser-test-1", UserID: "usr-a", Username: "alice",
+		ServerID: "srv-1", ServerName: "web-1", SSHUser: "deploy",
+		ServerHost: "10.0.0.5:22", ClientIP: "127.0.0.1",
+		PolicyMode: domain.TerminalModeEnforce,
+		OpenedAt:   time.Now().UTC(),
+	}
+	if err := db.CreateTerminalSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := db.AppendTerminalEvent(sess.ID, int64(i*100), "output", "chunk\r\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.AppendTerminalEvent(sess.ID, 400, "input", "reboot"); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := db.ListTerminalEvents(sess.ID)
+	if err != nil || len(events) != 4 {
+		t.Fatalf("events: %v %d", err, len(events))
+	}
+	if events[0].Seq <= 0 || events[3].Direction != "input" || events[3].Data != "reboot" {
+		t.Fatalf("event rows wrong: %+v", events[3])
+	}
+
+	if err := db.CloseTerminalSession(sess.ID, "client disconnected", time.Now().UTC(), 24, 4, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetTerminalSession(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CloseReason != "client disconnected" || got.ByteSize != 24 || got.EventCount != 4 || got.ClosedAt == nil {
+		t.Fatalf("close not finalized: %+v", got)
+	}
+
+	// Second, older session for retention cleanup.
+	old := &domain.TerminalSession{
+		ID: "tser-old", UserID: "usr-a", ServerID: "srv-1",
+		PolicyMode: domain.TerminalModeAudit, OpenedAt: time.Now().UTC().AddDate(0, 0, -40),
+	}
+	if err := db.CreateTerminalSession(old); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.AppendTerminalEvent(old.ID, 0, "output", "x")
+
+	items, total, err := db.ListTerminalSessions(&domain.TerminalSessionQuery{UserID: "", Limit: 10})
+	if err != nil || total != 2 || len(items) != 2 {
+		t.Fatalf("list: %v total=%d", err, total)
+	}
+	n, err := db.CleanupTerminalSessionsBefore(time.Now().UTC().AddDate(0, 0, -30))
+	if err != nil || n != 1 {
+		t.Fatalf("cleanup: %v removed=%d", err, n)
+	}
+	events, err = db.ListTerminalEvents(old.ID)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("cascade delete failed: %v %d", err, len(events))
+	}
+	items, total, _ = db.ListTerminalSessions(&domain.TerminalSessionQuery{})
+	if total != 1 {
+		t.Fatalf("one session must remain, got %d", total)
 	}
 }

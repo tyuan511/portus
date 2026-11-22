@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { Pencil, Plug, Plus, Search, Server, Trash2, Upload } from "lucide-react";
+import { ChevronDown, FileUp, FolderOpen, Pencil, Plug, Plus, Search, Server, Trash2, Upload } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,14 +9,25 @@ import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { ErrorText, Page, PageHeader } from "@/components/ui/shared";
+import { ConfirmDialog, PromptDialog } from "@/components/sshield/ConfirmDialog";
+import { HostGroupsPanel } from "@/components/sshield/HostGroupsPanel";
 import { StatusPill } from "@/components/sshield/StatusDot";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
+import { useWorkspaceTabs } from "@/lib/workspace-tabs";
 import type { CredentialMeta, ServerAsset } from "@/types";
 
 const EMPTY_FORM = {
@@ -38,7 +48,7 @@ const EMPTY_FORM = {
 export default function Hosts() {
   const auth = useAuth();
   const { t } = useI18n();
-  const navigate = useNavigate();
+  const { openTerminal, openFiles } = useWorkspaceTabs();
   const [servers, setServers] = useState<ServerAsset[]>([]);
   const [query, setQuery] = useState("");
   const [activeGroup, setActiveGroup] = useState<string>("__all__");
@@ -46,13 +56,22 @@ export default function Hosts() {
   const [form, setForm] = useState<typeof EMPTY_FORM | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
+  const [importTab, setImportTab] = useState<"ssh" | "csv">("ssh");
+  const [csvText, setCsvText] = useState("");
+  const [csvBusy, setCsvBusy] = useState(false);
   const [testResult, setTestResult] = useState<Record<string, { ok?: boolean; text: string }>>({});
   const [credentials, setCredentials] = useState<CredentialMeta[]>([]);
   const [newCred, setNewCred] = useState<{ label: string; username: string; secret: string } | null>(null);
   const [credError, setCredError] = useState<string>();
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [assignGroupOpen, setAssignGroupOpen] = useState(false);
+  const [deleteHostId, setDeleteHostId] = useState<string | null>(null);
 
   const canManage = auth.hasPermission("host.manage");
   const canConnect = auth.hasPermission("host.connect");
+  const canTransfer = auth.hasPermission("host.transfer");
 
   const load = useCallback(async () => {
     try {
@@ -99,6 +118,11 @@ export default function Hosts() {
     }
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [filtered]);
+
+  const jumpOptions = useMemo(
+    () => servers.filter((s) => s.id !== form?.id),
+    [servers, form?.id]
+  );
 
   const loadCredentials = useCallback(async () => {
     if (!auth.hasPermission("host.manage")) return;
@@ -177,11 +201,12 @@ export default function Hosts() {
   };
 
   const remove = async (id: string) => {
-    if (!confirm(t("hosts.deleteConfirm"))) return;
     try {
       await api.del(`/api/servers/${id}`);
+      setDeleteHostId(null);
       await load();
     } catch (err) {
+      setDeleteHostId(null);
       setError(err instanceof Error ? err.message : "delete failed");
     }
   };
@@ -199,6 +224,83 @@ export default function Hosts() {
     }
   };
 
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const setGroupSelected = (list: ServerAsset[], checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const s of list) {
+        if (checked) next.add(s.id);
+        else next.delete(s.id);
+      }
+      return next;
+    });
+  };
+
+  const runBulk = async (op: (s: ServerAsset) => Promise<void>) => {
+    setBulkBusy(true);
+    try {
+      for (const id of selectedIds) {
+        const target = servers.find((s) => s.id === id);
+        if (target) await op(target);
+      }
+      setSelectedIds(new Set());
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "bulk operation failed");
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkSetEnabled = (enabled: boolean) =>
+    void runBulk(async (s) => {
+      await api.post("/api/servers", {
+        ...s,
+        enabled,
+        tags: s.tags ?? [],
+        description: s.description ?? "",
+      });
+    });
+
+  const bulkAssignGroup = (values: Record<string, string>) => {
+    const name = (values.group ?? "").trim();
+    if (!name) return;
+    setAssignGroupOpen(false);
+    void runBulk(async (s) => {
+      await api.post("/api/servers", {
+        ...s,
+        group_name: name,
+        tags: s.tags ?? [],
+        description: s.description ?? "",
+      });
+    });
+  };
+
+  const bulkDelete = async () => {
+    setBulkBusy(true);
+    try {
+      for (const id of selectedIds) {
+        await api.del(`/api/servers/${id}`);
+      }
+      setBulkDeleteOpen(false);
+      setSelectedIds(new Set());
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "delete failed");
+      setBulkDeleteOpen(false);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const pickFile = async (file: File | undefined) => {
     if (!file) return;
     try {
@@ -206,6 +308,66 @@ export default function Hosts() {
       setError(undefined);
     } catch {
       setError(t("hosts.fileReadFailed"));
+    }
+  };
+
+  const pickCsvFile = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      setCsvText(await file.text());
+      setError(undefined);
+    } catch {
+      setError(t("hosts.fileReadFailed"));
+    }
+  };
+
+  // Client-side CSV parsing: name,host,port,username,group per line;
+  // `#` comments and blank lines are skipped, port defaults to 22.
+  const csvRows = useMemo(
+    () =>
+      csvText
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#"))
+        .map((line) => {
+          const parts = line.split(",").map((p) => p.trim());
+          return {
+            name: parts[0] ?? "",
+            host: parts[1] ?? "",
+            port: Number(parts[2]) > 0 ? Number(parts[2]) : 22,
+            username: parts[3] || "root",
+            group: parts[4] ?? "",
+          };
+        })
+        .filter((row) => row.name && row.host),
+    [csvText]
+  );
+
+  const doCsvImport = async () => {
+    if (csvRows.length === 0) return;
+    setCsvBusy(true);
+    try {
+      for (const row of csvRows) {
+        await api.post("/api/servers", {
+          id: "",
+          name: row.name,
+          host: row.host,
+          port: row.port,
+          username: row.username,
+          auth_kind: "agent_or_default_key" as ServerAsset["auth_kind"],
+          group_name: row.group || undefined,
+          tags: [],
+          description: "",
+          enabled: true,
+        });
+      }
+      setImportOpen(false);
+      setCsvText("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "import failed");
+    } finally {
+      setCsvBusy(false);
     }
   };
 
@@ -236,9 +398,27 @@ export default function Hosts() {
           actions={
             canManage && (
               <>
-                <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setImportTab("ssh");
+                    setImportOpen(true);
+                  }}
+                >
                   <Upload data-icon="inline-start" />
                   {t("hosts.import")}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setImportTab("csv");
+                    setImportOpen(true);
+                  }}
+                >
+                  <FileUp data-icon="inline-start" />
+                  {t("hosts.csvImport")}
                 </Button>
                 <Button size="sm" onClick={() => openForm()}>
                   <Plus data-icon="inline-start" />
@@ -252,7 +432,14 @@ export default function Hosts() {
     >
       <ErrorText>{error}</ErrorText>
 
-      {servers.length > 0 && (
+      <Tabs defaultValue="hosts" className="gap-5">
+        <TabsList variant="line" className="w-full justify-start border-b border-border pb-0">
+          <TabsTrigger value="hosts">{t("hosts.tabHosts")}</TabsTrigger>
+          <TabsTrigger value="groups">{t("hosts.tabGroups")}</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="hosts">
+          {servers.length > 0 && (
         <div className="mb-6 flex flex-col gap-4">
           {/* Metric Strip */}
           <div className="grid grid-cols-3 divide-x divide-border overflow-hidden rounded-xl border border-border bg-card">
@@ -325,6 +512,48 @@ export default function Hosts() {
         </div>
       )}
 
+      {selectedIds.size > 0 && (
+        <div className="sticky top-2 z-20 mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
+          <span className="text-sm font-medium">
+            {t("sessions.selected", { count: selectedIds.size })}
+          </span>
+          <Button variant="ghost" size="xs" disabled={bulkBusy} onClick={() => setSelectedIds(new Set())}>
+            {t("common.cancel")}
+          </Button>
+          <div className="ml-auto">
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button size="xs" variant="outline" disabled={bulkBusy}>
+                    {t("common.actions")}
+                    <ChevronDown data-icon="inline-end" />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem disabled={bulkBusy} onClick={() => bulkSetEnabled(true)}>
+                  {t("hosts.bulk.enable")}
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={bulkBusy} onClick={() => bulkSetEnabled(false)}>
+                  {t("hosts.bulk.disable")}
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={bulkBusy} onClick={() => setAssignGroupOpen(true)}>
+                  {t("hosts.bulk.assignGroup")}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  disabled={bulkBusy}
+                  onClick={() => setBulkDeleteOpen(true)}
+                >
+                  {t("hosts.bulk.delete")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      )}
+
       {groups.length === 0 ? (
         <Empty className="mt-6 border border-border bg-card py-14">
           <EmptyHeader>
@@ -360,11 +589,36 @@ export default function Hosts() {
 
               <Card className="p-0">
                 <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-10 pl-4 pr-0">
+                        <input
+                          type="checkbox"
+                          aria-label={t("common.all")}
+                          checked={list.length > 0 && list.every((s) => selectedIds.has(s.id))}
+                          onChange={(e) => setGroupSelected(list, e.target.checked)}
+                        />
+                      </TableHead>
+                      <TableHead className="px-4 py-2 font-mono text-[11px] uppercase text-muted-foreground">
+                        {t("hosts.tabHosts")}
+                      </TableHead>
+                      <TableHead className="px-4 py-2" />
+                      <TableHead className="px-4 py-2" />
+                    </TableRow>
+                  </TableHeader>
                   <TableBody>
                     {list.map((s) => {
                       const tr = testResult[s.id];
                       return (
                         <TableRow key={s.id}>
+                          <TableCell className="w-10 pl-4 pr-0 align-middle">
+                            <input
+                              type="checkbox"
+                              aria-label={s.name}
+                              checked={selectedIds.has(s.id)}
+                              onChange={() => toggleSelected(s.id)}
+                            />
+                          </TableCell>
                           <TableCell className="px-4 py-3">
                             <div className="flex items-center gap-3">
                               <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-secondary/60 text-muted-foreground">
@@ -406,9 +660,26 @@ export default function Hosts() {
                           <TableCell className="px-4 py-3 text-right">
                             <div className="flex justify-end gap-1.5">
                               {canConnect && (
-                                <Button size="xs" onClick={() => navigate(`/terminal/${s.id}`)}>
+                                <Button
+                                  size="xs"
+                                  onClick={() => openTerminal(s)}
+                                  disabled={!s.enabled}
+                                  title={!s.enabled ? t("hosts.disabledHint") : undefined}
+                                >
                                   <Plug data-icon="inline-start" />
                                   {t("hosts.connect")}
+                                </Button>
+                              )}
+                              {canTransfer && (
+                                <Button
+                                  variant="outline"
+                                  size="xs"
+                                  disabled={!s.enabled}
+                                  title={!s.enabled ? t("hosts.disabledHint") : t("files.open")}
+                                  onClick={() => openFiles({ id: s.id, name: s.name })}
+                                >
+                                  <FolderOpen data-icon="inline-start" />
+                                  {t("files.title")}
                                 </Button>
                               )}
                               {canManage && (
@@ -419,7 +690,7 @@ export default function Hosts() {
                                   <Button variant="ghost" size="icon-xs" onClick={() => openForm(s)}>
                                     <Pencil />
                                   </Button>
-                                  <Button variant="destructive" size="icon-xs" onClick={() => void remove(s.id)}>
+                                  <Button variant="destructive" size="icon-xs" onClick={() => setDeleteHostId(s.id)}>
                                     <Trash2 />
                                   </Button>
                                 </>
@@ -436,6 +707,20 @@ export default function Hosts() {
           ))}
         </div>
       )}
+        </TabsContent>
+
+        <TabsContent value="groups">
+          <HostGroupsPanel
+            servers={servers}
+            canManage={canManage}
+            canConnect={canConnect}
+            canTransfer={canTransfer}
+            onConnect={(s) => openTerminal(s)}
+            onFiles={(s) => openFiles({ id: s.id, name: s.name })}
+            onReload={load}
+          />
+        </TabsContent>
+      </Tabs>
 
       {/* Host form */}
       <Dialog open={form !== null} onOpenChange={(o) => !o && setForm(null)}>
@@ -477,6 +762,11 @@ export default function Hosts() {
                 <Label>{t("hosts.f.auth")}</Label>
                 <Select
                   value={form.auth_kind}
+                  items={{
+                    agent_or_default_key: t("hosts.authAgent"),
+                    identity_file: t("hosts.authIdentity"),
+                    keyring_password: t("hosts.authCred"),
+                  }}
                   onValueChange={(v) =>
                     v && setForm({ ...form, auth_kind: v as ServerAsset["auth_kind"] })
                   }
@@ -506,7 +796,13 @@ export default function Hosts() {
                 <div className="col-span-2 flex flex-col gap-2">
                   <Label>{t("hosts.f.cred")}</Label>
                   <Select
-                    value={form.credential_id}
+                    value={form.credential_id || null}
+                    items={Object.fromEntries(
+                      credentials.map((c) => [
+                        c.id,
+                        c.username ? `${c.label} (${c.username})` : c.label,
+                      ])
+                    )}
                     onValueChange={(v) => setForm({ ...form, credential_id: v ?? "" })}
                   >
                     <SelectTrigger className="w-full">
@@ -569,11 +865,31 @@ export default function Hosts() {
                 </div>
               )}
               <div className="flex flex-col gap-1.5">
-                <Label>{t("hosts.f.jump")}</Label>
-                <Input
-                  value={form.jump_host_id}
-                  onChange={(e) => setForm({ ...form, jump_host_id: e.target.value })}
-                />
+                <Label>{t("hosts.jumpHost")}</Label>
+                <Select
+                  value={form.jump_host_id || "__none__"}
+                  items={{
+                    __none__: t("hosts.jumpNone"),
+                    ...Object.fromEntries(jumpOptions.map((s) => [s.id, s.name])),
+                  }}
+                  onValueChange={(v) =>
+                    setForm({ ...form, jump_host_id: !v || v === "__none__" ? "" : v })
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="__none__">{t("hosts.jumpNone")}</SelectItem>
+                      {jumpOptions.map((s) => (
+                        <SelectItem key={s.id} value={s.id}>
+                          {s.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>{t("hosts.f.tags")}</Label>
@@ -604,43 +920,114 @@ export default function Hosts() {
         </DialogContent>
       </Dialog>
 
-      {/* Import ssh config */}
+      {/* Import ssh config / CSV */}
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{t("hosts.importTitle")}</DialogTitle>
+            <DialogTitle>{importTab === "csv" ? t("hosts.csvImport") : t("hosts.importTitle")}</DialogTitle>
           </DialogHeader>
-          <div className="flex flex-col gap-2">
-            <Label>{t("hosts.importPaste")}</Label>
-            <Textarea
-              className="h-48 font-mono text-xs"
-              value={importText}
-              onChange={(e) => setImportText(e.target.value)}
-              placeholder={"Host bastion\n  HostName 10.0.0.9\n  User ops\n\nHost web-*\n  HostName 10.0.0.%h"}
-            />
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              {t("hosts.importHint")}
-              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 font-medium text-foreground hover:bg-muted">
-                {t("hosts.importPick")}
-                <input
-                  type="file"
-                  className="hidden"
-                  accept=".conf,.cfg,.txt,text/plain"
-                  onChange={(e) => void pickFile(e.target.files?.[0])}
+          <Tabs value={importTab} onValueChange={(v) => setImportTab(v === "csv" ? "csv" : "ssh")}>
+            <TabsList>
+              <TabsTrigger value="ssh">{t("hosts.import")}</TabsTrigger>
+              <TabsTrigger value="csv">{t("hosts.csvImport")}</TabsTrigger>
+            </TabsList>
+            <TabsContent value="ssh">
+              <div className="flex flex-col gap-2">
+                <Label>{t("hosts.importPaste")}</Label>
+                <Textarea
+                  className="h-48 font-mono text-xs"
+                  value={importText}
+                  onChange={(e) => setImportText(e.target.value)}
+                  placeholder={"Host bastion\n  HostName 10.0.0.9\n  User ops\n\nHost web-*\n  HostName 10.0.0.%h"}
                 />
-              </label>
-            </div>
-          </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {t("hosts.importHint")}
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 font-medium text-foreground hover:bg-muted">
+                    {t("hosts.importPick")}
+                    <input
+                      type="file"
+                      className="hidden"
+                      accept=".conf,.cfg,.txt,text/plain"
+                      onChange={(e) => void pickFile(e.target.files?.[0])}
+                    />
+                  </label>
+                </div>
+              </div>
+            </TabsContent>
+            <TabsContent value="csv">
+              <div className="flex flex-col gap-2">
+                <Label>{t("hosts.csvFormat")}</Label>
+                <Textarea
+                  className="h-48 font-mono text-xs"
+                  value={csvText}
+                  onChange={(e) => setCsvText(e.target.value)}
+                  placeholder={t("hosts.csvPlaceholder")}
+                />
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {csvText.trim() ? t("hosts.csvParsed", { count: csvRows.length }) : t("hosts.csvFormat")}
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 font-medium text-foreground hover:bg-muted">
+                    {t("hosts.importPick")}
+                    <input
+                      type="file"
+                      className="hidden"
+                      accept=".csv,text/csv,text/plain"
+                      onChange={(e) => void pickCsvFile(e.target.files?.[0])}
+                    />
+                  </label>
+                </div>
+              </div>
+            </TabsContent>
+          </Tabs>
           <DialogFooter>
             <Button variant="outline" onClick={() => setImportOpen(false)}>
               {t("common.cancel")}
             </Button>
-            <Button onClick={() => void doImport()} disabled={!importText.trim()}>
+            <Button
+              onClick={importTab === "csv" ? () => void doCsvImport() : () => void doImport()}
+              disabled={importTab === "csv" ? csvBusy || csvRows.length === 0 : !importText.trim()}
+            >
               {t("common.save")}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Single host delete confirmation */}
+      <ConfirmDialog
+        open={deleteHostId !== null}
+        title={t("common.delete")}
+        description={t("hosts.deleteConfirm")}
+        destructive
+        onConfirm={() => deleteHostId && void remove(deleteHostId)}
+        onOpenChange={(o) => !o && setDeleteHostId(null)}
+      />
+
+      {/* Bulk delete confirmation */}
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        title={t("hosts.bulk.delete")}
+        description={t("hosts.confirmBulkDelete", { count: selectedIds.size })}
+        destructive
+        loading={bulkBusy}
+        onConfirm={() => void bulkDelete()}
+        onOpenChange={setBulkDeleteOpen}
+      />
+
+      {/* Bulk assign group */}
+      <PromptDialog
+        open={assignGroupOpen}
+        title={t("hosts.bulk.assignGroup")}
+        fields={[
+          {
+            key: "group",
+            label: t("hosts.f.group"),
+            placeholder: t("hosts.bulk.groupPlaceholder"),
+          },
+        ]}
+        loading={bulkBusy}
+        onSubmit={bulkAssignGroup}
+        onOpenChange={setAssignGroupOpen}
+      />
     </Page>
   );
 }

@@ -99,7 +99,7 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 	engine := security.NewEngine()
 	broker := approvals.NewBroker()
 	log := logging.NewNop()
-	server := httpserver.New(log, cfg, db, authSvc, rbacSvc, pool, engine, broker)
+	server := httpserver.New(log, cfg, db, authSvc, rbacSvc, pool, engine, broker, nil)
 
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
 		DB: db, Auth: authSvc, RBAC: rbacSvc, Pool: pool, Engine: engine,
@@ -376,9 +376,9 @@ func TestMCPExecuteDryRunAllowsAndAudits(t *testing.T) {
 	}
 
 	// Session replay: open + 2 executions + close all share the session id.
-	sessions, err := f.db.ListMCPSessions("usr-bob", 10)
-	if err != nil || len(sessions) != 1 {
-		t.Fatalf("list sessions: %v %d", err, len(sessions))
+	sessions, total, err := f.db.ListMCPSessions("usr-bob", 10, 0)
+	if err != nil || len(sessions) != 1 || total != 1 {
+		t.Fatalf("list sessions: %v %d %d", err, len(sessions), total)
 	}
 	if sessions[0].SessionID != sess.SessionID || sessions[0].EventCount < 4 {
 		t.Fatalf("session summary wrong: %+v", sessions[0])

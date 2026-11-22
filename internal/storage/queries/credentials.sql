@@ -11,5 +11,5 @@ SELECT id, kind, label, username, created_by, created_at FROM credentials ORDER 
 -- name: DeleteCredential :execrows
 DELETE FROM credentials WHERE id = $1;
 
--- name: CountCredentials :one
-SELECT COUNT(*) FROM credentials;
+-- name: RenameCredential :execrows
+UPDATE credentials SET label = $2 WHERE id = $1;

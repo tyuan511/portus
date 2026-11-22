@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { KeyRound, Plus, ShieldX, Trash2, UserCheck } from "lucide-react";
+import { KeyRound, Pencil, Plus, ShieldX, Trash2, UserCheck } from "lucide-react";
+import { ConfirmDialog } from "@/components/sshield/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -20,13 +21,32 @@ export default function AdminUsers() {
   const { t } = useI18n();
   const [users, setUsers] = useState<User[]>([]);
   const [error, setError] = useState<string>();
+  const [search, setSearch] = useState("");
   const [form, setForm] = useState<{
     username: string;
     display_name: string;
     password: string;
     role: Role;
   } | null>(null);
+  const [edit, setEdit] = useState<{
+    user: User;
+    display_name: string;
+    role: Role;
+    is_active: boolean;
+  } | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{
+    kind: "delete" | "resetTotp";
+    user: User;
+  } | null>(null);
   const [tempPassword, setTempPassword] = useState<{ username: string; password: string } | null>(null);
+
+  const q = search.trim().toLowerCase();
+  const filtered = users.filter(
+    (u) =>
+      !q ||
+      u.username.toLowerCase().includes(q) ||
+      u.display_name.toLowerCase().includes(q)
+  );
 
   const load = useCallback(async () => {
     try {
@@ -60,8 +80,22 @@ export default function AdminUsers() {
     }
   };
 
+  const saveEdit = async () => {
+    if (!edit) return;
+    try {
+      await api.patch(`/api/admin/users/${edit.user.id}`, {
+        display_name: edit.display_name,
+        role: edit.role,
+        is_active: edit.is_active,
+      });
+      setEdit(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "update failed");
+    }
+  };
+
   const remove = async (u: User) => {
-    if (!confirm(t("admin.users.deleteConfirm", { name: u.username }))) return;
     try {
       await api.del(`/api/admin/users/${u.id}`);
       await load();
@@ -83,7 +117,6 @@ export default function AdminUsers() {
   };
 
   const resetTotp = async (u: User) => {
-    if (!confirm(t("admin.users.resetTotpConfirm", { name: u.username }))) return;
     try {
       await api.post(`/api/admin/users/${u.id}/reset-totp`);
       await load();
@@ -92,17 +125,36 @@ export default function AdminUsers() {
     }
   };
 
+  const runConfirm = async () => {
+    if (!confirmAction) return;
+    const action = confirmAction;
+    setConfirmAction(null);
+    if (action.kind === "delete") {
+      await remove(action.user);
+    } else {
+      await resetTotp(action.user);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold tracking-tight">{t("admin.users.title")}</h2>
-        <Button
-          size="sm"
-          onClick={() => setForm({ username: "", display_name: "", password: "", role: "member" })}
-        >
-          <Plus data-icon="inline-start" />
-          {t("admin.users.add")}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Input
+            placeholder={t("users.search")}
+            className="w-56"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <Button
+            size="sm"
+            onClick={() => setForm({ username: "", display_name: "", password: "", role: "member" })}
+          >
+            <Plus data-icon="inline-start" />
+            {t("admin.users.add")}
+          </Button>
+        </div>
       </div>
 
       <ErrorText>{error}</ErrorText>
@@ -130,10 +182,15 @@ export default function AdminUsers() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {users.map((u) => (
+            {filtered.map((u) => (
               <TableRow key={u.id}>
                 <TableCell className="px-4">
-                  <div className="font-medium">{u.username}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium">{u.username}</span>
+                    {u.must_change_password && (
+                      <Badge variant="destructive">{t("users.badgeMustChangePwd")}</Badge>
+                    )}
+                  </div>
                   {u.display_name && (
                     <div className="text-xs text-muted-foreground">{u.display_name}</div>
                   )}
@@ -141,6 +198,10 @@ export default function AdminUsers() {
                 <TableCell className="px-4">
                   <Select
                     value={u.role}
+                    items={{
+                      admin: t("role.admin"),
+                      member: t("role.member"),
+                    }}
                     onValueChange={(v) => v && void patch(u.id, { role: v })}
                   >
                     <SelectTrigger size="sm" className="w-32">
@@ -180,12 +241,19 @@ export default function AdminUsers() {
                       {t("admin.users.resetPwd")}
                     </Button>
                     {u.totp_enabled && (
-                      <Button variant="outline" size="xs" onClick={() => void resetTotp(u)}>
+                      <Button variant="outline" size="xs" onClick={() => setConfirmAction({ kind: "resetTotp", user: u })}>
                         <ShieldX data-icon="inline-start" />
                         {t("admin.users.resetTotp")}
                       </Button>
                     )}
-                    <Button variant="destructive" size="icon-xs" onClick={() => void remove(u)}>
+                    <Button variant="ghost" size="icon-xs" onClick={() => setEdit({ user: u, display_name: u.display_name, role: u.role, is_active: u.is_active })}>
+                      <Pencil />
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="icon-xs"
+                      onClick={() => setConfirmAction({ kind: "delete", user: u })}
+                    >
                       <Trash2 />
                     </Button>
                   </div>
@@ -228,6 +296,10 @@ export default function AdminUsers() {
               <Label>{t("admin.users.fRole")}</Label>
               <Select
                 value={form?.role ?? "member"}
+                items={{
+                  admin: t("role.admin"),
+                  member: t("role.member"),
+                }}
                 onValueChange={(v) => v && setForm({ ...form!, role: v as Role })}
               >
                 <SelectTrigger className="w-full">
@@ -276,6 +348,79 @@ export default function AdminUsers() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={edit !== null} onOpenChange={(o) => !o && setEdit(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("users.editTitle", { name: edit?.user.username ?? "" })}</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label>{t("users.displayName")}</Label>
+              <Input
+                value={edit?.display_name ?? ""}
+                onChange={(e) => setEdit({ ...edit!, display_name: e.target.value })}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>{t("admin.users.fRole")}</Label>
+              <Select
+                value={edit?.role ?? "member"}
+                items={{
+                  admin: t("role.admin"),
+                  member: t("role.member"),
+                }}
+                onValueChange={(v) => v && setEdit({ ...edit!, role: v as Role })}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {ROLES.map((r) => (
+                      <SelectItem key={r} value={r}>
+                        {t(r === "admin" ? "role.admin" : "role.member")}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="col-span-2 flex items-center gap-2">
+              <Switch
+                checked={edit?.is_active ?? true}
+                onCheckedChange={(v) => setEdit({ ...edit!, is_active: v })}
+              />
+              <Label>{t("admin.users.colActive")}</Label>
+            </div>
+            <div className="col-span-2">
+              <ErrorText>{error}</ErrorText>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEdit(null)}>
+              {t("common.cancel")}
+            </Button>
+            <Button onClick={() => void saveEdit()}>{t("common.save")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={confirmAction !== null}
+        destructive={confirmAction?.kind === "delete"}
+        title={
+          confirmAction?.kind === "delete" ? t("common.delete") : t("admin.users.resetTotp")
+        }
+        description={
+          confirmAction?.kind === "delete"
+            ? t("admin.users.deleteConfirm", { name: confirmAction.user.username })
+            : t("admin.users.resetTotpConfirm", { name: confirmAction?.user.username ?? "" })
+        }
+        confirmLabel={confirmAction?.kind === "delete" ? t("common.delete") : t("admin.users.resetTotp")}
+        onConfirm={() => void runConfirm()}
+        onOpenChange={(o) => !o && setConfirmAction(null)}
+      />
     </div>
   );
 }

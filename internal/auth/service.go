@@ -76,7 +76,14 @@ func (s *Service) Login(username, password, totpCode, ip, userAgent string) (*Lo
 		return nil, apierr.New(apierr.CodeInvalidCredentials, 401, "invalid username or password")
 	}
 	if !creds.IsActive {
-		return nil, apierr.Forbidden("account is disabled")
+		// Disabled accounts still burn password verification (and the same
+		// generic failure) so response timing does not enumerate usernames.
+		ok, err := VerifyPassword(password, creds.PasswordHash)
+		if err != nil || !ok {
+			DummyVerify()
+			return nil, apierr.New(apierr.CodeInvalidCredentials, 401, "invalid username or password")
+		}
+		return nil, apierr.New(apierr.CodeAccountDisabled, 403, "account is disabled")
 	}
 
 	ok, err := VerifyPassword(password, creds.PasswordHash)
@@ -170,7 +177,7 @@ func (s *Service) isTOTPCode(creds *storage.UserCredentials, code string) bool {
 }
 
 func (s *Service) buildIdentity(creds *storage.UserCredentials) (*domain.Identity, error) {
-	return identityFor(creds.UserID, creds.Username, creds.DisplayName, creds.Role, creds.TOTPEnabled), nil
+	return identityFor(creds.UserID, creds.Username, creds.DisplayName, creds.Role, creds.TOTPEnabled, creds.MustChangePassword), nil
 }
 
 // ChangePassword verifies the old password, applies policy, rotates the hash,
@@ -312,19 +319,20 @@ func (s *Service) ResolveApiToken(token string) (*domain.Identity, *domain.ApiTo
 }
 
 func (s *Service) identityForUser(user *domain.User) (*domain.Identity, error) {
-	return identityFor(user.ID, user.Username, user.DisplayName, user.Role, user.TOTPEnabled), nil
+	return identityFor(user.ID, user.Username, user.DisplayName, user.Role, user.TOTPEnabled, user.MustChangePassword), nil
 }
 
 // identityFor resolves a built-in role name into a hydrated principal.
-func identityFor(userID, username, displayName, role string, totpEnabled bool) *domain.Identity {
+func identityFor(userID, username, displayName, role string, totpEnabled, mustChangePassword bool) *domain.Identity {
 	return &domain.Identity{
-		UserID:      userID,
-		Username:    username,
-		DisplayName: displayName,
-		Role:        role,
-		Permissions: domain.RolePermissions(role),
-		IsAdmin:     role == domain.BuiltinRoleAdmin,
-		TOTPEnabled: totpEnabled,
+		UserID:             userID,
+		Username:           username,
+		DisplayName:        displayName,
+		Role:               role,
+		Permissions:        domain.RolePermissions(role),
+		IsAdmin:            role == domain.BuiltinRoleAdmin,
+		TOTPEnabled:        totpEnabled,
+		MustChangePassword: mustChangePassword,
 	}
 }
 

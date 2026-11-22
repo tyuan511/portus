@@ -17,11 +17,15 @@ import (
 
 // Config is the full server configuration.
 type Config struct {
-	Server    ServerConfig    `mapstructure:"server"`
-	Storage   StorageConfig   `mapstructure:"storage"`
-	Vault     VaultConfig     `mapstructure:"vault"`
-	Bootstrap BootstrapConfig `mapstructure:"bootstrap"`
-	Security  SecurityConfig  `mapstructure:"security"`
+	Server        ServerConfig        `mapstructure:"server"`
+	Storage       StorageConfig       `mapstructure:"storage"`
+	Bootstrap     BootstrapConfig     `mapstructure:"bootstrap"`
+	Security      SecurityConfig      `mapstructure:"security"`
+	Terminal      TerminalConfig      `mapstructure:"terminal"`
+	Retention     RetentionConfig     `mapstructure:"retention"`
+	Logging       LoggingConfig       `mapstructure:"logging"`
+	Metrics       MetricsConfig       `mapstructure:"metrics"`
+	Notifications NotificationsConfig `mapstructure:"notifications"`
 }
 
 type ServerConfig struct {
@@ -44,11 +48,53 @@ type StorageConfig struct {
 	AuditJSONL string `mapstructure:"audit_jsonl"`
 }
 
-type VaultConfig struct {
-	AutoLockSecs int64 `mapstructure:"auto_lock_secs"`
-	// UnlockPassphraseFile optionally auto-unlocks the vault at startup
-	// (headless deployments). File must be 0600. Default: off.
-	UnlockPassphraseFile string `mapstructure:"unlock_passphrase_file"`
+type TerminalConfig struct {
+	// Enforce routes every submitted interactive terminal line through the
+	// L1/L2/approval pipeline before it reaches the remote shell. Input is
+	// line-buffered server-side (local echo); remote tab-completion is not
+	// available in this mode. Default: audit-only (record but do not block).
+	Enforce bool `mapstructure:"enforce"`
+	// Record captures the full PTY output stream (plus submitted lines) for
+	// replay from the Audit page. Default: on.
+	Record bool `mapstructure:"record"`
+	// RecordMaxBytes caps the recorded output per session; beyond it the
+	// recording is truncated with a marker. Default: 10 MiB.
+	RecordMaxBytes int64 `mapstructure:"record_max_bytes"`
+}
+
+type RetentionConfig struct {
+	// MCPSessionDays prunes MCP host-session registry rows older than N days;
+	// 0 = keep forever (audit events are never pruned by this).
+	MCPSessionDays int `mapstructure:"mcp_session_days"`
+	// TerminalDays prunes recorded terminal sessions older than N days;
+	// 0 = keep forever.
+	TerminalDays int `mapstructure:"terminal_days"`
+	// APITokenDays prunes revoked/expired API tokens older than N days;
+	// 0 = keep forever.
+	APITokenDays int `mapstructure:"api_token_days"`
+}
+
+type LoggingConfig struct {
+	// File additionally mirrors logs to a rotating file; empty = stdout only.
+	File string `mapstructure:"file"`
+	// MaxSizeMB per rotated file (default 100), MaxBackups (default 7),
+	// MaxAgeDays (default 28).
+	MaxSizeMB  int `mapstructure:"max_size_mb"`
+	MaxBackups int `mapstructure:"max_backups"`
+	MaxAgeDays int `mapstructure:"max_age_days"`
+}
+
+type MetricsConfig struct {
+	// Enabled exposes GET /metrics in Prometheus text format (default off).
+	Enabled bool `mapstructure:"enabled"`
+}
+
+type NotificationsConfig struct {
+	// WebhookURL receives JSON POSTs for approval requests/decisions,
+	// policy denials and account lockouts; empty = disabled.
+	WebhookURL string `mapstructure:"webhook_url"`
+	// TimeoutSecs bounds each webhook POST (default 5).
+	TimeoutSecs int `mapstructure:"timeout_secs"`
 }
 
 type BootstrapConfig struct {
@@ -101,6 +147,24 @@ func Defaults(v *viper.Viper) {
 	v.SetDefault("security.mcp_rate_per_min", 60)
 	v.SetDefault("security.mcp_session_ttl_minutes", 30)
 	v.SetDefault("security.token_ttl_hours", 0)
+
+	v.SetDefault("terminal.enforce", false)
+	v.SetDefault("terminal.record", true)
+	v.SetDefault("terminal.record_max_bytes", 10*1024*1024)
+
+	v.SetDefault("retention.mcp_session_days", 0)
+	v.SetDefault("retention.terminal_days", 0)
+	v.SetDefault("retention.api_token_days", 0)
+
+	v.SetDefault("logging.file", "")
+	v.SetDefault("logging.max_size_mb", 100)
+	v.SetDefault("logging.max_backups", 7)
+	v.SetDefault("logging.max_age_days", 28)
+
+	v.SetDefault("metrics.enabled", false)
+
+	v.SetDefault("notifications.webhook_url", "")
+	v.SetDefault("notifications.timeout_secs", 5)
 }
 
 // Bare returns the default configuration as a plain struct (tests, tooling).
@@ -186,15 +250,8 @@ func (c *Config) expandPaths(configPath string) {
 	c.Bootstrap.AdminPasswordFile = rel(c.Bootstrap.AdminPasswordFile)
 	c.Server.TLSCert = rel(c.Server.TLSCert)
 	c.Server.TLSKey = rel(c.Server.TLSKey)
+	c.Logging.File = rel(c.Logging.File)
 	_ = configPath
-}
-
-// pathOverride carries the legacy SSHIELD_VAULT_PATH absolute override.
-func (c *Config) pathOverride() string {
-	if v := os.Getenv("SSHIELD_VAULT_PATH"); v != "" {
-		return v
-	}
-	return ""
 }
 
 func (c *Config) validate() error {

@@ -33,8 +33,8 @@ WHERE m.user_id = $1 ORDER BY g.name;
 
 -- name: CreateHostGrant :exec
 INSERT INTO host_grants (id, user_group_id, group_name,
-    can_connect, can_execute, created_by, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+    can_connect, can_execute, can_transfer, created_by, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: ListHostGrants :many
 SELECT g.*, ug.id AS ug_id, ug.name AS ug_name, ug.description AS ug_description,
@@ -43,7 +43,7 @@ FROM host_grants g JOIN user_groups ug ON ug.id = g.user_group_id
 ORDER BY g.created_at DESC;
 
 -- name: UpdateHostGrant :execrows
-UPDATE host_grants SET can_connect = $2, can_execute = $3 WHERE id = $1;
+UPDATE host_grants SET can_connect = $2, can_execute = $3, can_transfer = $4 WHERE id = $1;
 
 -- name: DeleteHostGrant :execrows
 DELETE FROM host_grants WHERE id = $1;
@@ -63,6 +63,12 @@ SELECT * FROM api_tokens WHERE user_id = $1 ORDER BY created_at DESC;
 
 -- name: RevokeApiToken :execrows
 UPDATE api_tokens SET revoked_at = $3 WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL;
+
+-- name: CleanupApiTokensBefore :execrows
+-- Prunes already-revoked or already-expired tokens past the retention cutoff.
+DELETE FROM api_tokens
+WHERE (revoked_at IS NOT NULL AND revoked_at < $1)
+   OR (expires_at IS NOT NULL AND expires_at < $1);
 
 -- name: CreateSession :exec
 INSERT INTO sessions (id, user_id, token_hash, ip, user_agent,
@@ -85,7 +91,12 @@ DELETE FROM sessions WHERE user_id = $1;
 SELECT * FROM sessions WHERE user_id = $1 ORDER BY last_seen_at DESC;
 
 -- name: ListAllSessions :many
-SELECT * FROM sessions ORDER BY last_seen_at DESC;
+SELECT s.*, u.username FROM sessions s
+JOIN users u ON u.id = s.user_id
+ORDER BY s.last_seen_at DESC;
+
+-- name: CountAllSessions :one
+SELECT COUNT(*) FROM sessions;
 
 -- name: CleanupExpiredSessions :execrows
 DELETE FROM sessions WHERE expires_at < $1 OR absolute_expires_at < $1;

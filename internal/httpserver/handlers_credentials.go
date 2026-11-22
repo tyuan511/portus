@@ -16,6 +16,7 @@ func (s *Server) registerCredentialRoutes(g fiber.Router) {
 	cg := g.Group("/credentials", requirePerm(domain.PermHostManage))
 	cg.Get("/", s.handleListCredentials)
 	cg.Post("/", s.handleCreateCredential)
+	cg.Patch("/:id", s.handleRenameCredential)
 	cg.Delete("/:id", s.handleDeleteCredential)
 }
 
@@ -58,6 +59,26 @@ func (s *Server) handleCreateCredential(c *fiber.Ctx) error {
 	}
 	s.auditAction(c, "credential.create", "store credential "+meta.Label, domain.DecisionAllow, "")
 	return resp.Created(c, meta)
+}
+
+// handleRenameCredential updates a credential's label (secrets are immutable;
+// rotate by creating a new credential and repointing hosts).
+func (s *Server) handleRenameCredential(c *fiber.Ctx) error {
+	var req struct {
+		Label string `json:"label"`
+	}
+	if err := c.BodyParser(&req); err != nil || req.Label == "" {
+		return apierr.Unprocessable("label is required")
+	}
+	ok, err := s.db.RenameCredential(c.Params("id"), req.Label)
+	if err != nil {
+		return apierr.StorageErr(err)
+	}
+	if !ok {
+		return apierr.NotFoundf("credential not found")
+	}
+	s.auditAction(c, "credential.rename", "rename credential "+c.Params("id"), domain.DecisionAllow, "")
+	return resp.OK(c, fiber.Map{"updated": true})
 }
 
 func (s *Server) handleDeleteCredential(c *fiber.Ctx) error {

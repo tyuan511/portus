@@ -37,6 +37,9 @@ type AuditEvent struct {
 	StdoutPreview  string                 `json:"stdout_preview,omitempty"`
 	StderrPreview  string                 `json:"stderr_preview,omitempty"`
 	Error          string                 `json:"error,omitempty"`
+	// Note is free-text context attached after the fact (e.g. the reason an
+	// approver gave when deciding a request).
+	Note string `json:"note,omitempty"`
 	// PrevHash is the SHA-256 of the previous record ("GENESIS" for the first).
 	PrevHash string `json:"prev_hash"`
 	// EventHash links prev_hash + canonical event fields.
@@ -101,13 +104,4 @@ type AuditStats struct {
 	ByServer      []AuditServerBucket `json:"by_server"`
 	TopCommands   []AuditCountBucket  `json:"top_commands"`
 	DailyTrend    []AuditDailyBucket  `json:"daily_trend"`
-}
-
-// TruncatePreview truncates long output previews for audit storage.
-func TruncatePreview(s string, maxChars int) string {
-	runes := []rune(s)
-	if len(runes) <= maxChars {
-		return s
-	}
-	return string(runes[:maxChars]) + "...[truncated]"
 }

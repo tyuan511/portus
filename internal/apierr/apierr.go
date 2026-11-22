@@ -39,6 +39,8 @@ const (
 	CodePasswordPolicy     Code = 41005 // new password rejected (422)
 	CodeTokenExpired       Code = 41006 // API token expired/revoked (401)
 	CodeAccountDisabled    Code = 41007 // user deactivated by admin (403)
+	CodePasswordChangeReq  Code = 41008 // must_change_password gate: change required first (403)
+	CodeTOTPEnrollReq      Code = 41009 // enforce_totp gate: TOTP enrollment required first (403)
 
 	// 42xxx — rate limiting.
 	CodeTooManyAttempts Code = 42001 // login attempts exhausted (429)

@@ -41,9 +41,9 @@ func Bootstrap(db *storage.DB, cfg *config.Config) (generatedPassword string, er
 			password = string(raw)
 		}
 	}
-	generatedPassword = password
+	var forcedPassword string
 	if password == "" {
-		generatedPassword = randomPassword()
+		forcedPassword = randomPassword()
 		password = generatedPassword
 		// Persist once with 0600 so the operator can retrieve it safely.
 		hintPath := filepath.Join(cfg.Storage.DataDir, "bootstrap-admin-password.txt")
@@ -57,17 +57,19 @@ func Bootstrap(db *storage.DB, cfg *config.Config) (generatedPassword string, er
 	}
 
 	admin := &domain.User{
-		ID:                 storage.GenerateID("usr"),
-		Username:           username,
-		DisplayName:        "Administrator",
-		Role:               domain.BuiltinRoleAdmin,
-		IsActive:           true,
-		MustChangePassword: password == generatedPassword, // forced reset for generated secrets
+		ID:          storage.GenerateID("usr"),
+		Username:    username,
+		DisplayName: "Administrator",
+		Role:        domain.BuiltinRoleAdmin,
+		IsActive:    true,
+		// Forced reset only for generated secrets; an explicitly configured
+		// password was chosen by the operator.
+		MustChangePassword: forcedPassword != "",
 	}
 	if err := db.CreateUser(admin, hashPasswordForBootstrap(password), "", nil); err != nil {
 		return "", fmt.Errorf("create bootstrap admin: %w", err)
 	}
-	return generatedPassword, nil
+	return forcedPassword, nil
 }
 
 // randomPassword produces a memorable-but-strong 20-char password.

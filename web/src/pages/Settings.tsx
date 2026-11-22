@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import QRCode from "qrcode";
-import { KeyRound, Plus, Trash2 } from "lucide-react";
+import { KeyRound, LockKeyhole, Pencil, Plus, Trash2 } from "lucide-react";
 import { cn } from "cn";
+import { ConfirmDialog, PromptDialog } from "@/components/sshield/ConfirmDialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ErrorText, Page, PageHeader } from "@/components/ui/shared";
@@ -16,20 +19,48 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useI18n, type Lang } from "@/lib/i18n";
 import { SSHIELD_THEMES, applyTheme, getSavedThemeId } from "@/lib/themes";
-import type { ApiToken, UserSession } from "@/types";
+import type { ApiToken, CredentialKind, CredentialMeta, UserSession } from "@/types";
 
 const THEME_KEY = "/api/settings/ui.theme";
+
+const CRED_KINDS: CredentialKind[] = ["password", "private_key", "api_key"];
+
+const CRED_KIND_ITEMS: Record<CredentialKind, string> = {
+  password: "password",
+  private_key: "private_key",
+  api_key: "api_key",
+};
 
 export default function SettingsView() {
   const auth = useAuth();
   const { t, lang, setLang } = useI18n();
   const canUseMcp = auth.hasPermission("mcp.access");
+  const canManageCreds = auth.hasPermission("host.manage");
   const [themeId, setThemeId] = useState(getSavedThemeId());
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [newTokenName, setNewTokenName] = useState("");
   const [plainToken, setPlainToken] = useState<string>();
   const [error, setError] = useState<string>();
   const [sessions, setSessions] = useState<UserSession[]>([]);
+
+  const [pwd, setPwd] = useState({ current: "", next: "", confirm: "" });
+  const [pwdError, setPwdError] = useState<string>();
+  const [pwdChanged, setPwdChanged] = useState(false);
+
+  const [creds, setCreds] = useState<CredentialMeta[]>([]);
+  const [credForm, setCredForm] = useState<{
+    label: string;
+    kind: CredentialKind;
+    username: string;
+    secret: string;
+  } | null>(null);
+  const [credError, setCredError] = useState<string>();
+  const [credNotice, setCredNotice] = useState(false);
+  const [renameCred, setRenameCred] = useState<CredentialMeta | null>(null);
+  const [deleteCred, setDeleteCred] = useState<CredentialMeta | null>(null);
+  const [revokeTokenId, setRevokeTokenId] = useState<string | null>(null);
+
+  const [disableTotpOpen, setDisableTotpOpen] = useState(false);
 
   const [totpUrl, setTotpUrl] = useState<string>();
   const [totpQr, setTotpQr] = useState<string>();
@@ -53,10 +84,20 @@ export default function SettingsView() {
     }
   }, []);
 
+  const loadCreds = useCallback(async () => {
+    if (!canManageCreds) return;
+    try {
+      setCreds(await api.get<CredentialMeta[]>("/api/credentials"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "load credentials failed");
+    }
+  }, [canManageCreds]);
+
   useEffect(() => {
     void loadTokens();
     void loadSessions();
-  }, [loadTokens, loadSessions]);
+    void loadCreds();
+  }, [loadTokens, loadSessions, loadCreds]);
 
   const pickTheme = async (id: string) => {
     setThemeId(id);
@@ -81,12 +122,70 @@ export default function SettingsView() {
   };
 
   const revokeToken = async (id: string) => {
-    if (!confirm(t("settings.revokeConfirm"))) return;
     try {
       await api.del(`/api/tokens/${id}`);
+      setRevokeTokenId(null);
       await loadTokens();
     } catch (err) {
+      setRevokeTokenId(null);
       setError(err instanceof Error ? err.message : "revoke failed");
+    }
+  };
+
+  const changePassword = async () => {
+    setPwdError(undefined);
+    if (pwd.next !== pwd.confirm) {
+      setPwdError(t("settings.passwordMismatch"));
+      return;
+    }
+    try {
+      await api.post("/api/auth/change-password", { old_password: pwd.current, new_password: pwd.next });
+      setPwd({ current: "", next: "", confirm: "" });
+      setPwdChanged(true);
+      // The server revoked every session (including this one) — head back to login.
+      window.setTimeout(() => void auth.refresh(), 1500);
+    } catch (err) {
+      setPwdError(err instanceof Error ? err.message : "change password failed");
+    }
+  };
+
+  const createCredential = async () => {
+    if (!credForm?.label || !credForm?.secret) return;
+    setCredError(undefined);
+    try {
+      await api.post<CredentialMeta>("/api/credentials", {
+        kind: credForm.kind,
+        label: credForm.label,
+        username: credForm.username || undefined,
+        secret: credForm.secret,
+      });
+      setCredForm(null);
+      setCredNotice(true);
+      await loadCreds();
+    } catch (err) {
+      setCredError(err instanceof Error ? err.message : "create credential failed");
+    }
+  };
+
+  const renameCredential = async (cred: CredentialMeta, label: string) => {
+    try {
+      await api.patch(`/api/credentials/${cred.id}`, { label });
+      setRenameCred(null);
+      await loadCreds();
+    } catch (err) {
+      setRenameCred(null);
+      setError(err instanceof Error ? err.message : "rename failed");
+    }
+  };
+
+  const deleteCredential = async (cred: CredentialMeta) => {
+    try {
+      await api.del(`/api/credentials/${cred.id}`);
+      setDeleteCred(null);
+      await loadCreds();
+    } catch (err) {
+      setDeleteCred(null);
+      setError(err instanceof Error ? err.message : "delete failed");
     }
   };
 
@@ -112,15 +211,13 @@ export default function SettingsView() {
     }
   };
 
-  const disableTotp = async () => {
-    const password = prompt(t("settings.disablePwdPrompt"));
-    if (!password) return;
-    const code = prompt(t("settings.codePrompt"));
-    if (!code) return;
+  const disableTotp = async (password: string, code: string) => {
     try {
       await api.post("/api/auth/totp/disable", { password, code });
+      setDisableTotpOpen(false);
       await auth.refresh();
     } catch (err) {
+      setDisableTotpOpen(false);
       setError(err instanceof Error ? err.message : "totp disable failed");
     }
   };
@@ -143,6 +240,7 @@ export default function SettingsView() {
       <Tabs defaultValue="appearance" className="gap-5">
         <TabsList variant="line" className="w-full justify-start border-b border-border pb-0">
           <TabsTrigger value="appearance">{t("settings.appearance")}</TabsTrigger>
+          <TabsTrigger value="security">{t("settings.security")}</TabsTrigger>
           {canUseMcp && <TabsTrigger value="tokens">{t("settings.tokens")}</TabsTrigger>}
           <TabsTrigger value="totp">{t("settings.totp")}</TabsTrigger>
           <TabsTrigger value="sessions">{t("settings.sessions")}</TabsTrigger>
@@ -248,6 +346,160 @@ export default function SettingsView() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="security" className="flex max-w-2xl flex-col gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>{t("settings.password")}</CardTitle>
+              <CardDescription>{t("settings.passwordTitle")}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form
+                className="flex max-w-sm flex-col gap-3"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void changePassword();
+                }}
+              >
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="pwd-current">{t("settings.currentPassword")}</Label>
+                  <Input
+                    id="pwd-current"
+                    type="password"
+                    autoComplete="current-password"
+                    value={pwd.current}
+                    onChange={(e) => setPwd({ ...pwd, current: e.target.value })}
+                    required
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="pwd-new">{t("settings.newPassword")}</Label>
+                  <Input
+                    id="pwd-new"
+                    type="password"
+                    autoComplete="new-password"
+                    value={pwd.next}
+                    onChange={(e) => setPwd({ ...pwd, next: e.target.value })}
+                    required
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="pwd-confirm">{t("settings.confirmPassword")}</Label>
+                  <Input
+                    id="pwd-confirm"
+                    type="password"
+                    autoComplete="new-password"
+                    value={pwd.confirm}
+                    onChange={(e) => setPwd({ ...pwd, confirm: e.target.value })}
+                    required
+                  />
+                </div>
+                {pwdError && <ErrorText>{pwdError}</ErrorText>}
+                {pwdChanged && (
+                  <Alert>
+                    <KeyRound />
+                    <AlertTitle>{t("settings.passwordChanged")}</AlertTitle>
+                  </Alert>
+                )}
+                <Button size="sm" type="submit" className="w-fit">
+                  {t("common.save")}
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+
+          {canManageCreds && (
+            <section className="flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold tracking-tight">{t("settings.credentials")}</h3>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setCredError(undefined);
+                    setCredForm({ label: "", kind: "password", username: "", secret: "" });
+                  }}
+                >
+                  <Plus data-icon="inline-start" />
+                  {t("common.create")}
+                </Button>
+              </div>
+
+              {credNotice && (
+                <Alert>
+                  <KeyRound />
+                  <AlertTitle>{t("settings.credCreated")}</AlertTitle>
+                  <AlertDescription className="mt-2">
+                    <Button size="xs" variant="outline" className="w-fit" onClick={() => setCredNotice(false)}>
+                      {t("common.dismiss")}
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {creds.length === 0 ? (
+                <Empty className="border border-border bg-card py-12">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <LockKeyhole />
+                    </EmptyMedia>
+                    <EmptyTitle>{t("settings.credentials")}</EmptyTitle>
+                    <EmptyDescription>{t("settings.credEmpty")}</EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              ) : (
+                <Card className="p-0">
+                  <Table>
+                    <TableHeader className="bg-secondary/50">
+                      <TableRow>
+                        <TableHead className="px-4 font-mono text-[11px] uppercase text-muted-foreground">
+                          {t("settings.credLabel")}
+                        </TableHead>
+                        <TableHead className="px-4 font-mono text-[11px] uppercase text-muted-foreground">
+                          {t("settings.credKind")}
+                        </TableHead>
+                        <TableHead className="px-4 font-mono text-[11px] uppercase text-muted-foreground">
+                          {t("settings.credColUser")}
+                        </TableHead>
+                        <TableHead className="px-4 font-mono text-[11px] uppercase text-muted-foreground">
+                          {t("settings.colCreated")}
+                        </TableHead>
+                        <TableHead className="px-4" />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {creds.map((c) => (
+                        <TableRow key={c.id}>
+                          <TableCell className="px-4 font-medium">{c.label}</TableCell>
+                          <TableCell className="px-4">
+                            <Badge variant="outline" className="font-mono text-[10px]">
+                              {c.kind}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="px-4 font-mono text-xs text-muted-foreground">
+                            {c.username || "-"}
+                          </TableCell>
+                          <TableCell className="px-4 font-mono text-xs tabular-nums">
+                            {new Date(c.created_at).toLocaleDateString()}
+                          </TableCell>
+                          <TableCell className="px-4 text-right">
+                            <div className="flex justify-end gap-1">
+                              <Button variant="ghost" size="icon-xs" onClick={() => setRenameCred(c)}>
+                                <Pencil />
+                              </Button>
+                              <Button variant="destructive" size="icon-xs" onClick={() => setDeleteCred(c)}>
+                                <Trash2 />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </Card>
+              )}
+            </section>
+          )}
+        </TabsContent>
+
         {canUseMcp && (
           <TabsContent value="tokens" className="flex flex-col gap-4">
             <div className="flex max-w-md gap-2">
@@ -333,7 +585,7 @@ export default function SettingsView() {
                           <Button
                             variant="destructive"
                             size="icon-xs"
-                            onClick={() => void revokeToken(tk.id)}
+                            onClick={() => setRevokeTokenId(tk.id)}
                           >
                             <Trash2 />
                           </Button>
@@ -364,7 +616,12 @@ export default function SettingsView() {
               {auth.identity && (
                 <>
                   {auth.hasTotp ? (
-                    <Button variant="destructive" size="sm" className="w-fit" onClick={() => void disableTotp()}>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      className="w-fit"
+                      onClick={() => setDisableTotpOpen(true)}
+                    >
                       {t("settings.disable2fa")}
                     </Button>
                   ) : totpUrl ? (
@@ -454,6 +711,120 @@ export default function SettingsView() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={credForm !== null} onOpenChange={(o) => !o && setCredForm(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("settings.credentials")}</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label>{t("settings.credLabel")}</Label>
+              <Input
+                value={credForm?.label ?? ""}
+                onChange={(e) => setCredForm({ ...credForm!, label: e.target.value })}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>{t("settings.credKind")}</Label>
+              <Select
+                value={credForm?.kind ?? "password"}
+                items={CRED_KIND_ITEMS}
+                onValueChange={(v) => v && setCredForm({ ...credForm!, kind: v as CredentialKind })}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {CRED_KINDS.map((k) => (
+                      <SelectItem key={k} value={k}>
+                        {k}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>{t("settings.credUsername")}</Label>
+              <Input
+                value={credForm?.username ?? ""}
+                onChange={(e) => setCredForm({ ...credForm!, username: e.target.value })}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>{t("settings.credSecret")}</Label>
+              <Input
+                type="password"
+                value={credForm?.secret ?? ""}
+                onChange={(e) => setCredForm({ ...credForm!, secret: e.target.value })}
+              />
+            </div>
+            <div className="col-span-2">
+              <ErrorText>{credError}</ErrorText>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCredForm(null)}>
+              {t("common.cancel")}
+            </Button>
+            <Button onClick={() => void createCredential()} disabled={!credForm?.label || !credForm?.secret}>
+              {t("common.create")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <PromptDialog
+        open={renameCred !== null}
+        title={t("settings.credRename")}
+        fields={[
+          {
+            key: "label",
+            label: t("settings.credLabel"),
+            placeholder: renameCred?.label,
+            defaultValue: renameCred?.label ?? "",
+          },
+        ]}
+        confirmLabel={t("common.save")}
+        onSubmit={(v) => renameCred && void renameCredential(renameCred, v.label)}
+        onOpenChange={(o) => !o && setRenameCred(null)}
+      />
+
+      <ConfirmDialog
+        open={revokeTokenId !== null}
+        title={t("common.delete")}
+        description={t("settings.revokeConfirm")}
+        confirmLabel={t("common.delete")}
+        onConfirm={() => revokeTokenId && void revokeToken(revokeTokenId)}
+        onOpenChange={(o) => !o && setRevokeTokenId(null)}
+      />
+
+      <ConfirmDialog
+        open={deleteCred !== null}
+        title={t("common.delete")}
+        description={t("settings.credDeleteConfirm", { name: deleteCred?.label ?? "" })}
+        confirmLabel={t("common.delete")}
+        onConfirm={() => deleteCred && void deleteCredential(deleteCred)}
+        onOpenChange={(o) => !o && setDeleteCred(null)}
+      />
+
+      <PromptDialog
+        open={disableTotpOpen}
+        title={t("settings.disable2fa")}
+        fields={[
+          {
+            key: "password",
+            label: t("settings.disablePwdPrompt"),
+            type: "password",
+            autoComplete: "current-password",
+          },
+          { key: "code", label: t("settings.codePrompt"), autoComplete: "one-time-code" },
+        ]}
+        onSubmit={(v) => void disableTotp(v.password, v.code)}
+        onOpenChange={setDisableTotpOpen}
+      />
     </Page>
   );
 }

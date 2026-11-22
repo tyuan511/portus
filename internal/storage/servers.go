@@ -102,18 +102,6 @@ func (h *DB) ListEnabledServers() ([]*domain.ServerAsset, error) {
 	return out, nil
 }
 
-// ListServersForUser returns enabled servers the user is granted access to.
-func (h *DB) ListServersForUser(userID string) ([]*domain.ServerAsset, error) {
-	rows, err := h.q.ListServersForUser(context.Background(), userID)
-	if err != nil {
-		return nil, fmt.Errorf("list servers for user: %w", err)
-	}
-	out := make([]*domain.ServerAsset, 0, len(rows))
-	for _, s := range rows {
-		out = append(out, serverToDomain(s))
-	}
-	return out, nil
-}
 
 // ListServersForUserFiltered additionally requires can_connect (needExecute=false)
 // or can_execute (needExecute=true) on the matching grant.
@@ -147,10 +135,25 @@ func (h *DB) ServerGrantDecision(userID string, asset *domain.ServerAsset) (doma
 		return domain.GrantDecision{}, fmt.Errorf("grant decision: %w", err)
 	}
 	return domain.GrantDecision{
-		Allowed:    row.CanConnect == 1 || row.CanExecute == 1,
-		CanConnect: row.CanConnect == 1,
-		CanExecute: row.CanExecute == 1,
+		Allowed:     row.CanConnect == 1 || row.CanExecute == 1,
+		CanConnect:  row.CanConnect == 1,
+		CanExecute:  row.CanExecute == 1,
+		CanTransfer: row.CanTransfer == 1,
 	}, nil
+}
+
+// ListServersForUserTransferable returns enabled hosts the user may run
+// SFTP file operations on (can_transfer grant bit).
+func (h *DB) ListServersForUserTransferable(userID string) ([]*domain.ServerAsset, error) {
+	rows, err := h.q.ListServersForUserTransferable(context.Background(), userID)
+	if err != nil {
+		return nil, fmt.Errorf("list transferable servers: %w", err)
+	}
+	out := make([]*domain.ServerAsset, 0, len(rows))
+	for _, s := range rows {
+		out = append(out, serverToDomain(s))
+	}
+	return out, nil
 }
 
 // DeleteServer removes a server asset; returns whether a row was deleted.

@@ -158,54 +158,6 @@ func (q *Queries) ListServers(ctx context.Context) ([]Server, error) {
 	return items, nil
 }
 
-const listServersForUser = `-- name: ListServersForUser :many
-SELECT s.id, s.name, s.host, s.port, s.username, s.auth_kind, s.identity_file, s.credential_id, s.jump_host_id, s.group_name, s.tags_json, s.description, s.enabled, s.updated_at FROM servers s
-WHERE s.enabled = 1 AND EXISTS (
-    SELECT 1 FROM host_grants g
-    JOIN user_group_members m ON m.group_id = g.user_group_id
-    WHERE m.user_id = $1
-      AND g.group_name <> '' AND g.group_name = s.group_name
-) ORDER BY s.group_name, s.name
-`
-
-func (q *Queries) ListServersForUser(ctx context.Context, userID string) ([]Server, error) {
-	rows, err := q.db.QueryContext(ctx, listServersForUser, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Server{}
-	for rows.Next() {
-		var i Server
-		if err := rows.Scan(
-			&i.ID,
-			&i.Name,
-			&i.Host,
-			&i.Port,
-			&i.Username,
-			&i.AuthKind,
-			&i.IdentityFile,
-			&i.CredentialID,
-			&i.JumpHostID,
-			&i.GroupName,
-			&i.TagsJson,
-			&i.Description,
-			&i.Enabled,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listServersForUserFiltered = `-- name: ListServersForUserFiltered :many
 SELECT s.id, s.name, s.host, s.port, s.username, s.auth_kind, s.identity_file, s.credential_id, s.jump_host_id, s.group_name, s.tags_json, s.description, s.enabled, s.updated_at FROM servers s
 WHERE s.enabled = 1 AND EXISTS (
@@ -261,10 +213,60 @@ func (q *Queries) ListServersForUserFiltered(ctx context.Context, arg ListServer
 	return items, nil
 }
 
+const listServersForUserTransferable = `-- name: ListServersForUserTransferable :many
+SELECT s.id, s.name, s.host, s.port, s.username, s.auth_kind, s.identity_file, s.credential_id, s.jump_host_id, s.group_name, s.tags_json, s.description, s.enabled, s.updated_at FROM servers s
+WHERE s.enabled = 1 AND EXISTS (
+    SELECT 1 FROM host_grants g
+    JOIN user_group_members m ON m.group_id = g.user_group_id
+    WHERE m.user_id = $1
+      AND g.group_name <> '' AND g.group_name = s.group_name
+      AND g.can_transfer = 1
+) ORDER BY s.group_name, s.name
+`
+
+func (q *Queries) ListServersForUserTransferable(ctx context.Context, userID string) ([]Server, error) {
+	rows, err := q.db.QueryContext(ctx, listServersForUserTransferable, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Server{}
+	for rows.Next() {
+		var i Server
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Host,
+			&i.Port,
+			&i.Username,
+			&i.AuthKind,
+			&i.IdentityFile,
+			&i.CredentialID,
+			&i.JumpHostID,
+			&i.GroupName,
+			&i.TagsJson,
+			&i.Description,
+			&i.Enabled,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const serverGrantDecision = `-- name: ServerGrantDecision :one
 SELECT
     COALESCE(MAX(g.can_connect), 0)::int AS can_connect,
-    COALESCE(MAX(g.can_execute), 0)::int AS can_execute
+    COALESCE(MAX(g.can_execute), 0)::int AS can_execute,
+    COALESCE(MAX(g.can_transfer), 0)::int AS can_transfer
 FROM host_grants g
 JOIN user_group_members m ON m.group_id = g.user_group_id
 WHERE m.user_id = $1
@@ -277,14 +279,15 @@ type ServerGrantDecisionParams struct {
 }
 
 type ServerGrantDecisionRow struct {
-	CanConnect int32
-	CanExecute int32
+	CanConnect  int32
+	CanExecute  int32
+	CanTransfer int32
 }
 
 func (q *Queries) ServerGrantDecision(ctx context.Context, arg ServerGrantDecisionParams) (ServerGrantDecisionRow, error) {
 	row := q.db.QueryRowContext(ctx, serverGrantDecision, arg.UserID, arg.GroupName)
 	var i ServerGrantDecisionRow
-	err := row.Scan(&i.CanConnect, &i.CanExecute)
+	err := row.Scan(&i.CanConnect, &i.CanExecute, &i.CanTransfer)
 	return i, err
 }
 

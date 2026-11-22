@@ -27,8 +27,8 @@ const PIPELINE = [
   { icon: ScrollText, key: "audit", code: "sha256(prev || event)" },
 ] as const;
 
-const MCP_TOOLS = ["ssh_list_hosts", "ssh_exec", "ssh_read_file", "ssh_tail_log", "+8 tools"];
-const HARDENED_PILLS = ["Argon2id", "TOTP 2FA", "AES-GCM Vault", "Lockout"];
+const MCP_TOOLS = ["ssh_list_hosts", "ssh_exec", "ssh_read_file", "ssh_tail_log", "+10 tools"];
+const HARDENED_PILLS = ["Argon2id", "TOTP 2FA", "AES-GCM 密封", "Lockout"];
 
 export default function Landing() {
   const auth = useAuth();
@@ -138,7 +138,7 @@ export default function Landing() {
           {[
             { label: t("landing.stat.ast"), value: "< 1 ms" },
             { label: t("landing.stat.posture"), value: t("landing.stat.postureVal") },
-            { label: t("landing.stat.mcp"), value: "12 Tools" },
+            { label: t("landing.stat.mcp"), value: "14 Tools" },
             { label: t("landing.stat.audit"), value: "SHA-256" },
           ].map((stat) => (
             <div key={stat.label} className="flex flex-col gap-1 px-6 py-5">
@@ -367,7 +367,7 @@ export default function Landing() {
             <Link to="/login" className="transition-colors hover:text-foreground">
               {t("landing.cta.signin")}
             </Link>
-            <span className="font-mono">Go · React · PostgreSQL · SQLite</span>
+            <span className="font-mono">Go · React · PostgreSQL</span>
           </div>
         </div>
       </footer>

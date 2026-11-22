@@ -19,15 +19,6 @@ SELECT * FROM servers ORDER BY group_name, name;
 -- name: ListEnabledServers :many
 SELECT * FROM servers WHERE enabled = 1 ORDER BY group_name, name;
 
--- name: ListServersForUser :many
-SELECT s.* FROM servers s
-WHERE s.enabled = 1 AND EXISTS (
-    SELECT 1 FROM host_grants g
-    JOIN user_group_members m ON m.group_id = g.user_group_id
-    WHERE m.user_id = $1
-      AND g.group_name <> '' AND g.group_name = s.group_name
-) ORDER BY s.group_name, s.name;
-
 -- name: ListServersForUserFiltered :many
 -- need_execute: 0 requires can_connect, 1 requires can_execute.
 SELECT s.* FROM servers s
@@ -39,10 +30,21 @@ WHERE s.enabled = 1 AND EXISTS (
       AND ((sqlc.arg('need_execute')::int = 0 AND g.can_connect = 1) OR (sqlc.arg('need_execute')::int = 1 AND g.can_execute = 1))
 ) ORDER BY s.group_name, s.name;
 
+-- name: ListServersForUserTransferable :many
+SELECT s.* FROM servers s
+WHERE s.enabled = 1 AND EXISTS (
+    SELECT 1 FROM host_grants g
+    JOIN user_group_members m ON m.group_id = g.user_group_id
+    WHERE m.user_id = $1
+      AND g.group_name <> '' AND g.group_name = s.group_name
+      AND g.can_transfer = 1
+) ORDER BY s.group_name, s.name;
+
 -- name: ServerGrantDecision :one
 SELECT
     COALESCE(MAX(g.can_connect), 0)::int AS can_connect,
-    COALESCE(MAX(g.can_execute), 0)::int AS can_execute
+    COALESCE(MAX(g.can_execute), 0)::int AS can_execute,
+    COALESCE(MAX(g.can_transfer), 0)::int AS can_transfer
 FROM host_grants g
 JOIN user_group_members m ON m.group_id = g.user_group_id
 WHERE m.user_id = $1

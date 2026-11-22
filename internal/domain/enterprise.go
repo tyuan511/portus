@@ -9,8 +9,8 @@ const (
 	PermHostRead        Permission = "host.read"
 	PermHostConnect     Permission = "host.connect"
 	PermHostExecute     Permission = "host.execute"
+	PermHostTransfer    Permission = "host.transfer"
 	PermHostManage      Permission = "host.manage"
-	PermVaultManage     Permission = "vault.manage"
 	PermRulesRead       Permission = "rules.read"
 	PermRulesManage     Permission = "rules.manage"
 	PermSnippetsUse     Permission = "snippets.use"
@@ -28,8 +28,8 @@ const (
 // roles are built in and never shown to users as an editable matrix.
 func AllPermissions() []Permission {
 	return []Permission{
-		PermHostRead, PermHostConnect, PermHostExecute, PermHostManage,
-		PermVaultManage, PermRulesRead, PermRulesManage,
+		PermHostRead, PermHostConnect, PermHostExecute, PermHostTransfer, PermHostManage,
+		PermRulesRead, PermRulesManage,
 		PermSnippetsUse, PermSnippetsManage,
 		PermAuditViewSelf, PermAuditViewAll, PermApprovalsDecide, PermMCPAccess,
 		PermUsersManage, PermAccessManage, PermSettingsManage,
@@ -58,8 +58,8 @@ func RolePermissions(name string) []Permission {
 		return AllPermissions()
 	case BuiltinRoleMember:
 		// Members only consume the platform: connect to hosts granted via
-		// user groups, execute commands, and use MCP.
-		return []Permission{PermHostRead, PermHostConnect, PermHostExecute, PermMCPAccess}
+		// user groups, execute commands, transfer files, and use MCP.
+		return []Permission{PermHostRead, PermHostConnect, PermHostExecute, PermHostTransfer, PermMCPAccess}
 	default:
 		return nil
 	}
@@ -78,13 +78,6 @@ type User struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
-}
-
-// UserDetails adds administrative fields never returned in bulk listings.
-type UserDetails struct {
-	User
-	FailedAttempts int        `json:"failed_attempts"`
-	LockedUntil    *time.Time `json:"locked_until,omitempty"`
 }
 
 // UserGroup is a set of users that host grants target.
@@ -111,15 +104,17 @@ type HostGrant struct {
 	GroupName   string     `json:"group_name"`
 	CanConnect  bool       `json:"can_connect"`
 	CanExecute  bool       `json:"can_execute"`
+	CanTransfer bool       `json:"can_transfer"`
 	CreatedBy   string     `json:"created_by,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 }
 
 // GrantDecision is the effective access level of a user on a specific host.
 type GrantDecision struct {
-	Allowed    bool `json:"allowed"`
-	CanConnect bool `json:"can_connect"`
-	CanExecute bool `json:"can_execute"`
+	Allowed     bool `json:"allowed"`
+	CanConnect  bool `json:"can_connect"`
+	CanExecute  bool `json:"can_execute"`
+	CanTransfer bool `json:"can_transfer"`
 }
 
 // ApiToken is a personal access token used by MCP clients (per-user).
@@ -138,6 +133,7 @@ type ApiToken struct {
 type UserSession struct {
 	ID         string    `json:"id"`
 	UserID     string    `json:"user_id"`
+	Username   string    `json:"username"`
 	IP         string    `json:"ip"`
 	UserAgent  string    `json:"user_agent"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -157,6 +153,9 @@ type Identity struct {
 	IsAdmin bool `json:"is_admin"`
 	// TOTPEnabled reports whether the account has a second factor enrolled.
 	TOTPEnabled bool `json:"totp_enabled"`
+	// MustChangePassword forces the change-password flow before any other
+	// API access (enforced by the httpserver gate middleware).
+	MustChangePassword bool `json:"must_change_password"`
 }
 
 func (i *Identity) HasPermission(p Permission) bool {
@@ -167,12 +166,3 @@ func (i *Identity) HasPermission(p Permission) bool {
 	}
 	return false
 }
-
-// TokenAuthKind distinguishes how an identity was authenticated.
-type TokenAuthKind string
-
-const (
-	AuthKindWebSession TokenAuthKind = "web_session"
-	AuthKindApiToken   TokenAuthKind = "api_token"
-	AuthKindLocal      TokenAuthKind = "local"
-)

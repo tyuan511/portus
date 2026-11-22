@@ -9,8 +9,8 @@ import (
 // Store is the storage surface rbac needs (implemented by storage.DB).
 type Store interface {
 	ListEnabledServers() ([]*domain.ServerAsset, error)
-	ListServersForUser(userID string) ([]*domain.ServerAsset, error)
 	ListServersForUserFiltered(userID string, needExecute bool) ([]*domain.ServerAsset, error)
+	ListServersForUserTransferable(userID string) ([]*domain.ServerAsset, error)
 	ServerGrantDecision(userID string, asset *domain.ServerAsset) (domain.GrantDecision, error)
 }
 
@@ -69,6 +69,34 @@ func (s *Service) CheckServerAccess(id *domain.Identity, asset *domain.ServerAss
 		return apierr.Forbidden("no connect grant on host " + asset.Name)
 	}
 	return nil
+}
+
+// CheckServerTransfer verifies the identity may run SFTP file operations on
+// asset: the host.transfer permission plus a can_transfer grant (admins
+// bypass grants).
+func (s *Service) CheckServerTransfer(id *domain.Identity, asset *domain.ServerAsset) error {
+	if err := s.CheckPermission(id, domain.PermHostTransfer); err != nil {
+		return err
+	}
+	if id.IsAdmin {
+		return nil
+	}
+	decision, err := s.store.ServerGrantDecision(id.UserID, asset)
+	if err != nil {
+		return apierr.StorageErr(err)
+	}
+	if !decision.CanTransfer {
+		return apierr.Forbidden("no transfer grant on host " + asset.Name)
+	}
+	return nil
+}
+
+// ListTransferableServers returns hosts the identity may transfer files on.
+func (s *Service) ListTransferableServers(id *domain.Identity) ([]*domain.ServerAsset, error) {
+	if id.IsAdmin {
+		return s.store.ListEnabledServers()
+	}
+	return s.store.ListServersForUserTransferable(id.UserID)
 }
 
 func permFor(needExecute bool) domain.Permission {

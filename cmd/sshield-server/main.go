@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -13,10 +14,12 @@ import (
 	"github.com/yuantang/sshield/internal/apierr"
 	"github.com/yuantang/sshield/internal/approvals"
 	"github.com/yuantang/sshield/internal/auth"
+	"github.com/yuantang/sshield/internal/buildinfo"
 	"github.com/yuantang/sshield/internal/config"
 	"github.com/yuantang/sshield/internal/httpserver"
 	"github.com/yuantang/sshield/internal/logging"
 	"github.com/yuantang/sshield/internal/mcpserver"
+	"github.com/yuantang/sshield/internal/notify"
 	"github.com/yuantang/sshield/internal/rbac"
 	"github.com/yuantang/sshield/internal/security"
 	"github.com/yuantang/sshield/internal/serverkey"
@@ -25,24 +28,40 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	configPath := flag.String("config", "", "path to the configuration file (YAML/TOML)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("sshield-server " + buildinfo.Version)
+		return
+	}
+	if err := run(*configPath); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	cfg, err := config.Load("")
+func run(configPath string) error {
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}
-	logger := logging.New(os.Getenv("SSHIELD_ENV"))
+	logger := logging.New(os.Getenv("SSHIELD_ENV"), logging.FileConfig{
+		Path:       cfg.Logging.File,
+		MaxSizeMB:  cfg.Logging.MaxSizeMB,
+		MaxBackups: cfg.Logging.MaxBackups,
+		MaxAgeDays: cfg.Logging.MaxAgeDays,
+	})
 	defer func() { _ = logger.Sync() }()
 	log := logger.Sugar()
 
 	log.Infow("starting sshield-server",
 		"bind", cfg.Server.Bind,
-		"data_dir", cfg.Storage.DataDir)
+		"data_dir", cfg.Storage.DataDir,
+		"version", buildinfo.Version,
+		"terminal_enforce", cfg.Terminal.Enforce,
+		"terminal_record", cfg.Terminal.Record)
 
 	// Storage (PostgreSQL via sqlc-generated queries).
 	db, err := storage.Open(cfg.PostgresDSN(), cfg.AuditJSONLPath())
@@ -91,8 +110,9 @@ func run() error {
 	pool := sshpool.NewPool(db)
 	engine := security.NewEngine()
 	broker := approvals.NewBroker()
+	notifier := notify.New(cfg.Notifications.WebhookURL, cfg.Notifications.TimeoutSecs, logger)
 
-	server := httpserver.New(logger, cfg, db, authSvc, rbacSvc, pool, engine, broker)
+	server := httpserver.New(logger, cfg, db, authSvc, rbacSvc, pool, engine, broker, notifier)
 
 	// MCP endpoint: bearer-PAT gate at the fiber layer; tools resolve identity
 	// per call from the request's Authorization header.
@@ -107,6 +127,7 @@ func run() error {
 		L2:         server.L2Reviewer,
 		Audit:      server.Audit,
 		Log:        logger,
+		Notify:     notifier,
 		SessionTTL: cfg.MCPSessionTTL(),
 	})
 	server.SetMCPHandler(mcpHandler)
@@ -114,18 +135,41 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Periodic hygiene: prune expired sessions and stale auth attempts.
+	// Periodic hygiene: prune expired sessions/stale auth attempts and apply
+	// the configured retention windows for recordings and tokens.
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
+		runRetention := func() {
+			if n, err := db.CleanupExpired(); err == nil && n > 0 {
+				log.Infow("expired records cleaned", "removed", n)
+			}
+			if cfg.Retention.MCPSessionDays > 0 {
+				cutoff := time.Now().UTC().AddDate(0, 0, -cfg.Retention.MCPSessionDays)
+				if n, err := db.CleanupMCPSessionsBefore(cutoff); err == nil && n > 0 {
+					log.Infow("mcp session registry pruned", "removed", n)
+				}
+			}
+			if cfg.Retention.TerminalDays > 0 {
+				cutoff := time.Now().UTC().AddDate(0, 0, -cfg.Retention.TerminalDays)
+				if n, err := db.CleanupTerminalSessionsBefore(cutoff); err == nil && n > 0 {
+					log.Infow("terminal recordings pruned", "removed", n)
+				}
+			}
+			if cfg.Retention.APITokenDays > 0 {
+				cutoff := time.Now().UTC().AddDate(0, 0, -cfg.Retention.APITokenDays)
+				if n, err := db.CleanupApiTokensBefore(cutoff); err == nil && n > 0 {
+					log.Infow("api tokens pruned", "removed", n)
+				}
+			}
+		}
+		runRetention()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if n, err := db.CleanupExpired(); err == nil && n > 0 {
-					log.Infow("expired records cleaned", "removed", n)
-				}
+				runRetention()
 			}
 		}
 	}()

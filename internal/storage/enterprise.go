@@ -136,17 +136,6 @@ func (h *DB) GetUser(id string) (*domain.User, error) {
 	return userToDomain(u), nil
 }
 
-// GetUserByUsername fetches a user by unique username.
-func (h *DB) GetUserByUsername(username string) (*domain.User, error) {
-	u, err := h.q.GetUserByUsername(context.Background(), username)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get user: %w", err)
-	}
-	return userToDomain(u), nil
-}
 
 // GetCredentialsByUsername loads the authentication record for login.
 func (h *DB) GetCredentialsByUsername(username string) (*UserCredentials, error) {
@@ -527,20 +516,6 @@ func (h *DB) ListGroupMembers(groupID string) ([]*domain.User, error) {
 	return out, nil
 }
 
-// ListGroupsForUser returns the groups a user belongs to.
-func (h *DB) ListGroupsForUser(userID string) ([]*domain.UserGroup, error) {
-	rows, err := h.q.ListGroupsForUser(context.Background(), userID)
-	if err != nil {
-		return nil, fmt.Errorf("groups for user: %w", err)
-	}
-	out := make([]*domain.UserGroup, 0, len(rows))
-	for _, g := range rows {
-		ug := &domain.UserGroup{ID: g.ID, Name: g.Name, Description: g.Description}
-		ug.CreatedAt, _ = parseRFC3339(g.CreatedAt)
-		out = append(out, ug)
-	}
-	return out, nil
-}
 
 // --- host grants ---
 
@@ -558,6 +533,7 @@ func (h *DB) CreateHostGrant(g *domain.HostGrant) error {
 		GroupName:   g.GroupName,
 		CanConnect:  int32(boolToInt(g.CanConnect)),
 		CanExecute:  int32(boolToInt(g.CanExecute)),
+		CanTransfer: int32(boolToInt(g.CanTransfer)),
 		CreatedBy:   g.CreatedBy,
 		CreatedAt:   formatRFC3339(g.CreatedAt),
 	})
@@ -581,6 +557,7 @@ func (h *DB) ListHostGrants() ([]*domain.HostGrant, error) {
 			GroupName:   g.GroupName,
 			CanConnect:  g.CanConnect == 1,
 			CanExecute:  g.CanExecute == 1,
+			CanTransfer: g.CanTransfer == 1,
 			CreatedBy:   g.CreatedBy,
 		}
 		grant.CreatedAt, _ = parseRFC3339(g.CreatedAt)
@@ -592,8 +569,8 @@ func (h *DB) ListHostGrants() ([]*domain.HostGrant, error) {
 	return out, nil
 }
 
-// UpdateHostGrant toggles the connect/execute bits.
-func (h *DB) UpdateHostGrant(id string, canConnect, canExecute *bool) error {
+// UpdateHostGrant toggles the connect/execute/transfer bits.
+func (h *DB) UpdateHostGrant(id string, canConnect, canExecute, canTransfer *bool) error {
 	grants, err := h.ListHostGrants()
 	if err != nil {
 		return err
@@ -616,10 +593,15 @@ func (h *DB) UpdateHostGrant(id string, canConnect, canExecute *bool) error {
 	if canExecute != nil {
 		execute = *canExecute
 	}
+	transfer := current.CanTransfer
+	if canTransfer != nil {
+		transfer = *canTransfer
+	}
 	n, err := h.q.UpdateHostGrant(context.Background(), db.UpdateHostGrantParams{
-		ID:         id,
-		CanConnect: int32(boolToInt(connect)),
-		CanExecute: int32(boolToInt(execute)),
+		ID:          id,
+		CanConnect:  int32(boolToInt(connect)),
+		CanExecute:  int32(boolToInt(execute)),
+		CanTransfer: int32(boolToInt(transfer)),
 	})
 	if err != nil {
 		return fmt.Errorf("update grant: %w", err)
@@ -854,14 +836,33 @@ func (h *DB) ListSessionsForUser(userID string) ([]*domain.UserSession, error) {
 	return sessionRowsToDomain(rows), nil
 }
 
-// ListAllSessions returns every active session (admin).
+// ListAllSessions returns every active session (admin) with usernames joined.
 func (h *DB) ListAllSessions() ([]*domain.UserSession, error) {
 	rows, err := h.q.ListAllSessions(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("list all sessions: %w", err)
 	}
-	return sessionRowsToDomain(rows), nil
+	out := make([]*domain.UserSession, 0, len(rows))
+	for _, s := range rows {
+		item := &domain.UserSession{
+			ID:        s.ID,
+			UserID:    s.UserID,
+			Username:  s.Username,
+			IP:        s.Ip,
+			UserAgent: s.UserAgent,
+		}
+		item.CreatedAt, _ = parseRFC3339(s.CreatedAt)
+		item.LastSeenAt, _ = parseRFC3339(s.LastSeenAt)
+		item.ExpiresAt, _ = parseRFC3339(s.ExpiresAt)
+		out = append(out, item)
+	}
+	return out, nil
 }
+
+// authAttemptsRetention bounds how long login-attempt evidence is kept. It must
+// exceed the largest brute-force window (per-IP + per-user) so the rate limiter
+// keeps its counters between cleanup ticks.
+const authAttemptsRetention = 24 * time.Hour
 
 // CleanupExpired removes expired sessions and stale auth attempts.
 func (h *DB) CleanupExpired() (int64, error) {
@@ -870,7 +871,8 @@ func (h *DB) CleanupExpired() (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("cleanup sessions: %w", err)
 	}
-	attempts, err := h.q.CleanupStaleAuthAttempts(context.Background(), now)
+	cutoff := time.Now().UTC().Add(-authAttemptsRetention).Format(time.RFC3339)
+	attempts, err := h.q.CleanupStaleAuthAttempts(context.Background(), cutoff)
 	if err != nil {
 		return sessions, fmt.Errorf("cleanup attempts: %w", err)
 	}

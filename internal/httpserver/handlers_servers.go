@@ -17,11 +17,40 @@ import (
 func (s *Server) registerServerRoutes(app *fiber.App, authGroup fiber.Router) {
 	authGroup.Get("/servers", s.handleListServers)
 	authGroup.Post("/servers", requirePerm(domain.PermHostManage), s.handleUpsertServer)
-	authGroup.Put("/servers/:id", requirePerm(domain.PermHostManage), s.handleUpsertServer)
+	authGroup.Put("/servers/:id", requirePerm(domain.PermHostManage), s.handleUpdateServer)
 	authGroup.Delete("/servers/:id", requirePerm(domain.PermHostManage), s.handleDeleteServer)
 	authGroup.Post("/servers/:id/test", s.handleTestServer)
 	authGroup.Post("/servers/import-ssh-config", requirePerm(domain.PermHostManage), s.handleImportSSHConfig)
 	authGroup.Get("/servers/groups", s.handleListServerGroups)
+}
+
+// handleUpdateServer validates PUT against an existing host (unlike POST
+// upsert, PUT must not silently create).
+func (s *Server) handleUpdateServer(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if _, err := s.db.GetServer(id); err != nil {
+		return apierr.NotFoundf("server not found")
+	}
+	var asset domain.ServerAsset
+	if err := c.BodyParser(&asset); err != nil {
+		return apierr.BadRequest("invalid JSON body")
+	}
+	asset.ID = id
+	if asset.Host == "" || asset.Name == "" || asset.Username == "" {
+		return apierr.Unprocessable("name, host and username are required")
+	}
+	if asset.Port <= 0 || asset.Port > 65535 {
+		asset.Port = 22
+	}
+	if asset.Tags == nil {
+		asset.Tags = []string{}
+	}
+	if err := s.db.UpsertServer(&asset); err != nil {
+		return apierr.StorageErr(err)
+	}
+	s.pool.Invalidate(asset.ID)
+	s.auditAction(c, "server.update", "update server "+asset.Name, domain.DecisionAllow, "")
+	return resp.OK(c, &asset)
 }
 
 func (s *Server) handleListServers(c *fiber.Ctx) error {

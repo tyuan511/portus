@@ -16,23 +16,16 @@ export interface ServerAsset {
   enabled: boolean;
 }
 
-export type VaultCredentialKind = "password" | "private_key" | "api_key";
+export type CredentialKind = "password" | "private_key" | "api_key";
 
-export interface VaultCredentialMeta {
+export interface CredentialMeta {
   id: string;
+  kind: CredentialKind;
   label: string;
-  kind: VaultCredentialKind;
   username?: string | null;
-  preview: string;
+  preview?: string;
+  created_by?: string;
   created_at: string;
-}
-
-export type VaultLockState = "uninitialized" | "locked" | "unlocked";
-
-export interface VaultStatus {
-  state: VaultLockState;
-  credential_count: number;
-  auto_lock_secs: number;
 }
 
 export interface CommandSnippet {
@@ -75,8 +68,8 @@ export interface CommandVerdict {
 }
 
 export type L2Protocol =
-  | "open_ai_chat"
-  | "open_ai_responses"
+  | "openai_chat"
+  | "openai_responses"
   | "anthropic_messages"
   | "system_one_fast";
 
@@ -109,6 +102,13 @@ export interface DualEvaluateResp {
   l1: CommandVerdict;
   l2?: SemanticReviewVerdict | null;
   final_decision: PolicyDecision;
+}
+
+export interface DryRunResult {
+  dry_run: boolean;
+  final_decision: PolicyDecision;
+  l1: CommandVerdict;
+  l2?: SemanticReviewVerdict | null;
 }
 
 export type ApprovalDecision = "approved" | "rejected" | "timed_out";
@@ -156,6 +156,7 @@ export interface AuditEvent {
   stdout_preview?: string | null;
   stderr_preview?: string | null;
   error?: string | null;
+  note?: string | null;
   prev_hash: string;
   event_hash: string;
 }
@@ -164,6 +165,29 @@ export interface AuditChainStatus {
   total_events: number;
   valid: boolean;
   broken_at_id?: string | null;
+}
+
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
+export interface ApprovalHistoryItem {
+  id: string;
+  trace_id: string;
+  timestamp: string;
+  server_id: string;
+  server_name: string;
+  ssh_user?: string;
+  user_id?: string;
+  username?: string;
+  command: string;
+  intent: string;
+  decision: PolicyDecision;
+  approval_id: string;
+  approval_status: ApprovalDecision;
+  note?: string;
+  error?: string;
 }
 
 export interface AuditStats {
@@ -187,8 +211,8 @@ export type WsEvent =
 // ===== Enterprise (multi-user) =====
 
 export type Permission =
-  | "host.read" | "host.connect" | "host.execute" | "host.manage"
-  | "vault.manage" | "rules.read" | "rules.manage"
+  | "host.read" | "host.connect" | "host.execute" | "host.transfer" | "host.manage"
+  | "rules.read" | "rules.manage"
   | "snippets.use" | "snippets.manage"
   | "audit.view_self" | "audit.view_all" | "approvals.decide" | "mcp.access"
   | "users.manage" | "access.manage" | "settings.manage";
@@ -217,6 +241,7 @@ export interface Identity {
   permissions: Permission[];
   is_admin: boolean;
   totp_enabled: boolean;
+  must_change_password: boolean;
 }
 
 export interface UserGroup {
@@ -233,6 +258,7 @@ export interface HostGrant {
   group_name: string;
   can_connect: boolean;
   can_execute: boolean;
+  can_transfer: boolean;
   created_by?: string;
   created_at?: string;
 }
@@ -251,6 +277,7 @@ export interface ApiToken {
 export interface UserSession {
   id: string;
   user_id: string;
+  username?: string;
   ip: string;
   user_agent: string;
   created_at: string;
@@ -267,13 +294,61 @@ export interface MCPSession {
   servers: string;
 }
 
-export interface CredentialMeta {
+// ===== Terminal recordings =====
+
+export interface TerminalSession {
   id: string;
-  kind: "password" | "private_key" | "api_key";
-  label: string;
-  username?: string;
-  created_by?: string;
-  created_at: string;
+  user_id: string;
+  username: string;
+  server_id: string;
+  server_name: string;
+  ssh_user: string;
+  server_host: string;
+  client_ip: string;
+  policy_mode: "audit" | "enforce";
+  opened_at: string;
+  closed_at?: string | null;
+  close_reason: string;
+  byte_size: number;
+  event_count: number;
+  truncated: boolean;
+}
+
+export interface TerminalEvent {
+  seq: number;
+  ts_ms: number;
+  direction: "output" | "input" | "notice";
+  data: string;
+}
+
+// ===== SFTP file manager =====
+
+export interface SftpEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;
+  mode: string;
+  mod_time: string;
+  target?: string | null;
+}
+
+export interface SftpListResult {
+  path: string;
+  entries: SftpEntry[];
+}
+
+export interface SftpOpResult {
+  file?: string;
+  path?: string;
+  bytes?: number;
+  deleted?: boolean;
+  error?: string;
+}
+
+export interface SftpUploadResult {
+  results: SftpOpResult[];
+  failed: boolean;
 }
 
 export interface LoginResponse {

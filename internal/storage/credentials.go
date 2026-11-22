@@ -164,6 +164,18 @@ func (h *DB) DeleteCredential(id string) (bool, error) {
 	return n > 0, nil
 }
 
+// RenameCredential updates a credential's display label.
+func (h *DB) RenameCredential(id, label string) (bool, error) {
+	n, err := h.q.RenameCredential(context.Background(), db.RenameCredentialParams{
+		ID:    id,
+		Label: label,
+	})
+	if err != nil {
+		return false, fmt.Errorf("rename credential: %w", err)
+	}
+	return n > 0, nil
+}
+
 // previewSecret builds the masked listing preview.
 func previewSecret(secret, kind string) string {
 	switch kind {

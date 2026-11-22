@@ -9,17 +9,6 @@ import (
 	"context"
 )
 
-const countCredentials = `-- name: CountCredentials :one
-SELECT COUNT(*) FROM credentials
-`
-
-func (q *Queries) CountCredentials(ctx context.Context) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countCredentials)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const createCredential = `-- name: CreateCredential :exec
 INSERT INTO credentials (id, kind, label, username, nonce, ciphertext, created_by, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -123,4 +112,21 @@ func (q *Queries) ListCredentials(ctx context.Context) ([]ListCredentialsRow, er
 		return nil, err
 	}
 	return items, nil
+}
+
+const renameCredential = `-- name: RenameCredential :execrows
+UPDATE credentials SET label = $2 WHERE id = $1
+`
+
+type RenameCredentialParams struct {
+	ID    string
+	Label string
+}
+
+func (q *Queries) RenameCredential(ctx context.Context, arg RenameCredentialParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, renameCredential, arg.ID, arg.Label)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

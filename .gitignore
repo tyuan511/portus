@@ -8,3 +8,5 @@ vault.enc
 server.key
 bootstrap-admin-password.txt
 web/src-tauri
+bin/
+coverage.out

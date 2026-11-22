@@ -8,6 +8,8 @@ import (
 
 	"github.com/yuantang/sshield/internal/apierr"
 	"github.com/yuantang/sshield/internal/domain"
+	"github.com/yuantang/sshield/internal/metrics"
+	"github.com/yuantang/sshield/internal/notify"
 	"github.com/yuantang/sshield/internal/security"
 	"github.com/yuantang/sshield/internal/storage"
 )
@@ -334,6 +336,7 @@ func tExecuteCommand(ctx context.Context, d *Deps, id *domain.Identity, args map
 	if verdict.Decision == domain.DecisionDeny {
 		denied := apierr.New(apierr.CodePolicyDenied, 403, "security policy denied command: "+verdict.Reason)
 		fail(denied, domain.DecisionDeny, "", "")
+		d.RecordDenial("mcp", id, asset, ea.Command, verdict.Reason)
 		return nil, denied
 	}
 
@@ -345,6 +348,7 @@ func tExecuteCommand(ctx context.Context, d *Deps, id *domain.Identity, args map
 			Command: ea.Command, Intent: ea.Intent, L1Verdict: *verdict,
 		})
 		if err != nil {
+			d.RecordDenial("mcp", id, asset, ea.Command, "L2 review failed: "+err.Error())
 			return fail(err, domain.DecisionAskApproval, "", "")
 		}
 		l2 = v
@@ -383,13 +387,23 @@ func tExecuteCommand(ctx context.Context, d *Deps, id *domain.Identity, args map
 			UserID:      id.UserID,
 			RequestedBy: id.Username,
 		}
+		d.NotifySend("approval.requested",
+			"Approval requested for MCP command on "+asset.Name,
+			map[string]any{"approval_id": req.ID, "server": asset.Name, "user": id.Username, "command": notify.TruncateCommand(ea.Command)})
 		decision := d.Broker.Request(req, time.Duration(req.TimeoutSecs)*time.Second)
 		if decision != domain.ApprovalApproved {
 			denied := apierr.New(apierr.CodeApprovalDenied, 403,
 				fmt.Sprintf("approval %s for command on %s", decision, asset.Name))
 			fail(denied, domain.DecisionAskApproval, req.ID, decision)
+			d.RecordDenial("mcp", id, asset, ea.Command, "approval "+string(decision))
+			d.NotifySend("approval.decided",
+				"Approval "+string(decision)+" for MCP command on "+asset.Name,
+				map[string]any{"approval_id": req.ID, "server": asset.Name, "user": id.Username})
 			return nil, denied
 		}
+		d.NotifySend("approval.decided",
+			"Approval granted for MCP command on "+asset.Name,
+			map[string]any{"approval_id": req.ID, "server": asset.Name, "user": id.Username})
 		auditID = req.ID
 		d.auditExecution(d, id, ea, sess, traceID, auditID, domain.DecisionAskApproval, verdict, l2, req.ID, domain.ApprovalApproved, nil, nil, "", "", "")
 	}
@@ -406,6 +420,7 @@ func tExecuteCommand(ctx context.Context, d *Deps, id *domain.Identity, args map
 	}
 	stdout := security.MaskSensitiveOutput(out.Stdout)
 	stderr := security.MaskSensitiveOutput(out.Stderr)
+	metrics.ExecutionsTotal.WithLabelValues("mcp", string(domain.DecisionAllow)).Inc()
 	d.auditExecution(d, id, ea, sess, traceID, auditID, domain.DecisionAllow, verdict, l2, "", "",
 		&out.ExitCode, &out.DurationMs,
 		preview(stdout, 2000), preview(stderr, 2000), "")
@@ -418,6 +433,24 @@ func tExecuteCommand(ctx context.Context, d *Deps, id *domain.Identity, args map
 		"server":      asset.Name,
 		"audit_id":    auditID,
 	}, nil
+}
+
+// RecordDenial counts a policy denial (metrics) and pushes the webhook event.
+func (d *Deps) RecordDenial(channel string, id *domain.Identity, asset *domain.ServerAsset, command, reason string) {
+	metrics.PolicyDenialsTotal.WithLabelValues(channel).Inc()
+	d.NotifySend("policy."+channel+"_denied",
+		"MCP command blocked by policy on "+asset.Name,
+		map[string]any{
+			"server": asset.Name, "user": id.Username,
+			"command": notify.TruncateCommand(command), "reason": reason,
+		})
+}
+
+// NotifySend is a nil-safe webhook dispatch.
+func (d *Deps) NotifySend(typ, summary string, fields map[string]any) {
+	if d.Notify != nil {
+		d.Notify.Send(typ, summary, fields)
+	}
 }
 
 // auditExecution writes one structured event per execution outcome.

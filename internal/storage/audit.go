@@ -67,6 +67,7 @@ func (h *DB) AppendAudit(ev *domain.AuditEvent) error {
 		StdoutPreview:  nullString(ev.StdoutPreview),
 		StderrPreview:  nullString(ev.StderrPreview),
 		Error:          nullString(ev.Error),
+		Note:           ev.Note,
 		PrevHash:       ev.PrevHash,
 		EventHash:      ev.EventHash,
 	})
@@ -104,6 +105,101 @@ func (h *DB) QueryAudits(q *domain.AuditQuery) ([]*domain.AuditEvent, error) {
 		out = append(out, auditRowToEvent(r))
 	}
 	return out, nil
+}
+
+// CountAudits returns the total rows matching the same filter set as
+// QueryAudits, for pagination totals.
+func (h *DB) CountAudits(q *domain.AuditQuery) (int64, error) {
+	src := auditQueryParams(q)
+	n, err := h.q.CountAuditLogs(context.Background(), db.CountAuditLogsParams{
+		ServerID:   src.ServerID,
+		SshUser:    src.SshUser,
+		UserID:     src.UserID,
+		Username:   src.Username,
+		Decision:   src.Decision,
+		Actor:      src.Actor,
+		FromTs:     src.FromTs,
+		ToTs:       src.ToTs,
+		Q:          src.Q,
+		OnlyFailed: src.OnlyFailed,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count audits: %w", err)
+	}
+	return n, nil
+}
+
+// ApprovalEvent is one resolved approval request projected from the audit log.
+type ApprovalEvent struct {
+	ID             string `json:"id"`
+	TraceID        string `json:"trace_id"`
+	Timestamp      string `json:"timestamp"`
+	ServerID       string `json:"server_id"`
+	ServerName     string `json:"server_name"`
+	SSHUser        string `json:"ssh_user"`
+	UserID         string `json:"user_id"`
+	Username       string `json:"username"`
+	Command        string `json:"command"`
+	Intent         string `json:"intent"`
+	Decision       string `json:"decision"`
+	ApprovalID     string `json:"approval_id"`
+	ApprovalStatus string `json:"approval_status"`
+	Note           string `json:"note"`
+	L1VerdictJSON  string `json:"-"`
+	L2VerdictJSON  string `json:"-"`
+	Error          string `json:"error"`
+}
+
+// QueryApprovalHistory lists resolved approvals (newest first), scoped to one
+// user unless userID is empty (admin scope). status filters by resolution.
+func (h *DB) QueryApprovalHistory(userID, status string, limit, offset int64) ([]*ApprovalEvent, int64, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	params := db.SelectApprovalEventsParams{
+		UserID: nullString(userID),
+		Status: nullString(status),
+		Lim:    nullInt64(limit),
+		Offs:   nullInt64(offset),
+	}
+	rows, err := h.q.SelectApprovalEvents(context.Background(), params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("approval history: %w", err)
+	}
+	total, err := h.q.CountApprovalEvents(context.Background(), db.CountApprovalEventsParams{
+		UserID: params.UserID,
+		Status: params.Status,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("approval history count: %w", err)
+	}
+	out := make([]*ApprovalEvent, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &ApprovalEvent{
+			ID: r.ID, TraceID: r.TraceID, Timestamp: r.Timestamp,
+			ServerID: r.ServerID, ServerName: r.ServerName, SSHUser: r.SshUser,
+			UserID: r.UserID, Username: r.Username,
+			Command: r.Command, Intent: r.Intent, Decision: r.Decision,
+			ApprovalID:     nullStringVal(r.ApprovalID),
+			ApprovalStatus: nullStringVal(r.ApprovalStatus),
+			Note:           r.Note,
+			L1VerdictJSON:  nullStringVal(r.L1VerdictJson),
+			L2VerdictJSON:  nullStringVal(r.L2VerdictJson),
+			Error:          nullStringVal(r.Error),
+		})
+	}
+	return out, total, nil
+}
+
+// nullStringVal unwraps a nullable text column to "" when NULL.
+func nullStringVal(v sql.NullString) string {
+	if v.Valid {
+		return v.String
+	}
+	return ""
 }
 
 // auditQueryParams converts the domain query into sqlc nullable params.
@@ -177,6 +273,7 @@ func auditRowToEvent(r db.AuditLog) *domain.AuditEvent {
 	if r.Error.Valid {
 		ev.Error = r.Error.String
 	}
+	ev.Note = r.Note
 	return ev
 }
 
@@ -259,17 +356,23 @@ type MCPSession struct {
 }
 
 // ListMCPSessions returns agent sessions (audit-trail groupings), scoped to
-// one user unless userID is empty (admin scope).
-func (h *DB) ListMCPSessions(userID string, limit int64) ([]*MCPSession, error) {
+// one user unless userID is empty (admin scope), with the total session count.
+func (h *DB) ListMCPSessions(userID string, limit, offset int64) ([]*MCPSession, int64, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := h.q.ListMCPSessions(context.Background(), db.ListMCPSessionsParams{
+	params := db.ListMCPSessionsParams{
 		UserID: nullString(userID),
 		Lim:    nullInt64(limit),
-	})
+		Offs:   nullInt64(offset),
+	}
+	rows, err := h.q.ListMCPSessions(context.Background(), params)
 	if err != nil {
-		return nil, fmt.Errorf("list mcp sessions: %w", err)
+		return nil, 0, fmt.Errorf("list mcp sessions: %w", err)
+	}
+	total, err := h.q.CountMCPSessions(context.Background(), params.UserID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count mcp sessions: %w", err)
 	}
 	out := make([]*MCPSession, 0, len(rows))
 	for _, r := range rows {
@@ -282,7 +385,7 @@ func (h *DB) ListMCPSessions(userID string, limit int64) ([]*MCPSession, error) 
 			Servers:    r.Servers,
 		})
 	}
-	return out, nil
+	return out, total, nil
 }
 
 // QuerySessionEvents returns the ordered replay stream for one session,

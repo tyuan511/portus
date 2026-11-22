@@ -8,3 +8,8 @@ SELECT * FROM mcp_sessions WHERE id = $1;
 -- name: CloseMCPSession :execrows
 UPDATE mcp_sessions SET closed_at = $3
 WHERE id = $1 AND user_id = $2 AND closed_at IS NULL;
+
+-- name: CleanupMCPSessionsBefore :execrows
+-- Registry rows only; the audit events they point at are part of the hash
+-- chain and are never deleted.
+DELETE FROM mcp_sessions WHERE created_at < $1;

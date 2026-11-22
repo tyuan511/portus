@@ -75,7 +75,6 @@ func newFixture(t *testing.T) *fixture {
 	cfg.Storage.DataDir = dir
 	cfg.Storage.DBURL = testPostgresURL(t)
 	cfg.Storage.AuditJSONL = ""
-	cfg.Vault.AutoLockSecs = 900
 	cfg.Bootstrap.AdminUsername = "root-admin"
 	cfg.Bootstrap.AdminPassword = "bootstrap-pass-123"
 	cfg.Security.SessionIdleMinutes = 60
@@ -114,7 +113,7 @@ func newFixture(t *testing.T) *fixture {
 	broker := approvals.NewBroker()
 
 	log := logging.NewNop()
-	server := httpserver.New(log, cfg, db, authSvc, rbacSvc, pool, engine, broker)
+	server := httpserver.New(log, cfg, db, authSvc, rbacSvc, pool, engine, broker, nil)
 
 	return &fixture{t: t, app: server.App(), db: db, auth: authSvc, cfg: cfg}
 }
@@ -176,6 +175,19 @@ func (c *client) list(m map[string]any) []any {
 		return arr
 	}
 	return nil
+}
+
+// paged extracts items from a {items,total} envelope.
+func (c *client) paged(m map[string]any) []any {
+	if m["data"] == nil {
+		return nil
+	}
+	obj, ok := m["data"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	arr, _ := obj["items"].([]any)
+	return arr
 }
 
 func loginAs(f *fixture, username, password string) *client {
@@ -371,7 +383,7 @@ func TestAuditScoping(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("admin audit: %d", status)
 	}
-	if got := len(admin.list(body)); got < 2 {
+	if got := len(admin.paged(body)); got < 2 {
 		t.Fatalf("admin must see all audits, got %d", got)
 	}
 

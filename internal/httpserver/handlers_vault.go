@@ -282,7 +282,11 @@ func (s *Server) handleListAudits(c *fiber.Ctx) error {
 	if err != nil {
 		return apierr.StorageErr(err)
 	}
-	return resp.OK(c, events)
+	total, err := s.db.CountAudits(q)
+	if err != nil {
+		return apierr.StorageErr(err)
+	}
+	return resp.OK(c, fiber.Map{"items": events, "total": total})
 }
 
 func (s *Server) handleAuditStats(c *fiber.Ctx) error {

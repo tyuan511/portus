@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sshield
+      POSTGRES_PASSWORD: sshield
+      POSTGRES_DB: sshield
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sshield -d sshield"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  sshield:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # DB connection for the compose postgres service.
+      SSHIELD_STORAGE_DB_URL: postgres://sshield:sshield@postgres:5432/sshield?sslmode=disable
+      # Data dir inside the container (bind-mounted below). It holds
+      # server.key — the encryption root for stored credentials and TOTP
+      # secrets — plus bootstrap-admin-password.txt on first boot.
+      SSHIELD_STORAGE_DATA_DIR: /data
+      # Must listen on all interfaces for the port mapping to work.
+      SSHIELD_SERVER_BIND: 0.0.0.0:8787
+    volumes:
+      - ./data:/data
+    ports:
+      - "8787:8787"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
+# First boot notes:
+#
+# 1. Migrations run automatically; the server generates a random bootstrap
+#    admin password and writes it to ./data/bootstrap-admin-password.txt on
+#    the host (0600). Log in with it, then delete the file.
+# 2. ./data/server.key is generated on first boot. It decrypts every stored
+#    SSH credential and TOTP secret in the database — losing it means those
+#    secrets are unrecoverable. Back up server.key (and the DB) per
+#    docs/backup.md, and keep the key copy separate from DB dumps.

@@ -24,6 +24,8 @@ import (
 	"github.com/yuantang/sshield/internal/config"
 	"github.com/yuantang/sshield/internal/domain"
 	"github.com/yuantang/sshield/internal/httpserver/resp"
+	"github.com/yuantang/sshield/internal/metrics"
+	"github.com/yuantang/sshield/internal/notify"
 	"github.com/yuantang/sshield/internal/rbac"
 	"github.com/yuantang/sshield/internal/security"
 	"github.com/yuantang/sshield/internal/sshpool"
@@ -46,6 +48,7 @@ type Server struct {
 	pool    *sshpool.Pool
 	engine  *security.Engine
 	broker  *approvals.Broker
+	notify  *notify.Notifier
 	mcpNext http.Handler // optional net/http MCP handler mounted at /mcp
 
 	// Security subsystems with light caching.
@@ -59,10 +62,11 @@ type Server struct {
 
 // New wires the full HTTP server.
 func New(log *zap.Logger, cfg *config.Config, db *storage.DB, authSvc *auth.Service,
-	rbacSvc *rbac.Service, pool *sshpool.Pool, engine *security.Engine, broker *approvals.Broker) *Server {
+	rbacSvc *rbac.Service, pool *sshpool.Pool, engine *security.Engine, broker *approvals.Broker,
+	notifier *notify.Notifier) *Server {
 	s := &Server{
 		log: log, cfg: cfg, db: db,
-		authSvc: authSvc, rbac: rbacSvc, pool: pool, engine: engine, broker: broker,
+		authSvc: authSvc, rbac: rbacSvc, pool: pool, engine: engine, broker: broker, notify: notifier,
 	}
 
 	s.app = fiber.New(fiber.Config{
@@ -165,7 +169,17 @@ func (s *Server) mcpGate(next http.Handler) http.Handler {
 		bucket, ok := buckets[key]
 		if !ok || nowT.Sub(bucket.start) > time.Minute {
 			if len(buckets) > 10_000 {
-				buckets = map[string]*window{} // crude overflow protection
+				// Overflow protection: drop idle windows first (they are
+				// recreated on demand); clear everything only if the map is
+				// still pathological so one attacker cannot reset others.
+				for k, b := range buckets {
+					if nowT.Sub(b.start) > time.Minute {
+						delete(buckets, k)
+					}
+				}
+				if len(buckets) > 50_000 {
+					buckets = map[string]*window{}
+				}
 			}
 			bucket = &window{start: nowT}
 			buckets[key] = bucket
@@ -369,7 +383,7 @@ func (s *Server) registerRoutes() {
 	// Public auth endpoints (rate limiting + brute-force guard inside).
 	app.Post("/api/auth/login", s.handleLogin)
 
-	authGroup := app.Group("/api", s.requireAuth())
+	authGroup := app.Group("/api", s.requireAuth(), s.enforcementGate())
 	s.registerAuthRoutes(authGroup)
 	s.registerCredentialRoutes(authGroup)
 	s.registerServerRoutes(app, authGroup)
@@ -377,12 +391,58 @@ func (s *Server) registerRoutes() {
 	s.registerContentRoutes(app, authGroup)
 	s.registerAuditRoutes(authGroup)
 	s.registerMCPSessionRoutes(authGroup)
+	s.registerTerminalRecordingRoutes(authGroup)
+	s.registerSFTPRoutes(authGroup)
 	s.registerAdminRoutes(authGroup)
 	s.registerTokenRoutes(authGroup)
 	s.registerWebSockets(app)
 
+	if s.cfg.Metrics.Enabled {
+		app.Get("/metrics", adaptor.HTTPHandler(metrics.Handler()))
+	}
+
 	// Embedded SPA last: catch-all for client-side routes.
 	s.mountSPA(app)
+}
+
+// enforcementGate implements the mandatory enrollment gates after login:
+// accounts flagged must_change_password may only change their password, and
+// when security.enforce_totp is set, unenrolled accounts may only enroll TOTP.
+func (s *Server) enforcementGate() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		id := identityFrom(c)
+		if id == nil {
+			return apierr.Unauthorized("")
+		}
+		path := c.Path()
+		gateAllowed := func(patterns ...string) bool {
+			for _, p := range patterns {
+				if path == p {
+					return true
+				}
+			}
+			return false
+		}
+		if id.MustChangePassword {
+			allowed := gateAllowed("/api/auth/me", "/api/auth/logout", "/api/auth/change-password") ||
+				strings.HasPrefix(path, "/api/settings/ui.")
+			if !allowed {
+				return apierr.New(apierr.CodePasswordChangeReq, 403,
+					"password change required before accessing this resource")
+			}
+			return c.Next()
+		}
+		if s.cfg.Security.EnforceTOTP && !id.TOTPEnabled {
+			allowed := gateAllowed("/api/auth/me", "/api/auth/logout", "/api/auth/change-password",
+				"/api/auth/totp/setup", "/api/auth/totp/enable") ||
+				strings.HasPrefix(path, "/api/settings/ui.")
+			if !allowed {
+				return apierr.New(apierr.CodeTOTPEnrollReq, 403,
+					"TOTP enrollment required before accessing this resource")
+			}
+		}
+		return c.Next()
+	}
 }
 
 // Audit writes an event, logging (not failing) on persistence errors.

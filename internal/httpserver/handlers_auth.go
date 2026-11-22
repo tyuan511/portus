@@ -7,6 +7,7 @@ import (
 
 	"github.com/yuantang/sshield/internal/apierr"
 	"github.com/yuantang/sshield/internal/auth"
+	"github.com/yuantang/sshield/internal/buildinfo"
 	"github.com/yuantang/sshield/internal/domain"
 	"github.com/yuantang/sshield/internal/httpserver/resp"
 )
@@ -27,6 +28,7 @@ func (s *Server) handleHealth(c *fiber.Ctx) error {
 	return resp.OK(c, fiber.Map{
 		"status":  "ok",
 		"service": "sshield-server",
+		"version": buildinfo.Version,
 		"time":    time.Now().UTC(),
 	})
 }

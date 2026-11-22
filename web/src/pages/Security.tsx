@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { LoaderCircle, Pencil, Play, Plus, Search, Trash2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/sshield/ConfirmDialog";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -17,15 +17,16 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
 import type {
-  CommandVerdict,
+  CredentialMeta,
+  DualEvaluateResp,
   L2ProviderConfig,
   PolicyDecision,
   SecurityRule,
-  SemanticReviewVerdict,
 } from "@/types";
 
 const RULE_KINDS = ["program_exact", "command_prefix", "regex"] as const;
 const DECISIONS: PolicyDecision[] = ["allow", "ask_approval", "deny"];
+const CREDENTIAL_NONE = "__none__";
 
 export default function SecurityView() {
   const auth = useAuth();
@@ -33,15 +34,18 @@ export default function SecurityView() {
   const canManage = auth.hasPermission("rules.manage");
   const [rules, setRules] = useState<SecurityRule[]>([]);
   const [l2, setL2] = useState<L2ProviderConfig | null>(null);
+  const [credentials, setCredentials] = useState<CredentialMeta[]>([]);
   const [error, setError] = useState<string>();
   const [form, setForm] = useState<Partial<SecurityRule> | null>(null);
+  const [deleteRule, setDeleteRule] = useState<SecurityRule | null>(null);
+  const [ruleQuery, setRuleQuery] = useState("");
+  const [togglingId, setTogglingId] = useState<string | null>(null);
 
   const [sandboxCmd, setSandboxCmd] = useState("ls -la /var/log && df -h");
-  const [sandboxResult, setSandboxResult] = useState<{
-    l1: CommandVerdict;
-    l2: SemanticReviewVerdict | null;
-    final_decision: PolicyDecision;
-  } | null>(null);
+  const [sandboxResult, setSandboxResult] = useState<DualEvaluateResp | null>(null);
+
+  const [l2Testing, setL2Testing] = useState(false);
+  const [l2TestMsg, setL2TestMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -52,9 +56,25 @@ export default function SecurityView() {
     }
   }, []);
 
+  const loadCredentials = useCallback(async () => {
+    if (!auth.hasPermission("host.manage")) return;
+    try {
+      setCredentials(await api.get<CredentialMeta[]>("/api/credentials"));
+    } catch {
+      setCredentials([]);
+    }
+  }, [auth.identity?.user_id]);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadCredentials();
+  }, [load, loadCredentials]);
+
+  const filteredRules = rules.filter((r) => {
+    const q = ruleQuery.trim().toLowerCase();
+    if (!q) return true;
+    return r.name.toLowerCase().includes(q) || r.pattern.toLowerCase().includes(q);
+  });
 
   const saveRule = async () => {
     if (!form?.name || !form?.pattern) return;
@@ -76,10 +96,22 @@ export default function SecurityView() {
     }
   };
 
+  const toggleRule = async (rule: SecurityRule, enabled: boolean) => {
+    setTogglingId(rule.id);
+    try {
+      await api.put(`/api/rules/${rule.id}`, { ...rule, enabled });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "save failed");
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
   const removeRule = async (id: string) => {
-    if (!confirm(t("security.deleteConfirm"))) return;
     try {
       await api.del(`/api/rules/${id}`);
+      setDeleteRule(null);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "delete failed");
@@ -96,10 +128,30 @@ export default function SecurityView() {
     }
   };
 
+  const testL2 = async () => {
+    setL2Testing(true);
+    setL2TestMsg(null);
+    try {
+      const res = await api.post<DualEvaluateResp>("/api/security/evaluate", {
+        command: "echo sshield-l2-connectivity-test",
+      });
+      if (res.l2) {
+        setL2TestMsg({ ok: true, text: t("l2.testOk", { ms: res.l2.latency_ms }) });
+      } else {
+        setL2TestMsg({ ok: true, text: `${t("security.l2Review")} · ${t("common.off")}` });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "evaluate failed";
+      setL2TestMsg({ ok: false, text: `${t("l2.testFailed")}: ${msg}` });
+    } finally {
+      setL2Testing(false);
+    }
+  };
+
   const evaluate = async () => {
     try {
       setSandboxResult(
-        await api.post("/api/security/evaluate", {
+        await api.post<DualEvaluateResp>("/api/security/evaluate", {
           command: sandboxCmd,
           intent: "sandbox evaluation",
         })
@@ -124,8 +176,17 @@ export default function SecurityView() {
         </TabsList>
 
         <TabsContent value="rules" className="flex flex-col gap-3">
-          {canManage && (
-            <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="relative w-full max-w-xs">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={ruleQuery}
+                onChange={(e) => setRuleQuery(e.target.value)}
+                placeholder={t("rules.search")}
+                className="pl-8"
+              />
+            </div>
+            {canManage && (
               <Button
                 size="sm"
                 onClick={() =>
@@ -142,8 +203,8 @@ export default function SecurityView() {
                 <Plus data-icon="inline-start" />
                 {t("security.newRule")}
               </Button>
-            </div>
-          )}
+            )}
+          </div>
 
           <Card className="p-0">
             <Table>
@@ -164,20 +225,16 @@ export default function SecurityView() {
                   <TableHead className="px-4 font-mono text-[11px] uppercase text-muted-foreground">
                     {t("security.colPrio")}
                   </TableHead>
+                  <TableHead className="px-4 font-mono text-[11px] uppercase text-muted-foreground">
+                    {t("rules.enabledToggle")}
+                  </TableHead>
                   <TableHead className="px-4" />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rules.map((r) => (
+                {filteredRules.map((r) => (
                   <TableRow key={r.id}>
-                    <TableCell className="px-4 font-medium">
-                      <span>{r.name}</span>
-                      {!r.enabled && (
-                        <Badge variant="secondary" className="ml-2">
-                          {t("common.off")}
-                        </Badge>
-                      )}
-                    </TableCell>
+                    <TableCell className="px-4 font-medium">{r.name}</TableCell>
                     <TableCell className="px-4 font-mono text-xs text-muted-foreground">
                       {r.match_kind}
                     </TableCell>
@@ -193,6 +250,15 @@ export default function SecurityView() {
                     <TableCell className="px-4 font-mono text-xs tabular-nums">
                       {r.priority}
                     </TableCell>
+                    <TableCell className="px-4">
+                      <Switch
+                        checked={r.enabled}
+                        disabled={
+                          !canManage || r.id.startsWith("builtin-") || togglingId === r.id
+                        }
+                        onCheckedChange={(v) => void toggleRule(r, v)}
+                      />
+                    </TableCell>
                     <TableCell className="px-4 text-right">
                       {canManage && !r.id.startsWith("builtin-") && (
                         <div className="flex justify-end gap-1">
@@ -202,7 +268,7 @@ export default function SecurityView() {
                           <Button
                             variant="destructive"
                             size="icon-xs"
-                            onClick={() => void removeRule(r.id)}
+                            onClick={() => setDeleteRule(r)}
                           >
                             <Trash2 />
                           </Button>
@@ -237,9 +303,13 @@ export default function SecurityView() {
                   <Label>{t("security.l2Protocol")}</Label>
                   <Select
                     value={l2.protocol}
-                    onValueChange={(v) =>
-                      v && setL2({ ...l2, protocol: v as L2ProviderConfig["protocol"] })
-                    }
+                    items={{
+                      system_one_fast: "SystemOne Fast",
+                      openai_chat: "OpenAI Chat",
+                      openai_responses: "OpenAI Responses",
+                      anthropic_messages: "Anthropic Messages",
+                    }}
+                    onValueChange={(v) => v && setL2({ ...l2, protocol: v })}
                   >
                     <SelectTrigger className="w-full">
                       <SelectValue />
@@ -269,11 +339,32 @@ export default function SecurityView() {
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label>{t("security.l2ApiKey")}</Label>
-                  <Input
-                    value={l2.api_key_credential_id ?? ""}
-                    onChange={(e) => setL2({ ...l2, api_key_credential_id: e.target.value })}
-                  />
+                  <Label>{t("l2.credential")}</Label>
+                  <Select
+                    value={l2.api_key_credential_id || CREDENTIAL_NONE}
+                    items={{
+                      [CREDENTIAL_NONE]: t("l2.noCredential"),
+                      ...Object.fromEntries(credentials.map((c) => [c.id, c.label])),
+                    }}
+                    onValueChange={(v) =>
+                      setL2({ ...l2, api_key_credential_id: !v || v === CREDENTIAL_NONE ? null : v })
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value={CREDENTIAL_NONE}>{t("l2.noCredential")}</SelectItem>
+                        {credentials.map((c) => (
+                          <SelectItem key={c.id} value={c.id}>
+                            {c.label}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">{t("l2.credentialHint")}</p>
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label>{t("security.l2RiskAsk")}</Label>
@@ -296,7 +387,30 @@ export default function SecurityView() {
               </CardContent>
 
               {canManage && (
-                <CardFooter className="justify-end">
+                <CardFooter className="justify-end gap-3">
+                  {l2TestMsg && (
+                    <p
+                      title={l2TestMsg.text}
+                      className={`min-w-0 flex-1 truncate text-xs ${
+                        l2TestMsg.ok ? "text-muted-foreground" : "text-destructive"
+                      }`}
+                    >
+                      {l2TestMsg.text}
+                    </p>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={l2Testing}
+                    onClick={() => void testL2()}
+                  >
+                    {l2Testing ? (
+                      <LoaderCircle className="animate-spin" data-icon="inline-start" />
+                    ) : (
+                      <Zap data-icon="inline-start" />
+                    )}
+                    {t("l2.test")}
+                  </Button>
                   <Button size="sm" onClick={() => void saveL2()}>
                     {t("security.saveL2")}
                   </Button>
@@ -412,9 +526,7 @@ export default function SecurityView() {
               <Label>{t("security.matchKind")}</Label>
               <Select
                 value={form?.match_kind ?? "command_prefix"}
-                onValueChange={(v) =>
-                  v && setForm({ ...form!, match_kind: v as SecurityRule["match_kind"] })
-                }
+                onValueChange={(v) => v && setForm({ ...form!, match_kind: v })}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue />
@@ -442,7 +554,7 @@ export default function SecurityView() {
               <Label>{t("security.decision")}</Label>
               <Select
                 value={form?.decision ?? "ask_approval"}
-                onValueChange={(v) => v && setForm({ ...form!, decision: v as PolicyDecision })}
+                onValueChange={(v) => v && setForm({ ...form!, decision: v })}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue />
@@ -466,6 +578,14 @@ export default function SecurityView() {
                 onChange={(e) => setForm({ ...form!, priority: Number(e.target.value) })}
               />
             </div>
+            <div className="col-span-2 flex items-center justify-between rounded-lg border border-border px-3 py-2">
+              <Label htmlFor="rule-enabled">{t("rules.enabledToggle")}</Label>
+              <Switch
+                id="rule-enabled"
+                checked={form?.enabled ?? true}
+                onCheckedChange={(v) => setForm({ ...form!, enabled: v })}
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setForm(null)}>
@@ -475,6 +595,15 @@ export default function SecurityView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={deleteRule !== null}
+        title={t("common.delete")}
+        description={t("rules.deleteConfirm", { name: deleteRule?.name ?? "" })}
+        confirmLabel={t("common.delete")}
+        onConfirm={() => deleteRule && void removeRule(deleteRule.id)}
+        onOpenChange={(o) => !o && setDeleteRule(null)}
+      />
     </Page>
   );
 }

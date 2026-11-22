@@ -64,7 +64,8 @@ close — carries the session id and appears in the web console's
 | `query_audit_logs`, `get_audit_stats` | scoped to the caller's own trail unless `audit.view_all` |
 | `verify_audit_chain` | `audit.view_all` (admin) |
 | `list_pending_approvals` | `approvals.decide` (admin) |
-| — 14 tools total — | includes open/close_host_session; vault tools were removed earlier |
+| `get_l2_config` | any authenticated caller |
+| — 14 tools total — | includes open/close_host_session and get_l2_config; vault tools were removed earlier |
 
 `execute_command` runs the full pipeline: L1 AST rules → optional L2 review → human approval
 (surfaced live in the web UI's Approvals page) → SSH execution with masked output → audit

@@ -55,6 +55,7 @@ type AuditLog struct {
 	PrevHash       string
 	EventHash      string
 	SessionID      string
+	Note           string
 }
 
 type AuthAttempt struct {
@@ -84,6 +85,7 @@ type HostGrant struct {
 	CanExecute  int32
 	CreatedBy   string
 	CreatedAt   string
+	CanTransfer int32
 }
 
 type L2Config struct {
@@ -155,6 +157,32 @@ type Snippet struct {
 	Command     string
 	Description string
 	TagsJson    string
+}
+
+type TerminalEvent struct {
+	Seq       int64
+	SessionID string
+	TsMs      int64
+	Direction string
+	Data      string
+}
+
+type TerminalSession struct {
+	ID          string
+	UserID      string
+	Username    string
+	ServerID    string
+	ServerName  string
+	SshUser     string
+	ServerHost  string
+	ClientIp    string
+	PolicyMode  string
+	OpenedAt    string
+	ClosedAt    sql.NullString
+	CloseReason string
+	ByteSize    int64
+	EventCount  int32
+	Truncated   int32
 }
 
 type User struct {

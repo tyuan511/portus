@@ -10,6 +10,20 @@ import (
 	"database/sql"
 )
 
+const cleanupMCPSessionsBefore = `-- name: CleanupMCPSessionsBefore :execrows
+DELETE FROM mcp_sessions WHERE created_at < $1
+`
+
+// Registry rows only; the audit events they point at are part of the hash
+// chain and are never deleted.
+func (q *Queries) CleanupMCPSessionsBefore(ctx context.Context, createdAt string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cleanupMCPSessionsBefore, createdAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const closeMCPSession = `-- name: CloseMCPSession :execrows
 UPDATE mcp_sessions SET closed_at = $3
 WHERE id = $1 AND user_id = $2 AND closed_at IS NULL

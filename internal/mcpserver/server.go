@@ -17,6 +17,7 @@ import (
 	"github.com/yuantang/sshield/internal/apierr"
 	"github.com/yuantang/sshield/internal/approvals"
 	"github.com/yuantang/sshield/internal/domain"
+	"github.com/yuantang/sshield/internal/notify"
 	"github.com/yuantang/sshield/internal/rbac"
 	"github.com/yuantang/sshield/internal/security"
 	"github.com/yuantang/sshield/internal/sshpool"
@@ -40,6 +41,8 @@ type Deps struct {
 	L2     func() security.Reviewer
 	Audit  func(ev *domain.AuditEvent)
 	Log    *zap.Logger
+	// Notify pushes approval/policy events to the configured webhook (may be nil).
+	Notify *notify.Notifier
 
 	// SessionTTL bounds each server-issued host session.
 	SessionTTL time.Duration

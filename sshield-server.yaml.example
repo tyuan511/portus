@@ -1,5 +1,5 @@
 # SSHield Enterprise server configuration (YAML).
-# Copy to <data_dir>/sshield-server.yaml or pass --config/SSHIELD_CONFIG.
+# Copy to <data_dir>/sshield-server.yaml or pass -config <path> (or SSHIELD_CONFIG).
 # A legacy sshield-server.toml is still discovered as a fallback.
 # Every key is optional; values below are the defaults.
 
@@ -14,16 +14,10 @@ server:
 storage:
   # PostgreSQL connection string (sqlc-generated data access layer).
   db_url: "postgres://sshield:sshield@127.0.0.1:5432/sshield?sslmode=disable"
-  # Local state that is not database data: vault, server key, bootstrap hint.
+  # Local state that is not database data: server key, bootstrap hint.
   data_dir: "~/.local/share/sshield"
-  # Optional JSONL mirror of the audit chain.
+  # Optional JSONL mirror of the audit chain (extra insurance alongside the DB).
   audit_jsonl: ""
-
-vault:
-  auto_lock_secs: 900
-  # Headless convenience: unlock the vault at startup from a 0600 file.
-  # Leave empty to require manual unlock by an admin through the web UI.
-  unlock_passphrase_file: ""
 
 bootstrap:
   # Admin account created on first boot (only when no users exist yet).
@@ -38,7 +32,30 @@ security:
   lockout_minutes: 15
   ip_max_attempts: 20         # failures per source IP inside the window
   ip_window_minutes: 60
-  enforce_totp: false         # require 2FA enrollment at login
+  enforce_totp: false         # after login, accounts without enrolled TOTP may only enroll until done
   mcp_rate_per_min: 60        # requests per token per minute on /mcp
   mcp_session_ttl_minutes: 30 # lifetime of each server-issued MCP host session
   token_ttl_hours: 0          # default API token lifetime (0 = no expiry)
+
+terminal:
+  enforce: false            # run every submitted interactive line through L1/L2/approval; denied lines never reach the shell
+  record: true              # record the full PTY output for replay from the Audit page
+  record_max_bytes: 10485760 # cap per session recording (10 MiB); beyond it the recording is truncated
+
+retention:
+  mcp_session_days: 0 # prune MCP host-session rows older than N days (0 = keep forever)
+  terminal_days: 0    # prune recorded terminal sessions older than N days (0 = keep forever)
+  api_token_days: 0   # prune revoked/expired API tokens older than N days (0 = keep forever)
+
+logging:
+  file: ""          # additionally mirror logs to a rotating file; empty = stdout only
+  max_size_mb: 100  # max size of each rotated log file
+  max_backups: 7    # rotated files to retain
+  max_age_days: 28  # max age of rotated files
+
+metrics:
+  enabled: false # expose GET /metrics in Prometheus text format
+
+notifications:
+  webhook_url: "" # JSON POSTs for approval.requested/decided, policy denials, file.uploaded; empty = disabled
+  timeout_secs: 5 # per-request webhook POST timeout

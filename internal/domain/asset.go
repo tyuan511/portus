@@ -82,21 +82,6 @@ type VaultCredentialMeta struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// VaultLockState is the lifecycle state of the sealed vault.
-type VaultLockState string
-
-const (
-	VaultUninitialized VaultLockState = "uninitialized"
-	VaultLocked        VaultLockState = "locked"
-	VaultUnlocked      VaultLockState = "unlocked"
-)
-
-// VaultStatus is the current vault state summary.
-type VaultStatus struct {
-	State           VaultLockState `json:"state"`
-	CredentialCount int            `json:"credential_count"`
-	AutoLockSecs    int64          `json:"auto_lock_secs"`
-}
 
 // CommandSnippet is a reusable command snippet.
 type CommandSnippet struct {
