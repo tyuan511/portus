@@ -15,6 +15,17 @@ const (
 	AuthKeyringPassword AuthKind = "keyring_password"
 )
 
+// JumpMode selects how a jump host is traversed.
+type JumpMode string
+
+const (
+	// JumpModeDirectTCPIP uses standard SSH direct-tcpip port forwarding (ProxyJump).
+	JumpModeDirectTCPIP JumpMode = "direct_tcpip"
+	// JumpModeSuSSH logs into the jump host shell, optionally runs `su`, and
+	// invokes `ssh` from the jump host to reach the target.
+	JumpModeSuSSH JumpMode = "su_ssh"
+)
+
 // ServerAsset is a managed SSH server or bastion jump host.
 type ServerAsset struct {
 	ID           string   `json:"id"`
@@ -25,8 +36,11 @@ type ServerAsset struct {
 	AuthKind     AuthKind `json:"auth_kind"`
 	IdentityFile string   `json:"identity_file,omitempty"`
 	// CredentialID references an encrypted credential in the vault (never a raw secret).
-	CredentialID string `json:"credential_id,omitempty"`
-	JumpHostID   string `json:"jump_host_id,omitempty"`
+	CredentialID       string   `json:"credential_id,omitempty"`
+	JumpHostID         string   `json:"jump_host_id,omitempty"`
+	JumpMode           JumpMode `json:"jump_mode,omitempty"`
+	JumpSuUsername     string   `json:"jump_su_username,omitempty"`
+	JumpSuCredentialID string   `json:"jump_su_credential_id,omitempty"`
 	// GroupName is the host group name (e.g. "Production", "Bastion", "Staging").
 	GroupName   string   `json:"group_name,omitempty"`
 	Tags        []string `json:"tags"`
@@ -43,9 +57,11 @@ type AuthorizedServerInfo struct {
 	Port        int      `json:"port"`
 	Username    string   `json:"username"`
 	JumpHostID  string   `json:"jump_host_id,omitempty"`
+	JumpMode    JumpMode `json:"jump_mode,omitempty"`
 	GroupName   string   `json:"group_name,omitempty"`
 	Tags        []string `json:"tags"`
 	Description string   `json:"description,omitempty"`
+	Enabled     bool     `json:"enabled"`
 }
 
 func FromAsset(a *ServerAsset) AuthorizedServerInfo {
@@ -56,9 +72,11 @@ func FromAsset(a *ServerAsset) AuthorizedServerInfo {
 		Port:        a.Port,
 		Username:    a.Username,
 		JumpHostID:  a.JumpHostID,
+		JumpMode:    a.JumpMode,
 		GroupName:   a.GroupName,
 		Tags:        a.Tags,
 		Description: a.Description,
+		Enabled:     a.Enabled,
 	}
 }
 

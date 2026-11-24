@@ -8,14 +8,14 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
 
   useEffect(() => {
     const sync = () => setThemeId(getSavedThemeId());
-    window.addEventListener("sshield:theme", sync);
+    window.addEventListener("bulwark:theme", sync);
     const obs = new MutationObserver(() => {
       const current = document.documentElement.getAttribute("data-theme");
       if (current) setThemeId(current);
     });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => {
-      window.removeEventListener("sshield:theme", sync);
+      window.removeEventListener("bulwark:theme", sync);
       obs.disconnect();
     };
   }, []);
@@ -26,7 +26,7 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
   const toggle = () => {
     const applied = applyTheme(next);
     setThemeId(applied.id);
-    window.dispatchEvent(new CustomEvent("sshield:theme"));
+    window.dispatchEvent(new CustomEvent("bulwark:theme"));
   };
 
   return (

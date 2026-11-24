@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  LabelList,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -19,9 +31,9 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Pagination } from "@/components/sshield/Pagination";
-import { StatusPill, decisionTone } from "@/components/sshield/StatusDot";
-import { TerminalReplay, fmtBytes, fmtDuration } from "@/components/sshield/TerminalReplay";
+import { Pagination } from "@/components/bulwark/Pagination";
+import { StatusPill, decisionTone } from "@/components/bulwark/StatusDot";
+import { TerminalReplay, fmtBytes, fmtDuration } from "@/components/bulwark/TerminalReplay";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
@@ -158,95 +170,242 @@ interface StatRow {
   failed?: number;
 }
 
-// One horizontal bar list; the failed share (if any) renders in destructive red.
+interface ChartTooltipPayloadItem {
+  name?: string;
+  value?: number;
+  color?: string;
+  dataKey?: string;
+  payload?: Record<string, unknown>;
+}
+
+function ChartTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: ChartTooltipPayloadItem[];
+  label?: string;
+}) {
+  if (!active || !payload?.length) return null;
+  const fullLabel =
+    (payload[0]?.payload?.fullName as string | undefined) ||
+    (payload[0]?.payload?.date as string | undefined) ||
+    label;
+  return (
+    <div className="rounded-lg border border-border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md">
+      {fullLabel && <div className="mb-1 max-w-64 truncate font-mono text-[11px] font-medium">{fullLabel}</div>}
+      <div className="space-y-0.5">
+        {payload.map((entry, idx) => (
+          <div key={`${entry.dataKey ?? idx}`} className="flex items-center justify-between gap-4">
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <span
+                className="inline-block size-2 rounded-full"
+                style={{ backgroundColor: entry.color || "var(--primary)" }}
+              />
+              {entry.name}
+            </span>
+            <span className="font-mono font-medium tabular-nums">{entry.value ?? 0}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Horizontal stacked bar chart; the failed share (if any) renders in destructive red.
 function StatBars({ title, rows }: { title: string; rows: StatRow[] }) {
   const shown = rows.slice(0, 6);
-  const max = Math.max(1, ...shown.map((r) => r.count));
+  const hasFailed = shown.some((r) => (r.failed ?? 0) > 0);
+  const data = shown.map((r) => {
+    const failed = Math.max(0, Math.min(r.failed ?? 0, r.count));
+    return {
+      name: r.label || "—",
+      fullName: r.label || "—",
+      ok: r.count - failed,
+      failed,
+      total: r.count,
+    };
+  });
+  const height = Math.max(120, shown.length * 28 + 12);
+
   return (
-    <div className="rounded-lg border p-3">
+    <div className="rounded-lg border bg-card p-3">
       <div className="mb-2 text-xs font-medium text-muted-foreground">{title}</div>
       {shown.length === 0 ? (
-        <p className="text-xs text-muted-foreground">—</p>
+        <p className="py-6 text-center text-xs text-muted-foreground">—</p>
       ) : (
-        <div className="space-y-1.5">
-          {shown.map((r) => {
-            const failed = Math.max(0, Math.min(r.failed ?? 0, r.count));
-            return (
-              <div key={r.label} className="flex items-center gap-2">
-                <span className="w-28 shrink-0 truncate text-xs" title={r.label}>
-                  {r.label || "—"}
-                </span>
-                <div className="flex h-2.5 min-w-0 flex-1 overflow-hidden rounded-sm bg-muted/60">
-                  <div
-                    className="h-full bg-foreground/20"
-                    style={{ width: `${Math.min(100, ((r.count - failed) / max) * 100)}%` }}
-                  />
-                  {failed > 0 && (
-                    <div className="h-full bg-destructive/40" style={{ width: `${Math.min(100, (failed / max) * 100)}%` }} />
-                  )}
-                </div>
-                <span className="w-12 shrink-0 text-right font-mono text-xs text-muted-foreground">{r.count}</span>
-              </div>
-            );
-          })}
-        </div>
+        <ResponsiveContainer width="100%" height={height}>
+          <BarChart data={data} layout="vertical" margin={{ top: 2, right: 32, left: 0, bottom: 2 }}>
+            <CartesianGrid horizontal={false} stroke="var(--border)" strokeDasharray="3 3" />
+            <XAxis type="number" hide />
+            <YAxis
+              type="category"
+              dataKey="name"
+              width={96}
+              axisLine={false}
+              tickLine={false}
+              tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+              tickFormatter={(v: string) => (v.length > 14 ? `${v.slice(0, 13)}…` : v)}
+            />
+            <RechartsTooltip
+              cursor={{ fill: "var(--muted)", opacity: 0.35 }}
+              content={<ChartTooltip />}
+            />
+            <Bar
+              dataKey="ok"
+              name="OK"
+              stackId="a"
+              fill="var(--geist-blue, var(--primary))"
+              fillOpacity={0.85}
+              barSize={14}
+              radius={hasFailed ? [3, 0, 0, 3] : [3, 4, 4, 3]}
+            >
+              {!hasFailed && (
+                <LabelList
+                  dataKey="total"
+                  position="right"
+                  style={{ fontSize: 11, fill: "var(--muted-foreground)", fontFamily: "var(--font-mono)" }}
+                />
+              )}
+            </Bar>
+            {hasFailed && (
+              <Bar
+                dataKey="failed"
+                name="Failed"
+                stackId="a"
+                fill="var(--destructive)"
+                fillOpacity={0.85}
+                barSize={14}
+                radius={[0, 4, 4, 0]}
+              >
+                <LabelList
+                  dataKey="total"
+                  position="right"
+                  style={{ fontSize: 11, fill: "var(--muted-foreground)", fontFamily: "var(--font-mono)" }}
+                />
+              </Bar>
+            )}
+          </BarChart>
+        </ResponsiveContainer>
       )}
     </div>
   );
 }
 
 function TopCommands({ title, rows }: { title: string; rows: { key: string; count: number }[] }) {
-  const shown = rows.slice(0, 8);
+  const shown = rows.slice(0, 6);
+  const data = shown.map((c) => ({
+    name: c.key.length > 22 ? `${c.key.slice(0, 21)}…` : c.key,
+    fullName: c.key,
+    count: c.count,
+  }));
+  const height = Math.max(120, shown.length * 28 + 12);
+
   return (
-    <div className="rounded-lg border p-3">
+    <div className="rounded-lg border bg-card p-3">
       <div className="mb-2 text-xs font-medium text-muted-foreground">{title}</div>
       {shown.length === 0 ? (
-        <p className="text-xs text-muted-foreground">—</p>
+        <p className="py-6 text-center text-xs text-muted-foreground">—</p>
       ) : (
-        <ol className="space-y-1">
-          {shown.map((c) => (
-            <li key={c.key} className="flex items-baseline justify-between gap-3 text-xs">
-              <code className="truncate font-mono text-foreground/80" title={c.key}>
-                {c.key}
-              </code>
-              <span className="shrink-0 font-mono text-muted-foreground">{c.count}</span>
-            </li>
-          ))}
-        </ol>
+        <ResponsiveContainer width="100%" height={height}>
+          <BarChart data={data} layout="vertical" margin={{ top: 2, right: 32, left: 0, bottom: 2 }}>
+            <CartesianGrid horizontal={false} stroke="var(--border)" strokeDasharray="3 3" />
+            <XAxis type="number" hide />
+            <YAxis
+              type="category"
+              dataKey="name"
+              width={136}
+              axisLine={false}
+              tickLine={false}
+              tick={{ fontSize: 11, fill: "var(--muted-foreground)", fontFamily: "var(--font-mono)" }}
+            />
+            <RechartsTooltip
+              cursor={{ fill: "var(--muted)", opacity: 0.35 }}
+              content={<ChartTooltip />}
+            />
+            <Bar
+              dataKey="count"
+              name="Count"
+              fill="var(--primary)"
+              fillOpacity={0.8}
+              barSize={14}
+              radius={[3, 4, 4, 3]}
+            >
+              <LabelList
+                dataKey="count"
+                position="right"
+                style={{ fontSize: 11, fill: "var(--muted-foreground)", fontFamily: "var(--font-mono)" }}
+              />
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
       )}
     </div>
   );
 }
 
-// Mini bar chart of the last 14 days; failed+denied stack on top in red.
+// Smooth area chart of the last 14 days; failed+denied overlay in destructive red.
 function TrendChart({ title, trend }: { title: string; trend: AuditStats["daily_trend"] }) {
-  const days = trend.slice(-14);
-  const max = Math.max(1, ...days.map((d) => d.total));
+  const days = trend.slice(-14).map((d) => ({
+    date: d.date,
+    label: d.date.slice(5),
+    total: d.total,
+    issues: d.denied + d.failed,
+  }));
+
   return (
-    <div className="rounded-lg border p-3">
+    <div className="rounded-lg border bg-card p-3">
       <div className="mb-2 text-xs font-medium text-muted-foreground">{title}</div>
       {days.length === 0 ? (
-        <p className="text-xs text-muted-foreground">—</p>
+        <p className="py-10 text-center text-xs text-muted-foreground">—</p>
       ) : (
-        <div className="flex h-20 items-end gap-1.5">
-          {days.map((d) => {
-            const totalPct = Math.min(100, (d.total / max) * 100);
-            const badPct = d.total > 0 ? Math.min(totalPct, ((d.denied + d.failed) / d.total) * totalPct) : 0;
-            return (
-              <div
-                key={d.date}
-                className="flex min-w-0 flex-1 flex-col items-center gap-1"
-                title={`${d.date} · ${d.total}`}
-              >
-                <div className="flex h-14 w-full max-w-7 flex-col justify-end overflow-hidden rounded-sm bg-muted/60">
-                  <div className="w-full bg-destructive/40" style={{ height: `${badPct}%` }} />
-                  <div className="w-full bg-foreground/20" style={{ height: `${totalPct - badPct}%` }} />
-                </div>
-                <span className="truncate font-mono text-[10px] text-muted-foreground">{d.date.slice(5)}</span>
-              </div>
-            );
-          })}
-        </div>
+        <ResponsiveContainer width="100%" height={160}>
+          <AreaChart data={days} margin={{ top: 6, right: 8, left: -20, bottom: 0 }}>
+            <defs>
+              <linearGradient id="auditTrendTotal" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="var(--geist-blue, var(--primary))" stopOpacity={0.35} />
+                <stop offset="95%" stopColor="var(--geist-blue, var(--primary))" stopOpacity={0.02} />
+              </linearGradient>
+              <linearGradient id="auditTrendIssues" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="var(--destructive)" stopOpacity={0.35} />
+                <stop offset="95%" stopColor="var(--destructive)" stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid vertical={false} stroke="var(--border)" strokeDasharray="3 3" />
+            <XAxis
+              dataKey="label"
+              axisLine={false}
+              tickLine={false}
+              tick={{ fontSize: 10, fill: "var(--muted-foreground)", fontFamily: "var(--font-mono)" }}
+            />
+            <YAxis
+              allowDecimals={false}
+              axisLine={false}
+              tickLine={false}
+              tick={{ fontSize: 10, fill: "var(--muted-foreground)", fontFamily: "var(--font-mono)" }}
+            />
+            <RechartsTooltip content={<ChartTooltip />} />
+            <Area
+              type="monotone"
+              dataKey="total"
+              name="Total"
+              stroke="var(--geist-blue, var(--primary))"
+              strokeWidth={2}
+              fill="url(#auditTrendTotal)"
+              activeDot={{ r: 4 }}
+            />
+            <Area
+              type="monotone"
+              dataKey="issues"
+              name="Denied / Failed"
+              stroke="var(--destructive)"
+              strokeWidth={1.75}
+              fill="url(#auditTrendIssues)"
+              activeDot={{ r: 4 }}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
       )}
     </div>
   );

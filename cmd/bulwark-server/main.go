@@ -1,4 +1,4 @@
-// sshield-server is the multi-user enterprise control plane:
+// bulwark-server is the multi-user enterprise control plane:
 // HTTP API + websockets + embedded web UI + MCP streamable endpoint.
 package main
 
@@ -11,20 +11,20 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/approvals"
-	"github.com/yuantang/sshield/internal/auth"
-	"github.com/yuantang/sshield/internal/buildinfo"
-	"github.com/yuantang/sshield/internal/config"
-	"github.com/yuantang/sshield/internal/httpserver"
-	"github.com/yuantang/sshield/internal/logging"
-	"github.com/yuantang/sshield/internal/mcpserver"
-	"github.com/yuantang/sshield/internal/notify"
-	"github.com/yuantang/sshield/internal/rbac"
-	"github.com/yuantang/sshield/internal/security"
-	"github.com/yuantang/sshield/internal/serverkey"
-	"github.com/yuantang/sshield/internal/sshpool"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/approvals"
+	"github.com/tyuan511/bulwark/internal/auth"
+	"github.com/tyuan511/bulwark/internal/buildinfo"
+	"github.com/tyuan511/bulwark/internal/config"
+	"github.com/tyuan511/bulwark/internal/httpserver"
+	"github.com/tyuan511/bulwark/internal/logging"
+	"github.com/tyuan511/bulwark/internal/mcpserver"
+	"github.com/tyuan511/bulwark/internal/notify"
+	"github.com/tyuan511/bulwark/internal/rbac"
+	"github.com/tyuan511/bulwark/internal/security"
+	"github.com/tyuan511/bulwark/internal/serverkey"
+	"github.com/tyuan511/bulwark/internal/sshpool"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 func main() {
@@ -33,7 +33,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("sshield-server " + buildinfo.Version)
+		fmt.Println("bulwark-server " + buildinfo.Version)
 		return
 	}
 	if err := run(*configPath); err != nil {
@@ -47,7 +47,7 @@ func run(configPath string) error {
 	if err != nil {
 		return err
 	}
-	logger := logging.New(os.Getenv("SSHIELD_ENV"), logging.FileConfig{
+	logger := logging.New(os.Getenv("BULWARK_ENV"), logging.FileConfig{
 		Path:       cfg.Logging.File,
 		MaxSizeMB:  cfg.Logging.MaxSizeMB,
 		MaxBackups: cfg.Logging.MaxBackups,
@@ -56,7 +56,7 @@ func run(configPath string) error {
 	defer func() { _ = logger.Sync() }()
 	log := logger.Sugar()
 
-	log.Infow("starting sshield-server",
+	log.Infow("starting bulwark-server",
 		"bind", cfg.Server.Bind,
 		"data_dir", cfg.Storage.DataDir,
 		"version", buildinfo.Version,
@@ -88,7 +88,7 @@ func run(configPath string) error {
 	}
 
 	// Auth + security + access subsystems.
-	totpMgr := auth.NewTOTPManagerWithKey(serverKey, "SSHield")
+	totpMgr := auth.NewTOTPManagerWithKey(serverKey, "Bulwark")
 	if err != nil {
 		return fmt.Errorf("init TOTP manager: %w", err)
 	}
@@ -174,7 +174,7 @@ func run(configPath string) error {
 		}
 	}()
 
-	log.Infow("sshield-server listening",
+	log.Infow("bulwark-server listening",
 		"addr", cfg.Server.Bind,
 		"mcp", true,
 		"tls", cfg.Server.TLSCert != "")

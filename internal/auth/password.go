@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"github.com/yuantang/sshield/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/apierr"
 )
 
 // Argon2id parameters for password hashing (login path runs frequently, so

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, FileUp, FolderOpen, Pencil, Plug, Plus, Search, Server, Trash2, Upload } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
@@ -19,11 +19,11 @@ import {
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { ErrorText, Page, PageHeader } from "@/components/ui/shared";
-import { ConfirmDialog, PromptDialog } from "@/components/sshield/ConfirmDialog";
-import { HostGroupsPanel } from "@/components/sshield/HostGroupsPanel";
-import { StatusPill } from "@/components/sshield/StatusDot";
+import { ConfirmDialog } from "@/components/bulwark/ConfirmDialog";
+import { StatusPill } from "@/components/bulwark/StatusDot";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
@@ -40,6 +40,9 @@ const EMPTY_FORM = {
   identity_file: "",
   credential_id: "",
   jump_host_id: "",
+  jump_mode: "direct_tcpip" as NonNullable<ServerAsset["jump_mode"]>,
+  jump_su_username: "",
+  jump_su_credential_id: "",
   group_name: "",
   tags: "",
   enabled: true,
@@ -51,7 +54,6 @@ export default function Hosts() {
   const { openTerminal, openFiles } = useWorkspaceTabs();
   const [servers, setServers] = useState<ServerAsset[]>([]);
   const [query, setQuery] = useState("");
-  const [activeGroup, setActiveGroup] = useState<string>("__all__");
   const [error, setError] = useState<string>();
   const [form, setForm] = useState<typeof EMPTY_FORM | null>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -63,10 +65,12 @@ export default function Hosts() {
   const [credentials, setCredentials] = useState<CredentialMeta[]>([]);
   const [newCred, setNewCred] = useState<{ label: string; username: string; secret: string } | null>(null);
   const [credError, setCredError] = useState<string>();
+  const [localKeyFile, setLocalKeyFile] = useState<{ name: string; content: string } | null>(null);
+  const [jumpSuPassword, setJumpSuPassword] = useState("");
+  const keyFileInputRef = useRef<HTMLInputElement>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
-  const [assignGroupOpen, setAssignGroupOpen] = useState(false);
   const [deleteHostId, setDeleteHostId] = useState<string | null>(null);
 
   const canManage = auth.hasPermission("host.manage");
@@ -86,19 +90,9 @@ export default function Hosts() {
     if (auth.hasPermission("host.read")) void load();
   }, [load, auth.identity?.user_id]);
 
-  const groupNames = useMemo(() => {
-    const set = new Set<string>();
-    for (const s of servers) {
-      set.add(s.group_name || "");
-    }
-    return [...set].sort((a, b) => a.localeCompare(b));
-  }, [servers]);
-
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return servers.filter((s) => {
-      const g = s.group_name || "";
-      if (activeGroup !== "__all__" && g !== activeGroup) return false;
       if (!q) return true;
       return (
         s.name.toLowerCase().includes(q) ||
@@ -107,17 +101,7 @@ export default function Hosts() {
         (s.tags ?? []).some((tag) => tag.toLowerCase().includes(q))
       );
     });
-  }, [servers, query, activeGroup]);
-
-  const groups = useMemo(() => {
-    const map = new Map<string, ServerAsset[]>();
-    for (const s of filtered) {
-      const g = s.group_name || "";
-      if (!map.has(g)) map.set(g, []);
-      map.get(g)!.push(s);
-    }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [filtered]);
+  }, [servers, query]);
 
   const jumpOptions = useMemo(
     () => servers.filter((s) => s.id !== form?.id),
@@ -154,6 +138,8 @@ export default function Hosts() {
   const openForm = (s?: ServerAsset) => {
     void loadCredentials();
     setCredError(undefined);
+    setLocalKeyFile(null);
+    setJumpSuPassword("");
     setForm(
       s
         ? {
@@ -166,6 +152,9 @@ export default function Hosts() {
             identity_file: s.identity_file ?? "",
             credential_id: s.credential_id ?? "",
             jump_host_id: s.jump_host_id ?? "",
+            jump_mode: (s.jump_mode || "direct_tcpip") as NonNullable<ServerAsset["jump_mode"]>,
+            jump_su_username: s.jump_su_username ?? "",
+            jump_su_credential_id: s.jump_su_credential_id ?? "",
             group_name: s.group_name ?? "",
             tags: (s.tags ?? []).join(", "),
             enabled: s.enabled,
@@ -176,23 +165,62 @@ export default function Hosts() {
 
   const saveForm = async () => {
     if (!form) return;
-    const payload: ServerAsset = {
-      id: form.id || "",
-      name: form.name,
-      host: form.host,
-      port: Number(form.port) || 22,
-      username: form.username,
-      auth_kind: form.auth_kind,
-      identity_file: form.identity_file || undefined,
-      credential_id: form.credential_id || undefined,
-      jump_host_id: form.jump_host_id || undefined,
-      group_name: form.group_name || undefined,
-      tags: form.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
-      description: "",
-      enabled: form.enabled,
-    };
+    let authKind = form.auth_kind;
+    let identityFile = form.identity_file || undefined;
+    let credentialId = form.credential_id || undefined;
+    let jumpSuCredentialId =
+      form.jump_host_id && form.jump_mode === "su_ssh"
+        ? form.jump_su_credential_id || undefined
+        : undefined;
     try {
+      if (authKind === "identity_file" && localKeyFile) {
+        const meta = await api.post<CredentialMeta>("/api/credentials", {
+          kind: "private_key",
+          label: `${form.name || form.host || "host"} (${localKeyFile.name})`,
+          username: form.username,
+          secret: localKeyFile.content,
+        });
+        authKind = "keyring_password";
+        credentialId = meta.id;
+        identityFile = undefined;
+      }
+      if (jumpSuCredentialId === "__custom__") {
+        if (jumpSuPassword) {
+          const meta = await api.post<CredentialMeta>("/api/credentials", {
+            kind: "password",
+            label: `${form.name || form.host || "host"} su (${form.jump_su_username.trim() || "root"})`,
+            username: form.jump_su_username.trim() || undefined,
+            secret: jumpSuPassword,
+          });
+          jumpSuCredentialId = meta.id;
+        } else {
+          jumpSuCredentialId = undefined;
+        }
+      }
+      const payload: ServerAsset = {
+        id: form.id || "",
+        name: form.name,
+        host: form.host,
+        port: Number(form.port) || 22,
+        username: form.username,
+        auth_kind: authKind,
+        identity_file: identityFile,
+        credential_id: credentialId,
+        jump_host_id: form.jump_host_id || undefined,
+        jump_mode: form.jump_host_id ? form.jump_mode : undefined,
+        jump_su_username:
+          form.jump_host_id && form.jump_mode === "su_ssh"
+            ? form.jump_su_username.trim() || undefined
+            : undefined,
+        jump_su_credential_id: jumpSuCredentialId,
+        group_name: form.group_name || undefined,
+        tags: form.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+        description: "",
+        enabled: form.enabled,
+      };
       await api.post("/api/servers", payload);
+      setLocalKeyFile(null);
+      setJumpSuPassword("");
       setForm(null);
       await load();
     } catch (err) {
@@ -269,20 +297,6 @@ export default function Hosts() {
         description: s.description ?? "",
       });
     });
-
-  const bulkAssignGroup = (values: Record<string, string>) => {
-    const name = (values.group ?? "").trim();
-    if (!name) return;
-    setAssignGroupOpen(false);
-    void runBulk(async (s) => {
-      await api.post("/api/servers", {
-        ...s,
-        group_name: name,
-        tags: s.tags ?? [],
-        description: s.description ?? "",
-      });
-    });
-  };
 
   const bulkDelete = async () => {
     setBulkBusy(true);
@@ -432,17 +446,10 @@ export default function Hosts() {
     >
       <ErrorText>{error}</ErrorText>
 
-      <Tabs defaultValue="hosts" className="gap-5">
-        <TabsList variant="line" className="w-full justify-start border-b border-border pb-0">
-          <TabsTrigger value="hosts">{t("hosts.tabHosts")}</TabsTrigger>
-          <TabsTrigger value="groups">{t("hosts.tabGroups")}</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="hosts">
-          {servers.length > 0 && (
+      {servers.length > 0 && (
         <div className="mb-6 flex flex-col gap-4">
           {/* Metric Strip */}
-          <div className="grid grid-cols-3 divide-x divide-border overflow-hidden rounded-xl border border-border bg-card">
+          <div className="grid grid-cols-2 divide-x divide-border overflow-hidden rounded-xl border border-border bg-card">
             <div className="px-4 py-3">
               <div className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
                 {t("hosts.statTotal")}
@@ -455,17 +462,9 @@ export default function Hosts() {
               </div>
               <div className="mt-0.5 text-xl font-semibold tabular-nums">{activeCount}</div>
             </div>
-            <div className="px-4 py-3">
-              <div className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
-                {t("hosts.statGroups")}
-              </div>
-              <div className="mt-0.5 text-xl font-semibold tabular-nums">
-                {groupNames.filter(Boolean).length || 1}
-              </div>
-            </div>
           </div>
 
-          {/* Search & Group Filter Bar */}
+          {/* Search Bar */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="relative w-full max-w-xs">
               <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -476,38 +475,6 @@ export default function Hosts() {
                 className="pl-8"
               />
             </div>
-
-            {groupNames.length > 1 && (
-              <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card p-0.5">
-                <button
-                  type="button"
-                  onClick={() => setActiveGroup("__all__")}
-                  className={cn(
-                    "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                    activeGroup === "__all__"
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  {t("common.all")}
-                </button>
-                {groupNames.map((g) => (
-                  <button
-                    key={g || "__none__"}
-                    type="button"
-                    onClick={() => setActiveGroup(g)}
-                    className={cn(
-                      "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                      activeGroup === g
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    {g || t("hosts.ungrouped")}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -537,9 +504,6 @@ export default function Hosts() {
                 <DropdownMenuItem disabled={bulkBusy} onClick={() => bulkSetEnabled(false)}>
                   {t("hosts.bulk.disable")}
                 </DropdownMenuItem>
-                <DropdownMenuItem disabled={bulkBusy} onClick={() => setAssignGroupOpen(true)}>
-                  {t("hosts.bulk.assignGroup")}
-                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   variant="destructive"
@@ -554,7 +518,7 @@ export default function Hosts() {
         </div>
       )}
 
-      {groups.length === 0 ? (
+      {filtered.length === 0 ? (
         <Empty className="mt-6 border border-border bg-card py-14">
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -575,39 +539,27 @@ export default function Hosts() {
           )}
         </Empty>
       ) : (
-        <div className="flex flex-col gap-6">
-          {groups.map(([group, list]) => (
-            <section key={group || "__ungrouped__"} className="flex flex-col gap-2">
-              <div className="flex items-center justify-between px-0.5">
-                <h2 className="font-mono text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  {group || t("hosts.ungrouped")}
-                </h2>
-                <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
-                  {list.length}
-                </span>
-              </div>
-
-              <Card className="p-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-10 pl-4 pr-0">
-                        <input
-                          type="checkbox"
-                          aria-label={t("common.all")}
-                          checked={list.length > 0 && list.every((s) => selectedIds.has(s.id))}
-                          onChange={(e) => setGroupSelected(list, e.target.checked)}
-                        />
-                      </TableHead>
-                      <TableHead className="px-4 py-2 font-mono text-[11px] uppercase text-muted-foreground">
-                        {t("hosts.tabHosts")}
-                      </TableHead>
-                      <TableHead className="px-4 py-2" />
-                      <TableHead className="px-4 py-2" />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {list.map((s) => {
+        <Card className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-10 pl-4 pr-0">
+                  <input
+                    type="checkbox"
+                    aria-label={t("common.all")}
+                    checked={filtered.length > 0 && filtered.every((s) => selectedIds.has(s.id))}
+                    onChange={(e) => setGroupSelected(filtered, e.target.checked)}
+                  />
+                </TableHead>
+                <TableHead className="px-4 py-2 font-mono text-[11px] uppercase text-muted-foreground">
+                  {t("hosts.tabHosts")}
+                </TableHead>
+                <TableHead className="px-4 py-2" />
+                <TableHead className="px-4 py-2" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((s) => {
                       const tr = testResult[s.id];
                       return (
                         <TableRow key={s.id}>
@@ -671,16 +623,28 @@ export default function Hosts() {
                                 </Button>
                               )}
                               {canTransfer && (
-                                <Button
-                                  variant="outline"
-                                  size="xs"
-                                  disabled={!s.enabled}
-                                  title={!s.enabled ? t("hosts.disabledHint") : t("files.open")}
-                                  onClick={() => openFiles({ id: s.id, name: s.name })}
-                                >
-                                  <FolderOpen data-icon="inline-start" />
-                                  {t("files.title")}
-                                </Button>
+                                <Tooltip>
+                                  <TooltipTrigger
+                                    render={<span className="inline-flex" />}
+                                  >
+                                    <Button
+                                      variant="outline"
+                                      size="xs"
+                                      disabled={!s.enabled || s.jump_mode === "su_ssh"}
+                                      onClick={() => openFiles({ id: s.id, name: s.name })}
+                                    >
+                                      <FolderOpen data-icon="inline-start" />
+                                      {t("files.title")}
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    {!s.enabled
+                                      ? t("hosts.disabledHint")
+                                      : s.jump_mode === "su_ssh"
+                                        ? t("hosts.sftpUnsupportedSuSSH")
+                                        : t("files.open")}
+                                  </TooltipContent>
+                                </Tooltip>
                               )}
                               {canManage && (
                                 <>
@@ -700,27 +664,10 @@ export default function Hosts() {
                         </TableRow>
                       );
                     })}
-                  </TableBody>
-                </Table>
-              </Card>
-            </section>
-          ))}
-        </div>
+            </TableBody>
+          </Table>
+        </Card>
       )}
-        </TabsContent>
-
-        <TabsContent value="groups">
-          <HostGroupsPanel
-            servers={servers}
-            canManage={canManage}
-            canConnect={canConnect}
-            canTransfer={canTransfer}
-            onConnect={(s) => openTerminal(s)}
-            onFiles={(s) => openFiles({ id: s.id, name: s.name })}
-            onReload={load}
-          />
-        </TabsContent>
-      </Tabs>
 
       {/* Host form */}
       <Dialog open={form !== null} onOpenChange={(o) => !o && setForm(null)}>
@@ -730,17 +677,9 @@ export default function Hosts() {
           </DialogHeader>
           {form && (
             <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5">
+              <div className="col-span-2 flex flex-col gap-1.5">
                 <Label>{t("common.name")}</Label>
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label>{t("hosts.f.group")}</Label>
-                <Input
-                  value={form.group_name}
-                  placeholder={t("hosts.phGroup")}
-                  onChange={(e) => setForm({ ...form, group_name: e.target.value })}
-                />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>{t("hosts.f.host")}</Label>
@@ -786,10 +725,58 @@ export default function Hosts() {
               {form.auth_kind === "identity_file" && (
                 <div className="col-span-2 flex flex-col gap-1.5">
                   <Label>{t("hosts.f.identityPath")}</Label>
-                  <Input
-                    value={form.identity_file}
-                    onChange={(e) => setForm({ ...form, identity_file: e.target.value })}
-                  />
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="flex-1"
+                      value={localKeyFile ? localKeyFile.name : form.identity_file}
+                      placeholder="~/.ssh/id_ed25519"
+                      disabled={Boolean(localKeyFile)}
+                      onChange={(e) => setForm({ ...form, identity_file: e.target.value })}
+                    />
+                    <input
+                      ref={keyFileInputRef}
+                      type="file"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (!file) return;
+                        try {
+                          const content = await file.text();
+                          if (!content.includes("PRIVATE KEY")) {
+                            setCredError(t("hosts.invalidKeyFile"));
+                            return;
+                          }
+                          setCredError(undefined);
+                          setLocalKeyFile({ name: file.name, content });
+                        } catch {
+                          setCredError(t("hosts.fileReadFailed"));
+                        }
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => keyFileInputRef.current?.click()}
+                    >
+                      <FolderOpen className="size-4" />
+                      {t("hosts.chooseLocalFile")}
+                    </Button>
+                  </div>
+                  {localKeyFile && (
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>{t("hosts.localKeySelected", { name: localKeyFile.name })}</span>
+                      <button
+                        type="button"
+                        className="text-foreground underline hover:opacity-80"
+                        onClick={() => setLocalKeyFile(null)}
+                      >
+                        {t("hosts.localKeyClear")}
+                      </button>
+                    </div>
+                  )}
+                  {credError && <p className="text-xs text-destructive">{credError}</p>}
                 </div>
               )}
               {form.auth_kind === "keyring_password" && (
@@ -891,7 +878,93 @@ export default function Hosts() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="flex flex-col gap-1.5">
+              {form.jump_host_id && (
+                <div className="flex flex-col gap-1.5">
+                  <Label>{t("hosts.jumpMode")}</Label>
+                  <Select
+                    value={form.jump_mode}
+                    items={{
+                      direct_tcpip: t("hosts.jumpModeDirect"),
+                      su_ssh: t("hosts.jumpModeSuSSH"),
+                    }}
+                    onValueChange={(v) =>
+                      setForm({
+                        ...form,
+                        jump_mode: (v || "direct_tcpip") as NonNullable<ServerAsset["jump_mode"]>,
+                      })
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="direct_tcpip">{t("hosts.jumpModeDirect")}</SelectItem>
+                        <SelectItem value="su_ssh">{t("hosts.jumpModeSuSSH")}</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              {form.jump_host_id && form.jump_mode === "su_ssh" && (
+                <div className="col-span-2 grid grid-cols-2 gap-3 rounded-md border p-3 bg-muted/20">
+                  <div className="flex flex-col gap-1.5">
+                    <Label>{t("hosts.jumpSuUser")}</Label>
+                    <Input
+                      value={form.jump_su_username}
+                      onChange={(e) => setForm({ ...form, jump_su_username: e.target.value })}
+                      placeholder={t("hosts.jumpSuUserPlaceholder")}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>{t("hosts.jumpSuCredential")}</Label>
+                    <Select
+                      value={form.jump_su_credential_id || "__none__"}
+                      items={{
+                        __none__: t("hosts.jumpSuCredNone"),
+                        __custom__: t("hosts.jumpSuCredInput"),
+                        ...Object.fromEntries(credentials.map((c) => [c.id, c.label])),
+                      }}
+                      onValueChange={(v) => {
+                        const next = !v || v === "__none__" ? "" : v;
+                        if (next !== "__custom__") {
+                          setJumpSuPassword("");
+                        }
+                        setForm({
+                          ...form,
+                          jump_su_credential_id: next,
+                        });
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="__none__">{t("hosts.jumpSuCredNone")}</SelectItem>
+                          <SelectItem value="__custom__">{t("hosts.jumpSuCredInput")}</SelectItem>
+                          {credentials.map((c) => (
+                            <SelectItem key={c.id} value={c.id}>
+                              {c.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {form.jump_su_credential_id === "__custom__" && (
+                    <div className="col-span-2 flex flex-col gap-1.5">
+                      <Input
+                        type="password"
+                        value={jumpSuPassword}
+                        onChange={(e) => setJumpSuPassword(e.target.value)}
+                        placeholder={t("hosts.jumpSuPasswordPlaceholder")}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className={cn("flex flex-col gap-1.5", form.jump_host_id && "col-span-2")}>
                 <Label>{t("hosts.f.tags")}</Label>
                 <Input
                   value={form.tags}
@@ -1011,22 +1084,6 @@ export default function Hosts() {
         loading={bulkBusy}
         onConfirm={() => void bulkDelete()}
         onOpenChange={setBulkDeleteOpen}
-      />
-
-      {/* Bulk assign group */}
-      <PromptDialog
-        open={assignGroupOpen}
-        title={t("hosts.bulk.assignGroup")}
-        fields={[
-          {
-            key: "group",
-            label: t("hosts.f.group"),
-            placeholder: t("hosts.bulk.groupPlaceholder"),
-          },
-        ]}
-        loading={bulkBusy}
-        onSubmit={bulkAssignGroup}
-        onOpenChange={setAssignGroupOpen}
       />
     </Page>
   );

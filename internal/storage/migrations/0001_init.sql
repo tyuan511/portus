@@ -1,4 +1,4 @@
--- SSHield Enterprise schema (PostgreSQL).
+-- Bulwark Enterprise schema (PostgreSQL).
 -- Timestamps are RFC3339 text: lexicographic ordering keeps the audit hash
 -- chain and time filters identical across timezones and drivers.
 

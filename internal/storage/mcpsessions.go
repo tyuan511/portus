@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/storage/db"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/storage/db"
 )
 
 // ErrSessionInvalid reports an unknown, foreign, closed or expired session.

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yuantang/sshield/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/apierr"
 )
 
 // AttemptStore persists login attempts (implemented by storage.DB).

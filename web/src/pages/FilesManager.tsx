@@ -18,7 +18,7 @@ import { Card } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ErrorText } from "@/components/ui/shared";
-import { ConfirmDialog, PromptDialog } from "@/components/sshield/ConfirmDialog";
+import { ConfirmDialog, PromptDialog } from "@/components/bulwark/ConfirmDialog";
 import { api, ApiError } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import type { SftpEntry, SftpListResult, SftpUploadResult } from "@/types";

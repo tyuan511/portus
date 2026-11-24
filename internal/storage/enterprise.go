@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/storage/db"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/storage/db"
 )
 
 // CountUsers returns the number of user accounts (bootstrap detection).
@@ -517,25 +517,78 @@ func (h *DB) ListGroupMembers(groupID string) ([]*domain.User, error) {
 }
 
 
+// ListAllGroupMemberships returns every (group_id, user_id) link.
+func (h *DB) ListAllGroupMemberships() ([]domain.UserGroupMember, error) {
+	rows, err := h.q.ListAllGroupMemberships(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("list group memberships: %w", err)
+	}
+	out := make([]domain.UserGroupMember, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, domain.UserGroupMember{
+			GroupID: r.GroupID,
+			UserID:  r.UserID,
+		})
+	}
+	return out, nil
+}
+
+// SetUserGroups atomically replaces the set of groups a user belongs to.
+func (h *DB) SetUserGroups(userID string, groupIDs []string) error {
+	ctx := context.Background()
+	tx, err := h.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	qtx := h.q.WithTx(tx)
+	if err := qtx.DeleteGroupMembershipsForUser(ctx, userID); err != nil {
+		return fmt.Errorf("clear user groups: %w", err)
+	}
+	for _, gid := range groupIDs {
+		if gid == "" {
+			continue
+		}
+		if err := qtx.AddGroupMember(ctx, db.AddGroupMemberParams{
+			GroupID: gid,
+			UserID:  userID,
+		}); err != nil {
+			return fmt.Errorf("add group member %s: %w", gid, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit user groups: %w", err)
+	}
+	return nil
+}
+
 // --- host grants ---
 
-// CreateHostGrant inserts an access grant.
+// CreateHostGrant inserts or updates an access grant for (user_group_id, server_id).
 func (h *DB) CreateHostGrant(g *domain.HostGrant) error {
 	if g.CreatedAt.IsZero() {
 		g.CreatedAt = nowUTC()
 	}
-	if g.GroupName == "" {
-		return errors.New("grant must target a machine group")
+	if g.ServerID == "" {
+		return errors.New("grant must target a server")
+	}
+	if !g.CanConnect {
+		g.TerminalNoApproval = false
+	}
+	if !g.CanExecute {
+		g.MCPNoApproval = false
 	}
 	err := h.q.CreateHostGrant(context.Background(), db.CreateHostGrantParams{
-		ID:          g.ID,
-		UserGroupID: g.UserGroupID,
-		GroupName:   g.GroupName,
-		CanConnect:  int32(boolToInt(g.CanConnect)),
-		CanExecute:  int32(boolToInt(g.CanExecute)),
-		CanTransfer: int32(boolToInt(g.CanTransfer)),
-		CreatedBy:   g.CreatedBy,
-		CreatedAt:   formatRFC3339(g.CreatedAt),
+		ID:                 g.ID,
+		UserGroupID:        g.UserGroupID,
+		ServerID:           g.ServerID,
+		CanConnect:         int32(boolToInt(g.CanConnect)),
+		CanExecute:         int32(boolToInt(g.CanExecute)),
+		CanTransfer:        int32(boolToInt(g.CanTransfer)),
+		TerminalNoApproval: int32(boolToInt(g.TerminalNoApproval)),
+		McpNoApproval:      int32(boolToInt(g.MCPNoApproval)),
+		CreatedBy:          g.CreatedBy,
+		CreatedAt:          formatRFC3339(g.CreatedAt),
 	})
 	if err != nil {
 		return fmt.Errorf("create grant: %w", err)
@@ -543,7 +596,7 @@ func (h *DB) CreateHostGrant(g *domain.HostGrant) error {
 	return nil
 }
 
-// ListHostGrants returns all grants with their groups hydrated.
+// ListHostGrants returns all grants with their groups and server names hydrated.
 func (h *DB) ListHostGrants() ([]*domain.HostGrant, error) {
 	rows, err := h.q.ListHostGrants(context.Background())
 	if err != nil {
@@ -552,13 +605,16 @@ func (h *DB) ListHostGrants() ([]*domain.HostGrant, error) {
 	out := make([]*domain.HostGrant, 0, len(rows))
 	for _, g := range rows {
 		grant := &domain.HostGrant{
-			ID:          g.ID,
-			UserGroupID: g.UserGroupID,
-			GroupName:   g.GroupName,
-			CanConnect:  g.CanConnect == 1,
-			CanExecute:  g.CanExecute == 1,
-			CanTransfer: g.CanTransfer == 1,
-			CreatedBy:   g.CreatedBy,
+			ID:                 g.ID,
+			UserGroupID:        g.UserGroupID,
+			ServerID:           g.ServerID,
+			ServerName:         g.ServerName,
+			CanConnect:         g.CanConnect == 1,
+			CanExecute:         g.CanExecute == 1,
+			CanTransfer:        g.CanTransfer == 1,
+			TerminalNoApproval: g.TerminalNoApproval == 1,
+			MCPNoApproval:      g.McpNoApproval == 1,
+			CreatedBy:          g.CreatedBy,
 		}
 		grant.CreatedAt, _ = parseRFC3339(g.CreatedAt)
 		ug := &domain.UserGroup{ID: g.UgID, Name: g.UgName, Description: g.UgDescription}
@@ -569,8 +625,8 @@ func (h *DB) ListHostGrants() ([]*domain.HostGrant, error) {
 	return out, nil
 }
 
-// UpdateHostGrant toggles the connect/execute/transfer bits.
-func (h *DB) UpdateHostGrant(id string, canConnect, canExecute, canTransfer *bool) error {
+// UpdateHostGrant toggles the connect/execute/transfer and approval-bypass bits.
+func (h *DB) UpdateHostGrant(id string, canConnect, canExecute, canTransfer, terminalNoApproval, mcpNoApproval *bool) error {
 	grants, err := h.ListHostGrants()
 	if err != nil {
 		return err
@@ -597,11 +653,27 @@ func (h *DB) UpdateHostGrant(id string, canConnect, canExecute, canTransfer *boo
 	if canTransfer != nil {
 		transfer = *canTransfer
 	}
+	termNoAppr := current.TerminalNoApproval
+	if terminalNoApproval != nil {
+		termNoAppr = *terminalNoApproval
+	}
+	mcpNoAppr := current.MCPNoApproval
+	if mcpNoApproval != nil {
+		mcpNoAppr = *mcpNoApproval
+	}
+	if !connect {
+		termNoAppr = false
+	}
+	if !execute {
+		mcpNoAppr = false
+	}
 	n, err := h.q.UpdateHostGrant(context.Background(), db.UpdateHostGrantParams{
-		ID:          id,
-		CanConnect:  int32(boolToInt(connect)),
-		CanExecute:  int32(boolToInt(execute)),
-		CanTransfer: int32(boolToInt(transfer)),
+		ID:                 id,
+		CanConnect:         int32(boolToInt(connect)),
+		CanExecute:         int32(boolToInt(execute)),
+		CanTransfer:        int32(boolToInt(transfer)),
+		TerminalNoApproval: int32(boolToInt(termNoAppr)),
+		McpNoApproval:      int32(boolToInt(mcpNoAppr)),
 	})
 	if err != nil {
 		return fmt.Errorf("update grant: %w", err)
@@ -617,6 +689,18 @@ func (h *DB) DeleteHostGrant(id string) (bool, error) {
 	n, err := h.q.DeleteHostGrant(context.Background(), id)
 	if err != nil {
 		return false, fmt.Errorf("delete grant: %w", err)
+	}
+	return n > 0, nil
+}
+
+// DeleteHostGrantByPair removes the grant matching (user_group_id, server_id).
+func (h *DB) DeleteHostGrantByPair(userGroupID, serverID string) (bool, error) {
+	n, err := h.q.DeleteHostGrantByPair(context.Background(), db.DeleteHostGrantByPairParams{
+		UserGroupID: userGroupID,
+		ServerID:    serverID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("delete grant by pair: %w", err)
 	}
 	return n > 0, nil
 }

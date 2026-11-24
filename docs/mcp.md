@@ -7,7 +7,7 @@ never accepted there, and tokens are never accepted by the web API.
 ## 1. Issue a token
 
 Sign in to the web UI → **Settings → API Tokens** → create a token (name it after the client,
-e.g. `claude-code`). The plaintext `sk-sshield-…` value is shown **once**. Tokens require the
+e.g. `claude-code`). The plaintext `sk-bulwark-…` value is shown **once**. Tokens require the
 `mcp.access` permission (members have it by default).
 
 ## 2. Configure your client
@@ -18,10 +18,10 @@ Any streamable-HTTP MCP client works. Authorization header + JSON responses:
 // e.g. Claude Code / ZCode MCP config
 {
   "mcpServers": {
-    "sshield": {
+    "bulwark": {
       "type": "http",
-      "url": "http://your-sshield-host:8787/mcp",
-      "headers": { "Authorization": "Bearer sk-sshield-xxxxxxxx…" }
+      "url": "http://your-bulwark-host:8787/mcp",
+      "headers": { "Authorization": "Bearer sk-bulwark-xxxxxxxx…" }
     }
   }
 }

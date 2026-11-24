@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { FolderOpen, FolderTree, Pencil, Plug, Plus, Trash2, X } from "lucide-react";
 import { cn } from "cn";
-import { ConfirmDialog } from "@/components/sshield/ConfirmDialog";
+import { ConfirmDialog } from "@/components/bulwark/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ErrorText } from "@/components/ui/shared";
 import { api } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
@@ -361,16 +362,28 @@ export function HostGroupsPanel({
                           </Button>
                         )}
                         {canTransfer && onFiles && (
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            disabled={!s.enabled}
-                            title={!s.enabled ? t("hosts.disabledHint") : t("files.open")}
-                            onClick={() => onFiles(s)}
-                          >
-                            <FolderOpen data-icon="inline-start" />
-                            {t("files.title")}
-                          </Button>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={<span className="inline-flex" />}
+                            >
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                disabled={!s.enabled || s.jump_mode === "su_ssh"}
+                                onClick={() => onFiles(s)}
+                              >
+                                <FolderOpen data-icon="inline-start" />
+                                {t("files.title")}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {!s.enabled
+                                ? t("hosts.disabledHint")
+                                : s.jump_mode === "su_ssh"
+                                  ? t("hosts.sftpUnsupportedSuSSH")
+                                  : t("files.open")}
+                            </TooltipContent>
+                          </Tooltip>
                         )}
                         {canManage && selectedGroup !== "" && (
                           <Button

@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/metrics"
-	"github.com/yuantang/sshield/internal/notify"
-	"github.com/yuantang/sshield/internal/security"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/metrics"
+	"github.com/tyuan511/bulwark/internal/notify"
+	"github.com/tyuan511/bulwark/internal/security"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 // --- read tools ---
@@ -357,6 +357,19 @@ func tExecuteCommand(ctx context.Context, d *Deps, id *domain.Identity, args map
 	final := verdict.Decision
 	if l2 != nil {
 		final = domain.MoreRestrictive(final, l2.Decision)
+	}
+	if final == domain.DecisionDeny {
+		reason := verdict.Reason
+		if l2 != nil && l2.Reasoning != "" {
+			reason = l2.Reasoning
+		}
+		denied := apierr.New(apierr.CodePolicyDenied, 403, "security policy denied command: "+reason)
+		fail(denied, domain.DecisionDeny, "", "")
+		d.RecordDenial("mcp", id, asset, ea.Command, reason)
+		return nil, denied
+	}
+	if final == domain.DecisionAskApproval && d.RBAC != nil && d.RBAC.CanSkipMCPApproval(id, asset) {
+		final = domain.DecisionAllow
 	}
 
 	if ea.DryRun {

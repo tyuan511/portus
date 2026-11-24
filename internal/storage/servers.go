@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/storage/db"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/storage/db"
 )
 
 // ErrNotFound is returned when a queried row does not exist.
@@ -15,19 +15,22 @@ var ErrNotFound = errors.New("not found")
 
 func serverToDomain(s db.Server) *domain.ServerAsset {
 	return &domain.ServerAsset{
-		ID:           s.ID,
-		Name:         s.Name,
-		Host:         s.Host,
-		Port:         int(s.Port),
-		Username:     s.Username,
-		AuthKind:     domain.AuthKind(s.AuthKind),
-		IdentityFile: s.IdentityFile,
-		CredentialID: s.CredentialID,
-		JumpHostID:   s.JumpHostID,
-		GroupName:    s.GroupName,
-		Tags:         parseTags(s.TagsJson),
-		Description:  s.Description,
-		Enabled:      s.Enabled == 1,
+		ID:                 s.ID,
+		Name:               s.Name,
+		Host:               s.Host,
+		Port:               int(s.Port),
+		Username:           s.Username,
+		AuthKind:           domain.AuthKind(s.AuthKind),
+		IdentityFile:       s.IdentityFile,
+		CredentialID:       s.CredentialID,
+		JumpHostID:         s.JumpHostID,
+		JumpMode:           domain.JumpMode(s.JumpMode),
+		JumpSuUsername:     s.JumpSuUsername,
+		JumpSuCredentialID: s.JumpSuCredentialID,
+		GroupName:          s.GroupName,
+		Tags:               parseTags(s.TagsJson),
+		Description:        s.Description,
+		Enabled:            s.Enabled == 1,
 	}
 }
 
@@ -39,20 +42,23 @@ func serverParams(a *domain.ServerAsset) db.UpsertServerParams {
 		a.AuthKind = domain.AuthAgentOrDefaultKey
 	}
 	return db.UpsertServerParams{
-		ID:           a.ID,
-		Name:         a.Name,
-		Host:         a.Host,
-		Port:         int32(a.Port),
-		Username:     a.Username,
-		AuthKind:     string(a.AuthKind),
-		IdentityFile: a.IdentityFile,
-		CredentialID: a.CredentialID,
-		JumpHostID:   a.JumpHostID,
-		GroupName:    a.GroupName,
-		TagsJson:     tagsJSON(a.Tags),
-		Description:  a.Description,
-		Enabled:      int32(boolToInt(a.Enabled)),
-		UpdatedAt:    nowRFC3339(),
+		ID:                 a.ID,
+		Name:               a.Name,
+		Host:               a.Host,
+		Port:               int32(a.Port),
+		Username:           a.Username,
+		AuthKind:           string(a.AuthKind),
+		IdentityFile:       a.IdentityFile,
+		CredentialID:       a.CredentialID,
+		JumpHostID:         a.JumpHostID,
+		JumpMode:           string(a.JumpMode),
+		JumpSuUsername:     a.JumpSuUsername,
+		JumpSuCredentialID: a.JumpSuCredentialID,
+		GroupName:          a.GroupName,
+		TagsJson:           tagsJSON(a.Tags),
+		Description:        a.Description,
+		Enabled:            int32(boolToInt(a.Enabled)),
+		UpdatedAt:          nowRFC3339(),
 	}
 }
 
@@ -124,21 +130,22 @@ func (h *DB) ListServersForUserFiltered(userID string, needExecute bool) ([]*dom
 	return out, nil
 }
 
-// ServerGrantDecision evaluates a user's effective access on one server
-// (resolved through its machine group).
+// ServerGrantDecision evaluates a user's effective access on one server.
 func (h *DB) ServerGrantDecision(userID string, asset *domain.ServerAsset) (domain.GrantDecision, error) {
 	row, err := h.q.ServerGrantDecision(context.Background(), db.ServerGrantDecisionParams{
-		UserID:    userID,
-		GroupName: asset.GroupName,
+		UserID:   userID,
+		ServerID: asset.ID,
 	})
 	if err != nil {
 		return domain.GrantDecision{}, fmt.Errorf("grant decision: %w", err)
 	}
 	return domain.GrantDecision{
-		Allowed:     row.CanConnect == 1 || row.CanExecute == 1,
-		CanConnect:  row.CanConnect == 1,
-		CanExecute:  row.CanExecute == 1,
-		CanTransfer: row.CanTransfer == 1,
+		Allowed:            row.CanConnect == 1 || row.CanExecute == 1 || row.CanTransfer == 1,
+		CanConnect:         row.CanConnect == 1,
+		CanExecute:         row.CanExecute == 1,
+		CanTransfer:        row.CanTransfer == 1,
+		TerminalNoApproval: row.TerminalNoApproval == 1,
+		MCPNoApproval:      row.McpNoApproval == 1,
 	}, nil
 }
 

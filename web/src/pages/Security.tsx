@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { LoaderCircle, Pencil, Play, Plus, Search, Trash2, Zap } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { ConfirmDialog } from "@/components/sshield/ConfirmDialog";
+import { ConfirmDialog } from "@/components/bulwark/ConfirmDialog";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,13 +12,13 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ErrorText, Page, PageHeader } from "@/components/ui/shared";
-import { StatusPill, decisionTone } from "@/components/sshield/StatusDot";
+import { toast } from "sonner";
+import { StatusPill, decisionTone } from "@/components/bulwark/StatusDot";
 import SnippetsPanel from "@/pages/Snippets";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
 import type {
-  CredentialMeta,
   DualEvaluateResp,
   L2ProviderConfig,
   PolicyDecision,
@@ -26,7 +27,13 @@ import type {
 
 const RULE_KINDS = ["program_exact", "command_prefix", "regex"] as const;
 const DECISIONS: PolicyDecision[] = ["allow", "ask_approval", "deny"];
-const CREDENTIAL_NONE = "__none__";
+
+const L2_DEFAULTS: Record<string, { baseUrl: string; model: string }> = {
+  system_one_fast: { baseUrl: "https://fastvibe.dev/v1/systemone", model: "jev-latest" },
+  openai_chat: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+  openai_responses: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+  anthropic_messages: { baseUrl: "https://api.anthropic.com/v1", model: "claude-haiku-4-5" },
+};
 
 export default function SecurityView() {
   const auth = useAuth();
@@ -34,7 +41,6 @@ export default function SecurityView() {
   const canManage = auth.hasPermission("rules.manage");
   const [rules, setRules] = useState<SecurityRule[]>([]);
   const [l2, setL2] = useState<L2ProviderConfig | null>(null);
-  const [credentials, setCredentials] = useState<CredentialMeta[]>([]);
   const [error, setError] = useState<string>();
   const [form, setForm] = useState<Partial<SecurityRule> | null>(null);
   const [deleteRule, setDeleteRule] = useState<SecurityRule | null>(null);
@@ -46,6 +52,7 @@ export default function SecurityView() {
 
   const [l2Testing, setL2Testing] = useState(false);
   const [l2TestMsg, setL2TestMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [l2ApiKeyInput, setL2ApiKeyInput] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -56,19 +63,9 @@ export default function SecurityView() {
     }
   }, []);
 
-  const loadCredentials = useCallback(async () => {
-    if (!auth.hasPermission("host.manage")) return;
-    try {
-      setCredentials(await api.get<CredentialMeta[]>("/api/credentials"));
-    } catch {
-      setCredentials([]);
-    }
-  }, [auth.identity?.user_id]);
-
   useEffect(() => {
     void load();
-    void loadCredentials();
-  }, [load, loadCredentials]);
+  }, [load]);
 
   const filteredRules = rules.filter((r) => {
     const q = ruleQuery.trim().toLowerCase();
@@ -91,8 +88,11 @@ export default function SecurityView() {
       });
       setForm(null);
       await load();
+      toast.success(t("common.saved"));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "save failed");
+      const msg = err instanceof Error ? err.message : "save failed";
+      setError(msg);
+      toast.error(msg);
     }
   };
 
@@ -121,24 +121,46 @@ export default function SecurityView() {
   const saveL2 = async () => {
     if (!l2) return;
     try {
-      await api.put("/api/l2-config", l2);
+      const saved = await api.put<L2ProviderConfig>("/api/l2-config", {
+        ...l2,
+        api_key: l2ApiKeyInput.trim(),
+      });
+      setL2(saved);
+      setL2ApiKeyInput("");
       setError(undefined);
+      toast.success(t("common.saved"));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "save failed");
+      const msg = err instanceof Error ? err.message : "save failed";
+      setError(msg);
+      toast.error(msg);
     }
   };
 
   const testL2 = async () => {
+    if (!l2) return;
     setL2Testing(true);
     setL2TestMsg(null);
     try {
-      const res = await api.post<DualEvaluateResp>("/api/security/evaluate", {
-        command: "echo sshield-l2-connectivity-test",
+      const res = await api.post<{
+        ok: boolean;
+        latency_ms?: number;
+        reasoning?: string;
+        error?: string;
+      }>("/api/l2-config/test", {
+        ...l2,
+        api_key: l2ApiKeyInput.trim(),
       });
-      if (res.l2) {
-        setL2TestMsg({ ok: true, text: t("l2.testOk", { ms: res.l2.latency_ms }) });
+      if (res.ok) {
+        const base = t("l2.testOk", { ms: res.latency_ms ?? 0 });
+        setL2TestMsg({
+          ok: true,
+          text: res.reasoning ? `${base} · ${res.reasoning}` : base,
+        });
       } else {
-        setL2TestMsg({ ok: true, text: `${t("security.l2Review")} · ${t("common.off")}` });
+        setL2TestMsg({
+          ok: false,
+          text: `${t("l2.testFailed")}: ${res.error || "unknown error"}`,
+        });
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "evaluate failed";
@@ -328,6 +350,7 @@ export default function SecurityView() {
                   <Label>{t("security.l2BaseUrl")}</Label>
                   <Input
                     value={l2.base_url}
+                    placeholder={L2_DEFAULTS[l2.protocol]?.baseUrl ?? "https://fastvibe.dev/v1/systemone"}
                     onChange={(e) => setL2({ ...l2, base_url: e.target.value })}
                   />
                 </div>
@@ -335,55 +358,72 @@ export default function SecurityView() {
                   <Label>{t("security.l2Model")}</Label>
                   <Input
                     value={l2.model}
+                    placeholder={L2_DEFAULTS[l2.protocol]?.model ?? "jev-latest"}
                     onChange={(e) => setL2({ ...l2, model: e.target.value })}
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label>{t("l2.credential")}</Label>
-                  <Select
-                    value={l2.api_key_credential_id || CREDENTIAL_NONE}
-                    items={{
-                      [CREDENTIAL_NONE]: t("l2.noCredential"),
-                      ...Object.fromEntries(credentials.map((c) => [c.id, c.label])),
-                    }}
-                    onValueChange={(v) =>
-                      setL2({ ...l2, api_key_credential_id: !v || v === CREDENTIAL_NONE ? null : v })
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>{t("l2.credential")}</Label>
+                    {l2.api_key_credential_id && (
+                      <Badge variant="secondary" className="text-[10px]">
+                        {t("l2.keyConfigured")}
+                      </Badge>
+                    )}
+                  </div>
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    value={l2ApiKeyInput}
+                    placeholder={
+                      l2.api_key_credential_id
+                        ? t("l2.apiKeyKeepPlaceholder")
+                        : t("l2.apiKeyPlaceholder")
                     }
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value={CREDENTIAL_NONE}>{t("l2.noCredential")}</SelectItem>
-                        {credentials.map((c) => (
-                          <SelectItem key={c.id} value={c.id}>
-                            {c.label}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
+                    onChange={(e) => setL2ApiKeyInput(e.target.value)}
+                  />
                   <p className="text-xs text-muted-foreground">{t("l2.credentialHint")}</p>
                 </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label>{t("security.l2RiskAsk")}</Label>
-                  <Input
-                    type="number"
-                    value={l2.risk_threshold_ask}
-                    onChange={(e) => setL2({ ...l2, risk_threshold_ask: Number(e.target.value) })}
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label>{t("security.l2RiskDeny")}</Label>
-                  <Input
-                    type="number"
-                    value={l2.risk_threshold_deny}
-                    onChange={(e) =>
-                      setL2({ ...l2, risk_threshold_deny: Number(e.target.value) })
-                    }
-                  />
-                </div>
+                {l2.protocol === "system_one_fast" ? (
+                  <div className="flex flex-col gap-1.5 sm:col-span-2">
+                    <Label>{t("l2.violationThreshold")}</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={l2.risk_threshold_ask}
+                      onChange={(e) =>
+                        setL2({ ...l2, risk_threshold_ask: Number(e.target.value) })
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {t("l2.violationThresholdHint")}
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>{t("security.l2RiskAsk")}</Label>
+                      <Input
+                        type="number"
+                        value={l2.risk_threshold_ask}
+                        onChange={(e) =>
+                          setL2({ ...l2, risk_threshold_ask: Number(e.target.value) })
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>{t("security.l2RiskDeny")}</Label>
+                      <Input
+                        type="number"
+                        value={l2.risk_threshold_deny}
+                        onChange={(e) =>
+                          setL2({ ...l2, risk_threshold_deny: Number(e.target.value) })
+                        }
+                      />
+                    </div>
+                  </>
+                )}
               </CardContent>
 
               {canManage && (

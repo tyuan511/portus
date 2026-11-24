@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/metrics"
-	"github.com/yuantang/sshield/internal/notify"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/metrics"
+	"github.com/tyuan511/bulwark/internal/notify"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 // approvalWaitTimeout bounds how long an interactive terminal command may
@@ -56,6 +56,11 @@ func (s *Server) evaluateTerminalLine(ctx context.Context, id *domain.Identity, 
 	}
 
 	if v.Decision != domain.DecisionAskApproval {
+		return v
+	}
+
+	if s.rbac != nil && s.rbac.CanSkipTerminalApproval(id, asset) {
+		v.Decision = domain.DecisionAllow
 		return v
 	}
 

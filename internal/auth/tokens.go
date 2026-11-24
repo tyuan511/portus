@@ -5,14 +5,14 @@ import (
 	"encoding/hex"
 	"strings"
 
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 // SessionCookieName is the HttpOnly cookie holding the web session token.
-const SessionCookieName = "sshield_session"
+const SessionCookieName = "bulwark_session"
 
 // TokenPrefix is the recognizable prefix for API tokens.
-const TokenPrefix = "sk-sshield-"
+const TokenPrefix = "sk-bulwark-"
 
 // HashToken returns the SHA-256 hex digest stored in the database (never the
 // raw token).
@@ -28,7 +28,7 @@ func NewSessionToken() string { return randomHex(32) }
 func NewApiToken() (token string, meta domain.ApiToken) {
 	secret := randomHex(24)
 	token = TokenPrefix + secret
-	prefix := token[:len(TokenPrefix)+8] // sk-sshield-XXXXXXXX…
+	prefix := token[:len(TokenPrefix)+8] // sk-bulwark-XXXXXXXX…
 	return token, domain.ApiToken{Prefix: prefix}
 }
 

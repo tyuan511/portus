@@ -5,10 +5,10 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/httpserver/resp"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/httpserver/resp"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 // registerServerRoutes mounts server-asset endpoints. app carries the
@@ -38,6 +38,9 @@ func (s *Server) handleUpdateServer(c *fiber.Ctx) error {
 	asset.ID = id
 	if asset.Host == "" || asset.Name == "" || asset.Username == "" {
 		return apierr.Unprocessable("name, host and username are required")
+	}
+	if asset.JumpMode == domain.JumpModeSuSSH && asset.JumpHostID == "" {
+		return apierr.Unprocessable("jump_host_id is required when jump_mode is su_ssh")
 	}
 	if asset.Port <= 0 || asset.Port > 65535 {
 		asset.Port = 22
@@ -97,6 +100,9 @@ func (s *Server) handleUpsertServer(c *fiber.Ctx) error {
 	}
 	if asset.Host == "" || asset.Name == "" || asset.Username == "" {
 		return apierr.Unprocessable("name, host and username are required")
+	}
+	if asset.JumpMode == domain.JumpModeSuSSH && asset.JumpHostID == "" {
+		return apierr.Unprocessable("jump_host_id is required when jump_mode is su_ssh")
 	}
 	if asset.Port <= 0 || asset.Port > 65535 {
 		asset.Port = 22

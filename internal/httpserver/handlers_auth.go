@@ -5,11 +5,11 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/auth"
-	"github.com/yuantang/sshield/internal/buildinfo"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/httpserver/resp"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/auth"
+	"github.com/tyuan511/bulwark/internal/buildinfo"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/httpserver/resp"
 )
 
 // registerAuthRoutes mounts the authenticated self-service endpoints.
@@ -27,7 +27,7 @@ func (s *Server) registerAuthRoutes(g fiber.Router) {
 func (s *Server) handleHealth(c *fiber.Ctx) error {
 	return resp.OK(c, fiber.Map{
 		"status":  "ok",
-		"service": "sshield-server",
+		"service": "bulwark-server",
 		"version": buildinfo.Version,
 		"time":    time.Now().UTC(),
 	})

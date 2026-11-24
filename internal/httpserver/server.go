@@ -18,18 +18,18 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"go.uber.org/zap"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/approvals"
-	"github.com/yuantang/sshield/internal/auth"
-	"github.com/yuantang/sshield/internal/config"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/httpserver/resp"
-	"github.com/yuantang/sshield/internal/metrics"
-	"github.com/yuantang/sshield/internal/notify"
-	"github.com/yuantang/sshield/internal/rbac"
-	"github.com/yuantang/sshield/internal/security"
-	"github.com/yuantang/sshield/internal/sshpool"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/approvals"
+	"github.com/tyuan511/bulwark/internal/auth"
+	"github.com/tyuan511/bulwark/internal/config"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/httpserver/resp"
+	"github.com/tyuan511/bulwark/internal/metrics"
+	"github.com/tyuan511/bulwark/internal/notify"
+	"github.com/tyuan511/bulwark/internal/rbac"
+	"github.com/tyuan511/bulwark/internal/security"
+	"github.com/tyuan511/bulwark/internal/sshpool"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 // AuditSink persists audit events (storage.DB).
@@ -70,7 +70,7 @@ func New(log *zap.Logger, cfg *config.Config, db *storage.DB, authSvc *auth.Serv
 	}
 
 	s.app = fiber.New(fiber.Config{
-		AppName:      "sshield-server",
+		AppName:      "bulwark-server",
 		ErrorHandler: resp.ErrorHandler(log),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 0, // websockets and long polls must not be cut

@@ -3,8 +3,8 @@ package sshpool
 import (
 	"testing"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 func asset(id, jumpID string) *domain.ServerAsset {

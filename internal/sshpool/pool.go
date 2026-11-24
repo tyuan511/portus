@@ -11,8 +11,8 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 const (
@@ -50,6 +50,22 @@ func (p *Pool) Invalidate(serverID string) {
 
 // TestConnection dials (fresh, uncached) and authenticates to the asset.
 func (p *Pool) TestConnection(asset *domain.ServerAsset, all map[string]*domain.ServerAsset) error {
+	if asset.JumpMode == domain.JumpModeSuSSH {
+		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout+suStepTimeout)
+		defer cancel()
+		out, err := p.execSuCommand(ctx, asset, all, "true", connectTimeout+suStepTimeout)
+		if err != nil {
+			return err
+		}
+		if out.ExitCode != 0 {
+			detail := strings.TrimSpace(out.Stdout)
+			if detail != "" {
+				return apierr.SSHErrorf("su_ssh test exited with code %d: %s", out.ExitCode, detail)
+			}
+			return apierr.SSHErrorf("su_ssh test exited with code %d", out.ExitCode)
+		}
+		return nil
+	}
 	client, _, err := p.dialChain(asset, all)
 	if err != nil {
 		return err
@@ -65,7 +81,8 @@ func (p *Pool) GetOrConnect(asset *domain.ServerAsset, all map[string]*domain.Se
 		client := pc.client
 		p.mu.Unlock()
 		// Cheap liveness probe: closed connections error immediately.
-		if _, err := client.NewSession(); err == nil {
+		if s, err := client.NewSession(); err == nil {
+			_ = s.Close()
 			return client, nil
 		}
 		p.Invalidate(asset.ID)
@@ -85,6 +102,9 @@ func (p *Pool) GetOrConnect(asset *domain.ServerAsset, all map[string]*domain.Se
 
 // ExecuteCommand runs a command remotely and collects output.
 func (p *Pool) ExecuteCommand(ctx context.Context, asset *domain.ServerAsset, all map[string]*domain.ServerAsset, command string, timeout time.Duration) (*domain.CommandOutput, error) {
+	if asset.JumpMode == domain.JumpModeSuSSH {
+		return p.execSuCommand(ctx, asset, all, command, timeout)
+	}
 	if timeout <= 0 {
 		timeout = execTimeout
 	}

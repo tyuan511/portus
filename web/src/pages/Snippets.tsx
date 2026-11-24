@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Check, Copy, Pencil, Plus, Search, Terminal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { ConfirmDialog } from "@/components/sshield/ConfirmDialog";
+import { ConfirmDialog } from "@/components/bulwark/ConfirmDialog";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";

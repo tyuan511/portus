@@ -26,7 +26,7 @@ must not expose every service at once.**
   cookies, Secure flag when TLS, idle + absolute expiry, rotation at login.
 - Password change, admin deactivation, and role changes **revoke all live sessions** of that user.
 - Users can inspect and kill their own sessions; admins can force sign-out anyone.
-- MCP access uses **separate personal access tokens** (`sk-sshield-…`, SHA-256 at rest, shown
+- MCP access uses **separate personal access tokens** (`sk-bulwark-…`, SHA-256 at rest, shown
   once, revocable, expiring, `last_used` tracked). Web cookies are never accepted on `/mcp`;
   tokens are never accepted on the web API. Blast radius of a leaked browser session and a
   leaked agent token are therefore disjoint.

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/storage/db"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/storage/db"
 )
 
 // GenerateID produces a short prefixed identifier (e.g. "srv-a1b2c3d4").

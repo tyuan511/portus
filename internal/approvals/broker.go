@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 // Event is a websocket-pushed approval event.

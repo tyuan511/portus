@@ -1,4 +1,5 @@
 export type AuthKind = "agent_or_default_key" | "identity_file" | "keyring_password";
+export type JumpMode = "direct_tcpip" | "su_ssh";
 
 export interface ServerAsset {
   id: string;
@@ -10,6 +11,9 @@ export interface ServerAsset {
   identity_file?: string | null;
   credential_id?: string | null;
   jump_host_id?: string | null;
+  jump_mode?: JumpMode | null;
+  jump_su_username?: string | null;
+  jump_su_credential_id?: string | null;
   group_name?: string | null;
   tags: string[];
   description?: string | null;
@@ -251,14 +255,22 @@ export interface UserGroup {
   created_at?: string;
 }
 
+export interface UserGroupMembership {
+  group_id: string;
+  user_id: string;
+}
+
 export interface HostGrant {
   id: string;
   user_group_id: string;
   user_group?: UserGroup;
-  group_name: string;
+  server_id: string;
+  server_name?: string;
   can_connect: boolean;
   can_execute: boolean;
   can_transfer: boolean;
+  terminal_no_approval: boolean;
+  mcp_no_approval: boolean;
   created_by?: string;
   created_at?: string;
 }

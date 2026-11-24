@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 // TerminalInput is a message from the websocket client to the PTY.
@@ -61,6 +62,9 @@ func (t *TerminalSession) Close() {
 // bridged session. The context governs connection establishment only; use
 // Close/TerminalInput.Close to end the session.
 func (p *Pool) OpenTerminal(ctx context.Context, asset *domain.ServerAsset, all map[string]*domain.ServerAsset, cols, rows uint32) (*TerminalSession, error) {
+	if asset.JumpMode == domain.JumpModeSuSSH {
+		return p.openSuTerminal(ctx, asset, all, cols, rows)
+	}
 	client, err := p.GetOrConnect(asset, all)
 	if err != nil {
 		return nil, err
@@ -103,6 +107,10 @@ func (p *Pool) OpenTerminal(ctx context.Context, asset *domain.ServerAsset, all 
 		return nil, apierr.Wrap(apierr.CodeTerminalFailure, 502, "start shell", err)
 	}
 
+	return bridgeTerminalSession(ctx, session, stdin, stdout), nil
+}
+
+func bridgeTerminalSession(ctx context.Context, session *gossh.Session, stdin io.WriteCloser, stdout io.Reader) *TerminalSession {
 	ts := &TerminalSession{
 		inputCh:  make(chan TerminalInput, 64),
 		outputCh: make(chan TerminalOutput, 256),
@@ -191,7 +199,7 @@ func (p *Pool) OpenTerminal(ctx context.Context, asset *domain.ServerAsset, all 
 		}
 	}()
 
-	return ts, nil
+	return ts
 }
 
 // MarshalInput serializes a JSON terminal control frame into TerminalInput

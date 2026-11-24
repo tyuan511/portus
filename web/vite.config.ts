@@ -3,8 +3,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
-// Dev backend override: SSHIELD_DEV_BACKEND=http://127.0.0.1:8788 pnpm dev
-const backend = process.env.SSHIELD_DEV_BACKEND ?? "http://127.0.0.1:8787";
+// Dev backend override: BULWARK_DEV_BACKEND=http://127.0.0.1:8788 pnpm dev
+const backend = process.env.BULWARK_DEV_BACKEND ?? "http://127.0.0.1:8787";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -12,6 +12,7 @@ export default defineConfig({
     alias: { "@": path.resolve(__dirname, "./src") },
   },
   server: {
+    host: "0.0.0.0",
     port: 5173,
     proxy: {
       // The backend accepts same-origin browser requests only (allowed_origins

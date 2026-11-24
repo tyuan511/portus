@@ -95,26 +95,30 @@ type UserGroupMember struct {
 	User    *User  `json:"user,omitempty"`
 }
 
-// HostGrant authorizes a user group against a machine group (the group_name
-// of servers). Access is provisioned at machine-group granularity only.
+// HostGrant authorizes a user group against a specific server asset.
 type HostGrant struct {
-	ID          string     `json:"id"`
-	UserGroupID string     `json:"user_group_id"`
-	UserGroup   *UserGroup `json:"user_group,omitempty"`
-	GroupName   string     `json:"group_name"`
-	CanConnect  bool       `json:"can_connect"`
-	CanExecute  bool       `json:"can_execute"`
-	CanTransfer bool       `json:"can_transfer"`
-	CreatedBy   string     `json:"created_by,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID                 string     `json:"id"`
+	UserGroupID        string     `json:"user_group_id"`
+	UserGroup          *UserGroup `json:"user_group,omitempty"`
+	ServerID           string     `json:"server_id"`
+	ServerName         string     `json:"server_name,omitempty"`
+	CanConnect         bool       `json:"can_connect"`
+	CanExecute         bool       `json:"can_execute"`
+	CanTransfer        bool       `json:"can_transfer"`
+	TerminalNoApproval bool       `json:"terminal_no_approval"`
+	MCPNoApproval      bool       `json:"mcp_no_approval"`
+	CreatedBy          string     `json:"created_by,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 // GrantDecision is the effective access level of a user on a specific host.
 type GrantDecision struct {
-	Allowed     bool `json:"allowed"`
-	CanConnect  bool `json:"can_connect"`
-	CanExecute  bool `json:"can_execute"`
-	CanTransfer bool `json:"can_transfer"`
+	Allowed            bool `json:"allowed"`
+	CanConnect         bool `json:"can_connect"`
+	CanExecute         bool `json:"can_execute"`
+	CanTransfer        bool `json:"can_transfer"`
+	TerminalNoApproval bool `json:"terminal_no_approval"`
+	MCPNoApproval      bool `json:"mcp_no_approval"`
 }
 
 // ApiToken is a personal access token used by MCP clients (per-user).

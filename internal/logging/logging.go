@@ -21,11 +21,11 @@ type FileConfig struct {
 }
 
 // New builds the process logger. mode: "dev" (colored console) or
-// "prod" (JSON to stdout). Level overrides via SSHIELD_LOG (debug/info/warn/error).
+// "prod" (JSON to stdout). Level overrides via BULWARK_LOG (debug/info/warn/error).
 // When fc.Path is set, records are additionally mirrored to the rotating file.
 func New(env string, fc FileConfig) *zap.Logger {
 	lvl := zapcore.InfoLevel
-	switch strings.ToLower(os.Getenv("SSHIELD_LOG")) {
+	switch strings.ToLower(os.Getenv("BULWARK_LOG")) {
 	case "debug":
 		lvl = zapcore.DebugLevel
 	case "info":

@@ -7,7 +7,7 @@ import (
 
 	sshcfg "github.com/kevinburke/ssh_config"
 
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 // importSSHConfigText parses an OpenSSH config file body into server assets.

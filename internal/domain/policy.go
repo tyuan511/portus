@@ -1,4 +1,4 @@
-// Package domain holds the shared domain models for SSHield enterprise edition.
+// Package domain holds the shared domain models for Bulwark enterprise edition.
 // JSON field names use snake_case to keep the HTTP API contract stable with the
 // web frontend and MCP clients.
 package domain
@@ -109,10 +109,10 @@ func DefaultL2ProviderConfig() L2ProviderConfig {
 		ID:                "default-l2",
 		Name:              "Default L2 Reviewer",
 		Protocol:          L2SystemOneFast,
-		BaseURL:           "http://127.0.0.1:8080/v1/decide",
-		Model:             "systemone-guard-v1",
+		BaseURL:           "https://fastvibe.dev/v1/systemone",
+		Model:             "jev-latest",
 		TimeoutMs:         5000,
-		RiskThresholdAsk:  40,
+		RiskThresholdAsk:  30,
 		RiskThresholdDeny: 85,
 		Enabled:           false,
 	}

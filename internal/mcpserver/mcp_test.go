@@ -15,18 +15,18 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/yuantang/sshield/internal/approvals"
-	"github.com/yuantang/sshield/internal/auth"
-	"github.com/yuantang/sshield/internal/config"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/httpserver"
-	"github.com/yuantang/sshield/internal/logging"
-	"github.com/yuantang/sshield/internal/mcpserver"
-	"github.com/yuantang/sshield/internal/rbac"
-	"github.com/yuantang/sshield/internal/security"
-	"github.com/yuantang/sshield/internal/serverkey"
-	"github.com/yuantang/sshield/internal/sshpool"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/approvals"
+	"github.com/tyuan511/bulwark/internal/auth"
+	"github.com/tyuan511/bulwark/internal/config"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/httpserver"
+	"github.com/tyuan511/bulwark/internal/logging"
+	"github.com/tyuan511/bulwark/internal/mcpserver"
+	"github.com/tyuan511/bulwark/internal/rbac"
+	"github.com/tyuan511/bulwark/internal/security"
+	"github.com/tyuan511/bulwark/internal/serverkey"
+	"github.com/tyuan511/bulwark/internal/sshpool"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 type mcpFixture struct {
@@ -40,7 +40,7 @@ func testPostgresURL(t *testing.T) string {
 	t.Helper()
 	base := os.Getenv("TEST_POSTGRES_URL")
 	if base == "" {
-		base = "postgres://sshield:secret@127.0.0.1:54329/sshield_test?sslmode=disable"
+		base = "postgres://bulwark:secret@127.0.0.1:54329/bulwark_test?sslmode=disable"
 	}
 	var b [6]byte
 	_, _ = rand.Read(b[:])
@@ -90,7 +90,7 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 	if err := db.SetEncryptionKey(serverKey); err != nil {
 		t.Fatal(err)
 	}
-	totpMgr := auth.NewTOTPManagerWithKey(serverKey, "SSHield")
+	totpMgr := auth.NewTOTPManagerWithKey(serverKey, "Bulwark")
 	guard := auth.NewLoginGuard(db, auth.GuardConfig{LoginMaxAttempts: 5, LockoutMinutes: 15,
 		IPMaxAttempts: 1000, IPWindowMinutes: 60})
 	authSvc := auth.NewService(db, totpMgr, guard, time.Hour, 24*time.Hour, false)
@@ -165,7 +165,7 @@ func TestMCPRequiresBearerToken(t *testing.T) {
 
 func TestMCPRejectsInvalidToken(t *testing.T) {
 	f := newMCPFixture(t)
-	status, _, _ := f.callMCP("sk-sshield-not-a-real-token", "initialize", map[string]any{}, "")
+	status, _, _ := f.callMCP("sk-bulwark-not-a-real-token", "initialize", map[string]any{}, "")
 	if status != 401 {
 		t.Fatalf("invalid token must 401, got %d", status)
 	}
@@ -280,7 +280,7 @@ func TestMCPExecuteDryRunAllowsAndAudits(t *testing.T) {
 		auth.HashPassword("bob-pass-123"), "", nil)
 	_ = f.db.AddGroupMember("grp-ops", "usr-bob")
 	if err := f.db.CreateHostGrant(&domain.HostGrant{ID: "g1", UserGroupID: "grp-ops",
-		GroupName: "prod", CanConnect: true, CanExecute: true}); err != nil {
+		ServerID: "srv-1", CanConnect: true, CanExecute: true}); err != nil {
 		t.Fatal(err)
 	}
 	token := f.issueToken("usr-bob")

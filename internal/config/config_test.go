@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoadDefaultsWithoutFile(t *testing.T) {
-	t.Setenv("SSHIELD_CONFIG", "")
+	t.Setenv("BULWARK_CONFIG", "")
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -24,11 +24,14 @@ func TestLoadDefaultsWithoutFile(t *testing.T) {
 	if cfg.Storage.DBURL == "" {
 		t.Fatal("default postgres DSN must be set")
 	}
+	if !cfg.Terminal.Enforce {
+		t.Fatal("terminal.enforce must default to true so unconfigured commands go through approval")
+	}
 }
 
 func TestLoadFromYAMLAndEnvOverride(t *testing.T) {
 	dir := t.TempDir()
-	cfgFile := filepath.Join(dir, "sshield-server.yaml")
+	cfgFile := filepath.Join(dir, "bulwark-server.yaml")
 	content := `
 server:
   bind: "0.0.0.0:9000"
@@ -38,7 +41,7 @@ bootstrap:
 
 storage:
   driver: postgres
-  db_url: "postgres://u:p@db.local:5432/sshield"
+  db_url: "postgres://u:p@db.local:5432/bulwark"
 
 security:
   login_max_attempts: 3
@@ -47,9 +50,9 @@ security:
 	if err := os.WriteFile(cfgFile, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SSHIELD_CONFIG", cfgFile)
-	t.Setenv("SSHIELD_STORAGE_DATA_DIR", dir)
-	t.Setenv("SSHIELD_SECURITY_LOCKOUT_MINUTES", "42")
+	t.Setenv("BULWARK_CONFIG", cfgFile)
+	t.Setenv("BULWARK_STORAGE_DATA_DIR", dir)
+	t.Setenv("BULWARK_SECURITY_LOCKOUT_MINUTES", "42")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -67,17 +70,17 @@ security:
 	if cfg.Security.LockoutMinutes != 42 {
 		t.Fatalf("env override failed: %d", cfg.Security.LockoutMinutes)
 	}
-	if cfg.PostgresDSN() != "postgres://u:p@db.local:5432/sshield" {
+	if cfg.PostgresDSN() != "postgres://u:p@db.local:5432/bulwark" {
 		t.Fatalf("dsn: %s", cfg.PostgresDSN())
 	}
 }
 
 func TestDiscoverTOMLFallback(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("SSHIELD_STORAGE_DATA_DIR", dir)
-	t.Setenv("SSHIELD_CONFIG", "")
+	t.Setenv("BULWARK_STORAGE_DATA_DIR", dir)
+	t.Setenv("BULWARK_CONFIG", "")
 
-	cfgFile := filepath.Join(dir, "sshield-server.toml")
+	cfgFile := filepath.Join(dir, "bulwark-server.toml")
 	content := `
 [server]
 bind = "127.0.0.1:9100"
@@ -95,9 +98,9 @@ bind = "127.0.0.1:9100"
 }
 
 func TestLegacyEnvOverrides(t *testing.T) {
-	t.Setenv("SSHIELD_CONFIG", "")
-	t.Setenv("SSHIELD_ADDR", "127.0.0.1:9999")
-	t.Setenv("SSHIELD_VAULT_PATH", "/tmp/legacy-vault.enc")
+	t.Setenv("BULWARK_CONFIG", "")
+	t.Setenv("BULWARK_ADDR", "127.0.0.1:9999")
+	t.Setenv("BULWARK_VAULT_PATH", "/tmp/legacy-vault.enc")
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("load: %v", err)

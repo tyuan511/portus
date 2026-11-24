@@ -2,10 +2,14 @@ package security
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 func intPtr(i int) *int       { return &i }
@@ -84,5 +88,111 @@ func TestParseModelJSONExtractsEmbeddedJSON(t *testing.T) {
 	}
 	if v.Decision == nil || *v.Decision != "deny" || v.RiskScore == nil || *v.RiskScore != 95 {
 		t.Fatalf("parsed verdict wrong: %+v", v)
+	}
+}
+
+func TestSystemOneEndpointResolution(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"https://fastvibe.dev", "https://fastvibe.dev/v1/systemone"},
+		{"https://fastvibe.dev/", "https://fastvibe.dev/v1/systemone"},
+		{"https://fastvibe.dev/v1", "https://fastvibe.dev/v1/systemone"},
+		{"https://fastvibe.dev/v1/systemone", "https://fastvibe.dev/v1/systemone"},
+	}
+	for _, tc := range cases {
+		if got := systemOneEndpoint(tc.in); got != tc.want {
+			t.Fatalf("systemOneEndpoint(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSystemOneAllowAndEscalateByViolationMass(t *testing.T) {
+	var lastReq map[string]any
+	var nextResp map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/systemone" {
+			http.Error(w, "wrong path: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&lastReq)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(nextResp)
+	}))
+	defer srv.Close()
+
+	cfg := baseL2Config()
+	cfg.Protocol = domain.L2SystemOneFast
+	cfg.BaseURL = srv.URL
+	cfg.Model = "jev-latest"
+	cfg.RiskThresholdAsk = 30 // 30% violation mass threshold
+	r := testReviewer(cfg)
+
+	req := &domain.SemanticReviewRequest{
+		ServerName: "prod-1",
+		ServerTags: []string{"prod"},
+		Command:    "ls -la",
+		Intent:     "inspect directory",
+		L1Verdict:  domain.CommandVerdict{Decision: domain.DecisionAllow, ParseOK: true},
+	}
+
+	// 1. Safe command: routine_work 96%, negative mass 4% < 30% -> allow.
+	nextResp = map[string]any{
+		"model": "jev-1.14.0",
+		"answers": map[string]any{
+			"outcome": map[string]any{
+				"type":       "choice",
+				"choice":     "routine_work",
+				"confidence": 0.96,
+				"probabilities": map[string]any{
+					"routine_work":             0.96,
+					"irreversible_destruction": 0.02,
+					"secret_exposure":          0.02,
+				},
+			},
+		},
+	}
+	v, err := r.Review(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Decision != domain.DecisionAllow || v.FallbackTriggered || v.RiskScore != 0 {
+		t.Fatalf("expected allow without risk_score, got %+v", v)
+	}
+	if !strings.Contains(v.Reasoning, "routine_work") {
+		t.Fatalf("expected reasoning to name routine_work, got %q", v.Reasoning)
+	}
+	if _, ok := lastReq["questions"]; !ok {
+		t.Fatalf("request must contain SystemOne questions, got %+v", lastReq)
+	}
+
+	// 2. Split violation mass: routine_work wins argmax (65%), but two negative
+	// categories sum to 35% >= 30% -> must escalate to ask_approval.
+	nextResp = map[string]any{
+		"model": "jev-1.14.0",
+		"answers": map[string]any{
+			"outcome": map[string]any{
+				"type":       "choice",
+				"choice":     "routine_work",
+				"confidence": 0.65,
+				"probabilities": map[string]any{
+					"routine_work":             0.65,
+					"irreversible_destruction": 0.20,
+					"security_weakened":        0.15,
+				},
+			},
+		},
+	}
+	v2, err := r.Review(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v2.Decision != domain.DecisionAskApproval || v2.FallbackTriggered {
+		t.Fatalf("expected escalate on 35%% violation mass, got %+v", v2)
+	}
+	if !strings.Contains(v2.Reasoning, "35%") || !strings.Contains(v2.Reasoning, "irreversible_destruction") {
+		t.Fatalf("unexpected reasoning: %q", v2.Reasoning)
 	}
 }

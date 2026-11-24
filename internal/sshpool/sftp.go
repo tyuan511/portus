@@ -3,14 +3,17 @@ package sshpool
 import (
 	"github.com/pkg/sftp"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 // OpenSFTP returns an SFTP client multiplexed over the pooled SSH connection
 // for the asset. Only the SFTP client itself should be closed; the underlying
 // connection stays in the pool for other operations.
 func (p *Pool) OpenSFTP(asset *domain.ServerAsset, all map[string]*domain.ServerAsset) (*sftp.Client, error) {
+	if asset.JumpMode == domain.JumpModeSuSSH {
+		return p.openSuSFTP(asset, all)
+	}
 	client, err := p.GetOrConnect(asset, all)
 	if err != nil {
 		return nil, err

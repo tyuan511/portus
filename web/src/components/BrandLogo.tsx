@@ -7,7 +7,7 @@ export function BrandLogo({ size = 24, className }: { size?: number; className?:
   return (
     <img
       src={logo}
-      alt="SSHield"
+      alt="Bulwark"
       width={size}
       height={size}
       className={`shrink-0 rounded-[22%] ${className ?? ""}`}

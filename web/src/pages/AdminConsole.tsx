@@ -7,13 +7,11 @@ import { useAuth } from "@/lib/auth";
 import { useI18n, type MessageKey } from "@/lib/i18n";
 import type { Permission } from "@/types";
 import AdminUsers from "@/pages/admin/Users";
-import AdminUserGroups from "@/pages/admin/UserGroups";
 import AdminAccess from "@/pages/admin/Access";
 import AdminSessions from "@/pages/admin/Sessions";
 
 const TABS: { id: string; labelKey: MessageKey; permission: Permission; element: React.ReactNode }[] = [
   { id: "users", labelKey: "admin.users", permission: "users.manage", element: <AdminUsers /> },
-  { id: "groups", labelKey: "admin.userGroups", permission: "access.manage", element: <AdminUserGroups /> },
   { id: "access", labelKey: "admin.access", permission: "access.manage", element: <AdminAccess /> },
   { id: "sessions", labelKey: "admin.sessions", permission: "users.manage", element: <AdminSessions /> },
 ];

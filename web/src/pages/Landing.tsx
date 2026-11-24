@@ -12,11 +12,11 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/BrandLogo";
-import { GridCrosshair } from "@/components/sshield/GridCrosshair";
-import { HeroShowcase } from "@/components/sshield/HeroShowcase";
-import { LangToggle } from "@/components/sshield/LangToggle";
-import { StatusPill } from "@/components/sshield/StatusDot";
-import { ThemeToggle } from "@/components/sshield/ThemeToggle";
+import { GridCrosshair } from "@/components/bulwark/GridCrosshair";
+import { HeroShowcase } from "@/components/bulwark/HeroShowcase";
+import { LangToggle } from "@/components/bulwark/LangToggle";
+import { StatusPill } from "@/components/bulwark/StatusDot";
+import { ThemeToggle } from "@/components/bulwark/ThemeToggle";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
 
@@ -43,10 +43,7 @@ export default function Landing() {
           <div className="flex items-center gap-6">
             <Link to="/" className="flex items-center gap-2.5">
               <BrandLogo size={24} />
-              <span className="text-sm font-semibold tracking-tight">SSHield</span>
-              <span className="hidden rounded-full border border-border bg-secondary px-2 py-0.5 font-mono text-[10px] font-medium text-muted-foreground sm:inline-block">
-                ENT
-              </span>
+              <span className="text-sm font-semibold tracking-tight">Bulwark</span>
             </Link>
             <nav className="hidden items-center gap-5 text-sm text-muted-foreground md:flex">
               <a href="#pipeline" className="transition-colors hover:text-foreground">
@@ -359,7 +356,7 @@ export default function Landing() {
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 text-xs text-muted-foreground sm:flex-row sm:px-6">
           <div className="flex items-center gap-2.5">
             <BrandLogo size={20} />
-            <span className="font-medium text-foreground">SSHield Enterprise</span>
+            <span className="font-medium text-foreground">Bulwark Enterprise</span>
             <span className="text-border">·</span>
             <span>RBAC + AST + MCP</span>
           </div>

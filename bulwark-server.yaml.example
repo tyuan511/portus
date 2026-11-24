@@ -1,6 +1,6 @@
-# SSHield Enterprise server configuration (YAML).
-# Copy to <data_dir>/sshield-server.yaml or pass -config <path> (or SSHIELD_CONFIG).
-# A legacy sshield-server.toml is still discovered as a fallback.
+# Bulwark Enterprise server configuration (YAML).
+# Copy to <data_dir>/bulwark-server.yaml or pass -config <path> (or BULWARK_CONFIG).
+# A legacy bulwark-server.toml is still discovered as a fallback.
 # Every key is optional; values below are the defaults.
 
 server:
@@ -13,9 +13,9 @@ server:
 
 storage:
   # PostgreSQL connection string (sqlc-generated data access layer).
-  db_url: "postgres://sshield:sshield@127.0.0.1:5432/sshield?sslmode=disable"
+  db_url: "postgres://bulwark:bulwark@127.0.0.1:5432/bulwark?sslmode=disable"
   # Local state that is not database data: server key, bootstrap hint.
-  data_dir: "~/.local/share/sshield"
+  data_dir: "~/.local/share/bulwark"
   # Optional JSONL mirror of the audit chain (extra insurance alongside the DB).
   audit_jsonl: ""
 
@@ -38,7 +38,7 @@ security:
   token_ttl_hours: 0          # default API token lifetime (0 = no expiry)
 
 terminal:
-  enforce: false            # run every submitted interactive line through L1/L2/approval; denied lines never reach the shell
+  enforce: true             # run every submitted interactive line through L1/L2/approval; denied lines never reach the shell
   record: true              # record the full PTY output for replay from the Audit page
   record_max_bytes: 10485760 # cap per session recording (10 MiB); beyond it the recording is truncated
 

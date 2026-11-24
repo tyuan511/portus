@@ -1,4 +1,4 @@
-// Package mcpserver implements the SSHield MCP endpoint on the official Go
+// Package mcpserver implements the Bulwark MCP endpoint on the official Go
 // SDK: 14 read/execute tools, per-request identity resolved from the bearer
 // PAT, full RBAC enforcement, and tamper-evident auditing.
 package mcpserver
@@ -14,14 +14,14 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.uber.org/zap"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/approvals"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/notify"
-	"github.com/yuantang/sshield/internal/rbac"
-	"github.com/yuantang/sshield/internal/security"
-	"github.com/yuantang/sshield/internal/sshpool"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/approvals"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/notify"
+	"github.com/tyuan511/bulwark/internal/rbac"
+	"github.com/tyuan511/bulwark/internal/security"
+	"github.com/tyuan511/bulwark/internal/sshpool"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 // IdentityResolver validates a bearer PAT into an identity (auth.Service).
@@ -54,7 +54,7 @@ const serverVersion = "1.0.0"
 // Bearer authentication happens in the surrounding middleware; tool handlers
 // re-resolve identity from request headers (RequestExtra.Header).
 func NewHandler(d Deps) http.Handler {
-	srv := mcp.NewServer(&mcp.Implementation{Name: "sshield", Version: serverVersion}, nil)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "bulwark", Version: serverVersion}, nil)
 
 	type registration struct {
 		name        string

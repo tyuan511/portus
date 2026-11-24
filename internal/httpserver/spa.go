@@ -7,7 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/yuantang/sshield/internal/webui"
+	"github.com/tyuan511/bulwark/internal/webui"
 )
 
 // mountSPA serves the embedded single-page app for every non-API path,

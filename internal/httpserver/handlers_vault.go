@@ -2,14 +2,16 @@ package httpserver
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/httpserver/resp"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/httpserver/resp"
+	"github.com/tyuan511/bulwark/internal/security"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 // --- security (L1 rules / L2 config / evaluate) ---
@@ -21,6 +23,7 @@ func (s *Server) registerSecurityRoutes(g fiber.Router) {
 	g.Delete("/rules/:id", requirePerm(domain.PermRulesManage), s.handleDeleteRule)
 	g.Get("/l2-config", requirePerm(domain.PermRulesRead), s.handleGetL2)
 	g.Put("/l2-config", requirePerm(domain.PermRulesManage), s.handlePutL2)
+	g.Post("/l2-config/test", requirePerm(domain.PermRulesManage), s.handleTestL2)
 	g.Post("/security/evaluate", s.handleEvaluate)
 }
 
@@ -69,13 +72,42 @@ func (s *Server) handleGetL2(c *fiber.Ctx) error {
 	return resp.OK(c, cfgL2)
 }
 
+type putL2Request struct {
+	domain.L2ProviderConfig
+	APIKey string `json:"api_key,omitempty"`
+}
+
 func (s *Server) handlePutL2(c *fiber.Ctx) error {
-	var cfgL2 domain.L2ProviderConfig
-	if err := c.BodyParser(&cfgL2); err != nil {
+	var req putL2Request
+	if err := c.BodyParser(&req); err != nil {
 		return apierr.BadRequest("invalid JSON body")
 	}
+	cfgL2 := req.L2ProviderConfig
 	if cfgL2.ID == "" {
 		cfgL2.ID = "default-l2"
+	}
+	existing, _ := s.db.GetL2Config()
+	if apiKey := strings.TrimSpace(req.APIKey); apiKey != "" {
+		actor := identityFrom(c)
+		actorName := ""
+		if actor != nil {
+			actorName = actor.Username
+		}
+		meta, err := s.db.CreateCredential(
+			storage.GenerateID("cred"),
+			storage.CredKindAPIKey,
+			"L2 API Key",
+			"",
+			apiKey,
+			actorName,
+		)
+		if err != nil {
+			return err
+		}
+		cfgL2.APIKeyCredentialID = meta.ID
+	} else if existing != nil && cfgL2.APIKeyCredentialID == "" {
+		// Empty input preserves the previously stored encrypted key.
+		cfgL2.APIKeyCredentialID = existing.APIKeyCredentialID
 	}
 	if err := s.db.UpsertL2Config(&cfgL2); err != nil {
 		return apierr.StorageErr(err)
@@ -83,6 +115,61 @@ func (s *Server) handlePutL2(c *fiber.Ctx) error {
 	s.InvalidateSecurityCaches()
 	s.auditAction(c, "l2.upsert", "update L2 provider config", domain.DecisionAllow, "")
 	return resp.OK(c, &cfgL2)
+}
+
+type inlineSecretResolver struct{ secret string }
+
+func (r inlineSecretResolver) GetSecret(string) (string, error) { return r.secret, nil }
+
+type testL2Request struct {
+	domain.L2ProviderConfig
+	APIKey string `json:"api_key,omitempty"`
+}
+
+func (s *Server) handleTestL2(c *fiber.Ctx) error {
+	var req testL2Request
+	if err := c.BodyParser(&req); err != nil {
+		return apierr.BadRequest("invalid JSON body")
+	}
+	cfg := req.L2ProviderConfig
+	if cfg.BaseURL == "" {
+		return apierr.Unprocessable("base_url is required")
+	}
+	cfg.Enabled = true
+	var resolver security.SecretResolver = s.db
+	if apiKey := strings.TrimSpace(req.APIKey); apiKey != "" {
+		cfg.APIKeyCredentialID = "__inline__"
+		resolver = inlineSecretResolver{secret: apiKey}
+	} else if cfg.APIKeyCredentialID == "" {
+		if existing, err := s.db.GetL2Config(); err == nil && existing != nil {
+			cfg.APIKeyCredentialID = existing.APIKeyCredentialID
+		}
+	}
+	reviewer := security.NewL2Reviewer(resolver, cfg)
+	v, err := reviewer.Review(c.Context(), &domain.SemanticReviewRequest{
+		ServerName: "connectivity-test",
+		ServerTags: []string{"test"},
+		Command:    "echo bulwark-l2-connectivity-test",
+		Intent:     "connectivity test",
+		L1Verdict:  domain.CommandVerdict{Decision: domain.DecisionAllow, ParseOK: true},
+	})
+	if err != nil {
+		return resp.OK(c, fiber.Map{"ok": false, "error": err.Error()})
+	}
+	if v.FallbackTriggered {
+		return resp.OK(c, fiber.Map{
+			"ok":         false,
+			"latency_ms": v.LatencyMs,
+			"error":      v.Reasoning,
+		})
+	}
+	return resp.OK(c, fiber.Map{
+		"ok":         true,
+		"latency_ms": v.LatencyMs,
+		"decision":   v.Decision,
+		"risk_score": v.RiskScore,
+		"reasoning":  v.Reasoning,
+	})
 }
 
 type evaluateRequest struct {

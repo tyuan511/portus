@@ -64,10 +64,10 @@ const SCENARIOS: Scenario[] = [
       { label: "Audit", detail: "sha256:4b12…8e70", tone: "success", active: true },
     ],
     output: [
-      "[sshield] L1 AST -> ask_approval (service mutation)",
-      "[sshield] L2 Semantic -> risk=54/100 (matches intent: reload TLS cert)",
-      "[sshield] Waiting for human approval in live feed...",
-      "[sshield] Approved by @alice (0.9s) -> executing on prod-edge-02",
+      "[bulwark] L1 AST -> ask_approval (service mutation)",
+      "[bulwark] L2 Semantic -> risk=54/100 (matches intent: reload TLS cert)",
+      "[bulwark] Waiting for human approval in live feed...",
+      "[bulwark] Approved by @alice (0.9s) -> executing on prod-edge-02",
       "✔ nginx.service restarted cleanly (exit 0)",
     ],
   },
@@ -86,9 +86,9 @@ const SCENARIOS: Scenario[] = [
       { label: "Audit", detail: "sha256:e77c…09d4", tone: "danger", active: true },
     ],
     output: [
-      "[sshield] L1 AST -> DENY (rule: builtin-deny-destructive-rm)",
-      "[sshield] Command never reached prod-db-01.",
-      "[sshield] Event sealed into tamper-evident SHA-256 audit chain.",
+      "[bulwark] L1 AST -> DENY (rule: builtin-deny-destructive-rm)",
+      "[bulwark] Command never reached prod-db-01.",
+      "[bulwark] Event sealed into tamper-evident SHA-256 audit chain.",
     ],
   },
   {
@@ -100,7 +100,7 @@ const SCENARIOS: Scenario[] = [
     tone: "info",
     latency: "TLS",
     steps: [
-      { label: "Token", detail: "sk-sshield-… (user-scoped)", tone: "info", active: true },
+      { label: "Token", detail: "sk-bulwark-… (user-scoped)", tone: "info", active: true },
       { label: "RBAC", detail: "group × host matrix", tone: "info", active: true },
       { label: "Pipeline", detail: "L1 + L2 enforced", tone: "success", active: true },
       { label: "Audit", detail: "per-token attribution", tone: "success", active: true },
@@ -108,9 +108,9 @@ const SCENARIOS: Scenario[] = [
     output: [
       "{",
       '  "mcpServers": {',
-      '    "sshield": {',
-      '      "url": "https://sshield.example.com/mcp",',
-      '      "headers": { "Authorization": "Bearer sk-sshield-…" }',
+      '    "bulwark": {',
+      '      "url": "https://bulwark.example.com/mcp",',
+      '      "headers": { "Authorization": "Bearer sk-bulwark-…" }',
       "    }",
       "  }",
       "}",
@@ -120,10 +120,10 @@ const SCENARIOS: Scenario[] = [
 
 const MCP_JSON = `{
   "mcpServers": {
-    "sshield": {
-      "url": "https://sshield.example.com/mcp",
+    "bulwark": {
+      "url": "https://bulwark.example.com/mcp",
       "headers": {
-        "Authorization": "Bearer sk-sshield-..."
+        "Authorization": "Bearer sk-bulwark-..."
       }
     }
   }

@@ -12,49 +12,49 @@ import (
 var (
 	// LoginsTotal counts login outcomes by result ("ok"|"failed"|"locked").
 	LoginsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "sshield",
+		Namespace: "bulwark",
 		Name:      "logins_total",
 		Help:      "Login attempts by outcome.",
 	}, []string{"result"})
 
 	// PolicyDenialsTotal counts commands blocked by policy (L1/L2), by channel.
 	PolicyDenialsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "sshield",
+		Namespace: "bulwark",
 		Name:      "policy_denials_total",
 		Help:      "Commands denied by the security pipeline, by channel (mcp/terminal).",
 	}, []string{"channel"})
 
 	// ApprovalsDecisionsTotal counts approval outcomes.
 	ApprovalsDecisionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "sshield",
+		Namespace: "bulwark",
 		Name:      "approval_decisions_total",
 		Help:      "Approval decisions by outcome (approved/denied/timeout).",
 	}, []string{"outcome"})
 
 	// ExecutionsTotal counts command executions by channel and decision.
 	ExecutionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "sshield",
+		Namespace: "bulwark",
 		Name:      "executions_total",
 		Help:      "Command executions by channel and final policy decision.",
 	}, []string{"channel", "decision"})
 
 	// FileOpsTotal counts SFTP operations by kind.
 	FileOpsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "sshield",
+		Namespace: "bulwark",
 		Name:      "file_operations_total",
 		Help:      "SFTP file operations by kind (upload/download/delete/mkdir/rename).",
 	}, []string{"kind"})
 
 	// ActiveTerminals gauges live interactive PTY sessions.
 	ActiveTerminals = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: "sshield",
+		Namespace: "bulwark",
 		Name:      "active_terminals",
 		Help:      "Currently open interactive terminal sessions.",
 	})
 
 	// PendingApprovals gauges approvals awaiting a decision.
 	PendingApprovals = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: "sshield",
+		Namespace: "bulwark",
 		Name:      "pending_approvals",
 		Help:      "Approval requests currently awaiting a decision.",
 	})

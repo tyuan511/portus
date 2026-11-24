@@ -1,4 +1,4 @@
-module github.com/yuantang/sshield
+module github.com/tyuan511/bulwark
 
 go 1.26.6
 

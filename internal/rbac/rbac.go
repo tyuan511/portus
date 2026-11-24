@@ -2,8 +2,8 @@
 package rbac
 
 import (
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 // Store is the storage surface rbac needs (implemented by storage.DB).
@@ -97,6 +97,34 @@ func (s *Service) ListTransferableServers(id *domain.Identity) ([]*domain.Server
 		return s.store.ListEnabledServers()
 	}
 	return s.store.ListServersForUserTransferable(id.UserID)
+}
+
+// CanSkipTerminalApproval reports whether id is explicitly granted
+// terminal_no_approval on asset. Defaults to false (require approval) when not
+// configured or on any lookup error (fail-closed).
+func (s *Service) CanSkipTerminalApproval(id *domain.Identity, asset *domain.ServerAsset) bool {
+	if id == nil || asset == nil || id.IsAdmin {
+		return false
+	}
+	decision, err := s.store.ServerGrantDecision(id.UserID, asset)
+	if err != nil {
+		return false
+	}
+	return decision.CanConnect && decision.TerminalNoApproval
+}
+
+// CanSkipMCPApproval reports whether id is explicitly granted mcp_no_approval
+// on asset. Defaults to false (require approval) when not configured or on any
+// lookup error (fail-closed).
+func (s *Service) CanSkipMCPApproval(id *domain.Identity, asset *domain.ServerAsset) bool {
+	if id == nil || asset == nil || id.IsAdmin {
+		return false
+	}
+	decision, err := s.store.ServerGrantDecision(id.UserID, asset)
+	if err != nil {
+		return false
+	}
+	return decision.CanExecute && decision.MCPNoApproval
 }
 
 func permFor(needExecute bool) domain.Permission {

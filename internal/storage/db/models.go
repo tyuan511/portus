@@ -78,14 +78,16 @@ type Credential struct {
 }
 
 type HostGrant struct {
-	ID          string
-	UserGroupID string
-	GroupName   string
-	CanConnect  int32
-	CanExecute  int32
-	CreatedBy   string
-	CreatedAt   string
-	CanTransfer int32
+	ID                 string
+	UserGroupID        string
+	ServerID           string
+	CanConnect         int32
+	CanExecute         int32
+	CanTransfer        int32
+	CreatedBy          string
+	CreatedAt          string
+	TerminalNoApproval int32
+	McpNoApproval      int32
 }
 
 type L2Config struct {
@@ -123,20 +125,23 @@ type SecurityRule struct {
 }
 
 type Server struct {
-	ID           string
-	Name         string
-	Host         string
-	Port         int32
-	Username     string
-	AuthKind     string
-	IdentityFile string
-	CredentialID string
-	JumpHostID   string
-	GroupName    string
-	TagsJson     string
-	Description  string
-	Enabled      int32
-	UpdatedAt    string
+	ID                 string
+	Name               string
+	Host               string
+	Port               int32
+	Username           string
+	AuthKind           string
+	IdentityFile       string
+	CredentialID       string
+	JumpHostID         string
+	GroupName          string
+	TagsJson           string
+	Description        string
+	Enabled            int32
+	UpdatedAt          string
+	JumpMode           string
+	JumpSuUsername     string
+	JumpSuCredentialID string
 }
 
 type Session struct {

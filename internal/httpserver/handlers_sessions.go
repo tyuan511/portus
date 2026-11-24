@@ -5,9 +5,9 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/httpserver/resp"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/httpserver/resp"
 )
 
 // registerMCPSessionRoutes mounts the MCP session replay API. Sessions are

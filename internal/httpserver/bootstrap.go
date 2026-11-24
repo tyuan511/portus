@@ -5,10 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/yuantang/sshield/internal/config"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/security"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/config"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/security"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 // Bootstrap seeds the initial admin account (from config or a generated
@@ -44,8 +44,9 @@ func Bootstrap(db *storage.DB, cfg *config.Config) (generatedPassword string, er
 	var forcedPassword string
 	if password == "" {
 		forcedPassword = randomPassword()
-		password = generatedPassword
+		password = forcedPassword
 		// Persist once with 0600 so the operator can retrieve it safely.
+		_ = os.MkdirAll(cfg.Storage.DataDir, 0o700)
 		hintPath := filepath.Join(cfg.Storage.DataDir, "bootstrap-admin-password.txt")
 		body := fmt.Sprintf("Initial admin password for %q (delete this file after first login):\n\n%s\n",
 			username, password)

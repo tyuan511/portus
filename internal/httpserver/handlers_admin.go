@@ -5,13 +5,13 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/auth"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/httpserver/resp"
-	"github.com/yuantang/sshield/internal/metrics"
-	"github.com/yuantang/sshield/internal/notify"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/auth"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/httpserver/resp"
+	"github.com/tyuan511/bulwark/internal/metrics"
+	"github.com/tyuan511/bulwark/internal/notify"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 func (s *Server) registerAdminRoutes(g fiber.Router) {
@@ -20,6 +20,7 @@ func (s *Server) registerAdminRoutes(g fiber.Router) {
 	g.Post("/admin/users", requirePerm(domain.PermUsersManage), s.handleCreateUser)
 	g.Patch("/admin/users/:id", requirePerm(domain.PermUsersManage), s.handlePatchUser)
 	g.Delete("/admin/users/:id", requirePerm(domain.PermUsersManage), s.handleDeleteUser)
+	g.Put("/admin/users/:id/groups", requirePerm(domain.PermAccessManage), s.handleSetUserGroups)
 	g.Post("/admin/users/:id/reset-password", requirePerm(domain.PermUsersManage), s.handleResetPassword)
 	g.Post("/admin/users/:id/reset-totp", requirePerm(domain.PermUsersManage), s.handleResetTOTP)
 
@@ -31,6 +32,7 @@ func (s *Server) registerAdminRoutes(g fiber.Router) {
 	g.Get("/admin/groups/:id/members", requirePerm(domain.PermAccessManage), s.handleListGroupMembers)
 	g.Post("/admin/groups/:id/members", requirePerm(domain.PermAccessManage), s.handleAddGroupMember)
 	g.Delete("/admin/groups/:id/members/:userID", requirePerm(domain.PermAccessManage), s.handleRemoveGroupMember)
+	g.Get("/admin/group-memberships", requirePerm(domain.PermAccessManage), s.handleListAllGroupMemberships)
 
 	// Host access grants.
 	g.Get("/admin/access-grants", requirePerm(domain.PermAccessManage), s.handleListGrants)
@@ -57,10 +59,11 @@ func (s *Server) handleListUsers(c *fiber.Ctx) error {
 }
 
 type createUserRequest struct {
-	Username    string `json:"username"`
-	DisplayName string `json:"display_name"`
-	Password    string `json:"password"`
-	Role        string `json:"role"`
+	Username    string   `json:"username"`
+	DisplayName string   `json:"display_name"`
+	Password    string   `json:"password"`
+	Role        string   `json:"role"`
+	GroupIDs    []string `json:"group_ids"`
 }
 
 func (s *Server) handleCreateUser(c *fiber.Ctx) error {
@@ -86,6 +89,11 @@ func (s *Server) handleCreateUser(c *fiber.Ctx) error {
 	}
 	if err := s.db.CreateUser(u, auth.HashPassword(req.Password), "", nil); err != nil {
 		return apierr.Conflict(err.Error())
+	}
+	if len(req.GroupIDs) > 0 && req.Role != domain.BuiltinRoleAdmin {
+		if err := s.db.SetUserGroups(u.ID, req.GroupIDs); err != nil {
+			return apierr.StorageErr(err)
+		}
 	}
 	created, err := s.db.GetUser(u.ID)
 	if err != nil {
@@ -267,6 +275,34 @@ func (s *Server) handleRemoveGroupMember(c *fiber.Ctx) error {
 	return resp.OK(c, fiber.Map{"removed": ok})
 }
 
+func (s *Server) handleListAllGroupMemberships(c *fiber.Ctx) error {
+	memberships, err := s.db.ListAllGroupMemberships()
+	if err != nil {
+		return apierr.StorageErr(err)
+	}
+	return resp.OK(c, memberships)
+}
+
+type setUserGroupsRequest struct {
+	GroupIDs []string `json:"group_ids"`
+}
+
+func (s *Server) handleSetUserGroups(c *fiber.Ctx) error {
+	var req setUserGroupsRequest
+	if err := c.BodyParser(&req); err != nil {
+		return apierr.BadRequest("invalid JSON body")
+	}
+	userID := c.Params("id")
+	if _, err := s.db.GetUser(userID); err != nil {
+		return apierr.NotFoundf("user not found")
+	}
+	if err := s.db.SetUserGroups(userID, req.GroupIDs); err != nil {
+		return apierr.StorageErr(err)
+	}
+	s.auditAction(c, "user.groups", "update user groups", domain.DecisionAllow, "")
+	return resp.OK(c, fiber.Map{"updated": true})
+}
+
 // --- host grants ---
 
 func (s *Server) handleListGrants(c *fiber.Ctx) error {
@@ -278,11 +314,13 @@ func (s *Server) handleListGrants(c *fiber.Ctx) error {
 }
 
 type grantRequest struct {
-	UserGroupID string `json:"user_group_id"`
-	GroupName   string `json:"group_name"`
-	CanConnect  bool   `json:"can_connect"`
-	CanExecute  bool   `json:"can_execute"`
-	CanTransfer bool   `json:"can_transfer"`
+	UserGroupID        string `json:"user_group_id"`
+	ServerID           string `json:"server_id"`
+	CanConnect         bool   `json:"can_connect"`
+	CanExecute         bool   `json:"can_execute"`
+	CanTransfer        bool   `json:"can_transfer"`
+	TerminalNoApproval bool   `json:"terminal_no_approval"`
+	MCPNoApproval      bool   `json:"mcp_no_approval"`
 }
 
 func (s *Server) handleCreateGrant(c *fiber.Ctx) error {
@@ -290,47 +328,49 @@ func (s *Server) handleCreateGrant(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apierr.BadRequest("invalid JSON body")
 	}
-	if req.UserGroupID == "" || req.GroupName == "" {
-		return apierr.Unprocessable("user_group_id and group_name are required")
+	if req.UserGroupID == "" || req.ServerID == "" {
+		return apierr.Unprocessable("user_group_id and server_id are required")
 	}
 	if _, err := s.db.GetUserGroup(req.UserGroupID); err != nil {
 		return apierr.NotFoundf("user group not found")
 	}
-	// The machine group must exist so typos don't silently create dead grants.
-	groups, err := s.db.DistinctServerGroups()
+	srv, err := s.db.GetServer(req.ServerID)
 	if err != nil {
-		return apierr.StorageErr(err)
+		return apierr.NotFoundf("server not found")
 	}
-	valid := false
-	for _, g := range groups {
-		if g == req.GroupName {
-			valid = true
-			break
+	if !req.CanConnect && !req.CanExecute && !req.CanTransfer {
+		_, err := s.db.DeleteHostGrantByPair(req.UserGroupID, req.ServerID)
+		if err != nil {
+			return apierr.StorageErr(err)
 		}
-	}
-	if !valid {
-		return apierr.Unprocessable("group_name does not match any existing machine group")
+		s.auditAction(c, "grant.delete", "revoke host grant on "+srv.Name, domain.DecisionAllow, "")
+		return resp.OK(c, fiber.Map{"deleted": true})
 	}
 	grant := &domain.HostGrant{
-		ID:          storage.GenerateID("grant"),
-		UserGroupID: req.UserGroupID,
-		GroupName:   req.GroupName,
-		CanConnect:  req.CanConnect,
-		CanExecute:  req.CanExecute,
-		CanTransfer: req.CanTransfer,
-		CreatedBy:   identityFrom(c).Username,
+		ID:                 storage.GenerateID("grant"),
+		UserGroupID:        req.UserGroupID,
+		ServerID:           req.ServerID,
+		ServerName:         srv.Name,
+		CanConnect:         req.CanConnect,
+		CanExecute:         req.CanExecute,
+		CanTransfer:        req.CanTransfer,
+		TerminalNoApproval: req.CanConnect && req.TerminalNoApproval,
+		MCPNoApproval:      req.CanExecute && req.MCPNoApproval,
+		CreatedBy:          identityFrom(c).Username,
 	}
 	if err := s.db.CreateHostGrant(grant); err != nil {
 		return apierr.StorageErr(err)
 	}
-	s.auditAction(c, "grant.create", "create host grant", domain.DecisionAllow, "")
+	s.auditAction(c, "grant.upsert", "upsert host grant on "+srv.Name, domain.DecisionAllow, "")
 	return resp.Created(c, grant)
 }
 
 type patchGrantRequest struct {
-	CanConnect  *bool `json:"can_connect"`
-	CanExecute  *bool `json:"can_execute"`
-	CanTransfer *bool `json:"can_transfer"`
+	CanConnect         *bool `json:"can_connect"`
+	CanExecute         *bool `json:"can_execute"`
+	CanTransfer        *bool `json:"can_transfer"`
+	TerminalNoApproval *bool `json:"terminal_no_approval"`
+	MCPNoApproval      *bool `json:"mcp_no_approval"`
 }
 
 func (s *Server) handlePatchGrant(c *fiber.Ctx) error {
@@ -338,7 +378,7 @@ func (s *Server) handlePatchGrant(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apierr.BadRequest("invalid JSON body")
 	}
-	if err := s.db.UpdateHostGrant(c.Params("id"), req.CanConnect, req.CanExecute, req.CanTransfer); err != nil {
+	if err := s.db.UpdateHostGrant(c.Params("id"), req.CanConnect, req.CanExecute, req.CanTransfer, req.TerminalNoApproval, req.MCPNoApproval); err != nil {
 		if err == storage.ErrNotFound {
 			return apierr.NotFoundf("grant not found")
 		}

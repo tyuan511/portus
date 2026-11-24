@@ -1,7 +1,7 @@
-// Package config loads the sshield-server configuration through viper:
-// TOML file + SSHIELD_-prefixed environment overrides + typed defaults.
+// Package config loads the bulwark-server configuration through viper:
+// TOML file + BULWARK_-prefixed environment overrides + typed defaults.
 //
-// Discovery order: explicit path > $SSHIELD_CONFIG > <data_dir>/sshield-server.toml.
+// Discovery order: explicit path > $BULWARK_CONFIG > <data_dir>/bulwark-server.toml.
 // A missing file is not an error (pure defaults apply).
 package config
 
@@ -40,7 +40,7 @@ type ServerConfig struct {
 
 type StorageConfig struct {
 	// DBURL is the PostgreSQL connection string (pgx URL), e.g.
-	// "postgres://sshield:secret@127.0.0.1:5432/sshield?sslmode=disable".
+	// "postgres://bulwark:secret@127.0.0.1:5432/bulwark?sslmode=disable".
 	DBURL string `mapstructure:"db_url"`
 	// DataDir is the home for the vault, server key and bootstrap hint.
 	DataDir string `mapstructure:"data_dir"`
@@ -50,9 +50,9 @@ type StorageConfig struct {
 
 type TerminalConfig struct {
 	// Enforce routes every submitted interactive terminal line through the
-	// L1/L2/approval pipeline before it reaches the remote shell. Input is
-	// line-buffered server-side (local echo); remote tab-completion is not
-	// available in this mode. Default: audit-only (record but do not block).
+	// L1/L2/approval pipeline before it reaches the remote shell.
+	// Default: true (commands requiring approval go through approval unless
+	// the host grant enables terminal_no_approval).
 	Enforce bool `mapstructure:"enforce"`
 	// Record captures the full PTY output stream (plus submitted lines) for
 	// replay from the Audit page. Default: on.
@@ -129,7 +129,7 @@ func Defaults(v *viper.Viper) {
 	v.SetDefault("server.tls_cert", "")
 	v.SetDefault("server.tls_key", "")
 
-	v.SetDefault("storage.db_url", "postgres://sshield:sshield@127.0.0.1:5432/sshield?sslmode=disable")
+	v.SetDefault("storage.db_url", "postgres://bulwark:bulwark@127.0.0.1:5432/bulwark?sslmode=disable")
 	v.SetDefault("storage.data_dir", defaultDataDir())
 	v.SetDefault("storage.audit_jsonl", "")
 
@@ -148,7 +148,7 @@ func Defaults(v *viper.Viper) {
 	v.SetDefault("security.mcp_session_ttl_minutes", 30)
 	v.SetDefault("security.token_ttl_hours", 0)
 
-	v.SetDefault("terminal.enforce", false)
+	v.SetDefault("terminal.enforce", true)
 	v.SetDefault("terminal.record", true)
 	v.SetDefault("terminal.record_max_bytes", 10*1024*1024)
 
@@ -176,12 +176,12 @@ func Bare() *Config {
 	return cfg
 }
 
-// Load reads the configuration. path empty = $SSHIELD_CONFIG = <data_dir>/sshield-server.toml.
+// Load reads the configuration. path empty = $BULWARK_CONFIG = <data_dir>/bulwark-server.toml.
 func Load(path string) (*Config, error) {
 	v := viper.New()
 	Defaults(v)
 
-	v.SetEnvPrefix("SSHIELD")
+	v.SetEnvPrefix("BULWARK")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
@@ -192,12 +192,12 @@ func Load(path string) (*Config, error) {
 
 	discover := path
 	if discover == "" {
-		discover = os.Getenv("SSHIELD_CONFIG")
+		discover = os.Getenv("BULWARK_CONFIG")
 	}
 	if discover == "" {
 		// YAML first; fall back to a legacy TOML file when only that exists.
-		yamlPath := filepath.Join(v.GetString("storage.data_dir"), "sshield-server.yaml")
-		tomlPath := filepath.Join(v.GetString("storage.data_dir"), "sshield-server.toml")
+		yamlPath := filepath.Join(v.GetString("storage.data_dir"), "bulwark-server.yaml")
+		tomlPath := filepath.Join(v.GetString("storage.data_dir"), "bulwark-server.toml")
 		if _, err := os.Stat(yamlPath); err == nil {
 			discover = yamlPath
 		} else if _, err := os.Stat(tomlPath); err == nil {
@@ -213,13 +213,13 @@ func Load(path string) (*Config, error) {
 	}
 
 	// Legacy single-var overrides retained for compatibility.
-	if s := os.Getenv("SSHIELD_ADDR"); s != "" {
+	if s := os.Getenv("BULWARK_ADDR"); s != "" {
 		v.Set("server.bind", s)
 	}
-	if s := os.Getenv("SSHIELD_DB_URL"); s != "" {
+	if s := os.Getenv("BULWARK_DB_URL"); s != "" {
 		v.Set("storage.db_url", s)
 	}
-	if s := os.Getenv("SSHIELD_AUDIT_JSONL"); s != "" {
+	if s := os.Getenv("BULWARK_AUDIT_JSONL"); s != "" {
 		v.Set("storage.audit_jsonl", s)
 	}
 
@@ -311,9 +311,9 @@ func (c *Config) SessionAbsolute() time.Duration {
 func defaultDataDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".sshield"
+		return ".bulwark"
 	}
-	return filepath.Join(home, ".local", "share", "sshield")
+	return filepath.Join(home, ".local", "share", "bulwark")
 }
 
 func expandHome(p string) string {

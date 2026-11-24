@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
-const systemPrompt = `You are Sshield L2 Security Reviewer.
+const systemPrompt = `You are Bulwark L2 Security Reviewer.
 Evaluate whether the shell command matches the stated AI intent and assess operational risk.
 Respond strictly in JSON with keys:
 - "decision": "allow" | "ask_approval" | "deny"
@@ -48,6 +48,17 @@ func NewL2Reviewer(vault SecretResolver, config domain.L2ProviderConfig) *L2Revi
 	}
 }
 
+func systemOneEndpoint(base string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
+	if strings.HasSuffix(trimmed, "/v1/systemone") {
+		return trimmed
+	}
+	if strings.HasSuffix(trimmed, "/v1") {
+		return trimmed + "/systemone"
+	}
+	return trimmed + "/v1/systemone"
+}
+
 func (r *L2Reviewer) resolveAPIKey() string {
 	if r.vault == nil || strings.TrimSpace(r.config.APIKeyCredentialID) == "" {
 		return ""
@@ -71,6 +82,23 @@ type modelVerdict struct {
 // to ask_approval on any transport/parse error), with fallback metadata set.
 func (r *L2Reviewer) Review(ctx context.Context, req *domain.SemanticReviewRequest) (*domain.SemanticReviewVerdict, error) {
 	started := time.Now()
+	if r.config.Protocol == domain.L2SystemOneFast {
+		verdict, err := r.reviewSystemOne(ctx, req, started)
+		if err != nil {
+			return &domain.SemanticReviewVerdict{
+				Decision:          domain.DecisionAskApproval,
+				RiskScore:         0,
+				IntentAligned:     false,
+				Reasoning:         fmt.Sprintf("L2 fail-closed fallback triggered: %v", err),
+				ProviderName:      r.config.Name,
+				Protocol:          r.config.Protocol,
+				Model:             r.config.Model,
+				LatencyMs:         time.Since(started).Milliseconds(),
+				FallbackTriggered: true,
+			}, nil
+		}
+		return verdict, nil
+	}
 	raw, err := r.callProvider(ctx, req)
 	if err != nil {
 		verdict := r.finalize(modelVerdict{}, started)
@@ -155,23 +183,6 @@ func (r *L2Reviewer) callProvider(ctx context.Context, req *domain.SemanticRevie
 			}
 			return s, nil
 		}
-	case domain.L2SystemOneFast:
-		// Dedicated low-latency decision endpoint returning the verdict JSON directly.
-		url = r.config.BaseURL
-		programs := make([]string, 0, len(req.L1Verdict.ParsedCommands))
-		for _, c := range req.L1Verdict.ParsedCommands {
-			programs = append(programs, c.Program)
-		}
-		body = map[string]any{
-			"model":        r.config.Model,
-			"server_name":  req.ServerName,
-			"server_tags":  req.ServerTags,
-			"command":      req.Command,
-			"intent":       req.Intent,
-			"l1_decision":  string(req.L1Verdict.Decision),
-			"ast_programs": programs,
-		}
-		return decodeModelVerdict(r.doPost(callCtx, url, body, apiKey, headers))
 	default:
 		return modelVerdict{}, fmt.Errorf("unsupported L2 protocol %s", r.config.Protocol)
 	}
@@ -292,21 +303,6 @@ func parseModelJSON(text string) (modelVerdict, error) {
 	var v modelVerdict
 	if err := json.Unmarshal([]byte(trimmed), &v); err != nil {
 		return v, fmt.Errorf("failed to parse L2 JSON: %w", err)
-	}
-	return v, nil
-}
-
-func decodeModelVerdict(val map[string]any, err error) (modelVerdict, error) {
-	if err != nil {
-		return modelVerdict{}, err
-	}
-	b, err := json.Marshal(val)
-	if err != nil {
-		return modelVerdict{}, err
-	}
-	var v modelVerdict
-	if err := json.Unmarshal(b, &v); err != nil {
-		return v, fmt.Errorf("invalid SystemOne verdict JSON: %w", err)
 	}
 	return v, nil
 }

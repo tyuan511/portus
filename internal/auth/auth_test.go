@@ -7,7 +7,7 @@ import (
 
 	"github.com/pquerna/otp/totp"
 
-	"github.com/yuantang/sshield/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/apierr"
 )
 
 func TestPasswordHashAndVerify(t *testing.T) {
@@ -45,10 +45,10 @@ func TestPasswordPolicy(t *testing.T) {
 
 func TestTokenHashStabilityAndPrefix(t *testing.T) {
 	token, meta := NewApiToken()
-	if !strings.HasPrefix(token, "sk-sshield-") {
+	if !strings.HasPrefix(token, "sk-bulwark-") {
 		t.Fatalf("token prefix: %s", token)
 	}
-	if !strings.HasPrefix(meta.Prefix, "sk-sshield-") {
+	if !strings.HasPrefix(meta.Prefix, "sk-bulwark-") {
 		t.Fatalf("display prefix: %s", meta.Prefix)
 	}
 	if HashToken(token) != HashToken(token) {
@@ -76,7 +76,7 @@ func TestRecoveryCodes(t *testing.T) {
 }
 
 func TestTOTPEnrollmentAndValidation(t *testing.T) {
-	mgr, err := NewTOTPManager(t.TempDir()+"/server.key", "SSHield")
+	mgr, err := NewTOTPManager(t.TempDir()+"/server.key", "Bulwark")
 	if err != nil {
 		t.Fatal(err)
 	}

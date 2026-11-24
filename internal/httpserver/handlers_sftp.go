@@ -12,10 +12,10 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/pkg/sftp"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/httpserver/resp"
-	"github.com/yuantang/sshield/internal/metrics"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/httpserver/resp"
+	"github.com/tyuan511/bulwark/internal/metrics"
 	"go.uber.org/zap"
 )
 

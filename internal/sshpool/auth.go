@@ -13,7 +13,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 // SecretResolver resolves vault credentials by id (implemented by vault.Vault).

@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/storage/db"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/storage/db"
 )
 
 // GenesisHash is the prev_hash of the first audit record.

@@ -9,9 +9,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/storage/db"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/storage/db"
 )
 
 // CredentialKind mirrors domain vault kinds; kept as plain strings in SQL.

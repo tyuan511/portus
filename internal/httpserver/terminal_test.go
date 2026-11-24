@@ -1,8 +1,15 @@
 package httpserver
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tyuan511/bulwark/internal/approvals"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/rbac"
+	"github.com/tyuan511/bulwark/internal/security"
 )
 
 // The interactive-terminal gate is the enforcement point for policy on PTY
@@ -111,5 +118,52 @@ func TestTerminalGateAcrossFrames(t *testing.T) {
 	})
 	if len(submitted) != 1 || submitted[0] != "very long command" {
 		t.Fatalf("cross-frame line reconstruction wrong: %v", submitted)
+	}
+}
+
+type stubRBACStore struct {
+	decision domain.GrantDecision
+}
+
+func (s *stubRBACStore) ListEnabledServers() ([]*domain.ServerAsset, error) { return nil, nil }
+func (s *stubRBACStore) ListServersForUserFiltered(string, bool) ([]*domain.ServerAsset, error) {
+	return nil, nil
+}
+func (s *stubRBACStore) ListServersForUserTransferable(string) ([]*domain.ServerAsset, error) {
+	return nil, nil
+}
+func (s *stubRBACStore) ServerGrantDecision(string, *domain.ServerAsset) (domain.GrantDecision, error) {
+	return s.decision, nil
+}
+
+func TestEvaluateTerminalLineApprovalBypass(t *testing.T) {
+	member := &domain.Identity{UserID: "usr-bob", Username: "bob", Role: domain.BuiltinRoleMember}
+	asset := &domain.ServerAsset{ID: "srv-1", Name: "web-1", Host: "10.0.0.1", Port: 22, Username: "root"}
+
+	// With terminal_no_approval=true: an unmatched command (L1 ask_approval)
+	// skips the approval broker and is allowed, while a deny rule still blocks.
+	srv := &Server{
+		engine: security.NewEngine(),
+		broker: approvals.NewBroker(),
+		rbac: rbac.NewService(&stubRBACStore{decision: domain.GrantDecision{
+			Allowed: true, CanConnect: true, TerminalNoApproval: true,
+		}}),
+		rulesCache:  security.DefaultRules(),
+		rulesLoaded: time.Now(),
+		l2Config:    &domain.L2ProviderConfig{Enabled: false},
+		l2Loaded:    time.Now(),
+	}
+
+	v := srv.evaluateTerminalLine(context.Background(), member, asset, "systemctl restart nginx")
+	if v.Decision != domain.DecisionAllow {
+		t.Fatalf("expected ask_approval command to be allowed when terminal_no_approval is set, got %s", v.Decision)
+	}
+	if v.ApprovalID != "" {
+		t.Fatalf("expected no approval request when terminal_no_approval is set, got %s", v.ApprovalID)
+	}
+
+	vDeny := srv.evaluateTerminalLine(context.Background(), member, asset, "rm -rf /tmp/foo")
+	if vDeny.Decision != domain.DecisionDeny {
+		t.Fatalf("deny rule must still block even with terminal_no_approval, got %s", vDeny.Decision)
 	}
 }

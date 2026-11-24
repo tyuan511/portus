@@ -1,4 +1,4 @@
-# SSHield Enterprise
+# Bulwark Enterprise
 
 Multi-user, RBAC-hardened SSH operations platform: **Go server + PostgreSQL + embedded Web UI + MCP endpoint**.
 
@@ -11,14 +11,14 @@ a tamper-evident audit chain.
 
 ```bash
 make build            # builds web/ then the single static binary
-./bin/sshield-server  # listens on 127.0.0.1:8787
+./bin/bulwark-server  # listens on 127.0.0.1:8787
 ```
 
 The server talks to **PostgreSQL only**. Quick container for evaluation:
 
 ```bash
-docker run -d --name sshield-pg -e POSTGRES_PASSWORD=secret -e POSTGRES_USER=sshield \
-  -e POSTGRES_DB=sshield -p 5432:5432 postgres:16-alpine
+docker run -d --name bulwark-pg -e POSTGRES_PASSWORD=secret -e POSTGRES_USER=bulwark \
+  -e POSTGRES_DB=bulwark -p 5432:5432 postgres:16-alpine
 ```
 
 For a full containerized deployment see [docs/deploy.md](docs/deploy.md) (Docker Compose).
@@ -27,7 +27,7 @@ First boot bootstraps (idempotent):
 
 - the initial admin account — password comes from `bootstrap.admin_password`,
   `bootstrap.admin_password_file`, or is **generated** and printed to stderr plus
-  `~/.local/share/sshield/bootstrap-admin-password.txt` (0600, delete after first login)
+  `~/.local/share/bulwark/bootstrap-admin-password.txt` (0600, delete after first login)
 - the default L1 command rule set
 
 Open http://127.0.0.1:8787, sign in as the bootstrap admin, change the password, then:
@@ -55,13 +55,13 @@ create **user groups**, grant **machine groups** to them in *Access*, and invite
 ## Layout
 
 ```
-cmd/sshield-server/    entrypoint (-config <path>, -version)
+cmd/bulwark-server/    entrypoint (-config <path>, -version)
 internal/
   apierr/              typed error codes + unified HTTP envelope
   approvals/           human-in-the-loop broker with WS fan-out
   auth/                passwords, sessions, TOTP, PATs, brute-force guard
   buildinfo/           version injected at build time (-ldflags)
-  config/              viper YAML + SSHIELD_* env overrides
+  config/              viper YAML + BULWARK_* env overrides
   domain/              shared models (snake_case JSON contract)
   httpserver/          fiber app, middleware, handlers, WS hubs, embedded SPA
   logging/             zap setup with optional rotating file output

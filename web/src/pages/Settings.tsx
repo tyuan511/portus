@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { KeyRound, LockKeyhole, Pencil, Plus, Trash2 } from "lucide-react";
 import { cn } from "cn";
-import { ConfirmDialog, PromptDialog } from "@/components/sshield/ConfirmDialog";
+import { ConfirmDialog, PromptDialog } from "@/components/bulwark/ConfirmDialog";
+import { McpConnectionGuide } from "@/components/bulwark/McpConnectionGuide";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ import { ErrorText, Page, PageHeader } from "@/components/ui/shared";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useI18n, type Lang } from "@/lib/i18n";
-import { SSHIELD_THEMES, applyTheme, getSavedThemeId } from "@/lib/themes";
+import { BULWARK_THEMES, applyTheme, getSavedThemeId } from "@/lib/themes";
 import type { ApiToken, CredentialKind, CredentialMeta, UserSession } from "@/types";
 
 const THEME_KEY = "/api/settings/ui.theme";
@@ -102,7 +103,7 @@ export default function SettingsView() {
   const pickTheme = async (id: string) => {
     setThemeId(id);
     applyTheme(id);
-    window.dispatchEvent(new CustomEvent("sshield:theme"));
+    window.dispatchEvent(new CustomEvent("bulwark:theme"));
     try {
       await api.put(THEME_KEY, { value: id });
     } catch {
@@ -282,7 +283,7 @@ export default function SettingsView() {
               <CardTitle>{t("settings.appearance")}</CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {SSHIELD_THEMES.map((theme) => {
+              {BULWARK_THEMES.map((theme) => {
                 const isSelected = themeId === theme.id;
                 const isDark = theme.mode === "dark";
                 return (
@@ -596,6 +597,8 @@ export default function SettingsView() {
                 </Table>
               </Card>
             )}
+
+            <McpConnectionGuide token={plainToken} />
           </TabsContent>
         )}
 

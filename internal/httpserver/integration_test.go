@@ -14,18 +14,18 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/approvals"
-	"github.com/yuantang/sshield/internal/auth"
-	"github.com/yuantang/sshield/internal/config"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/httpserver"
-	"github.com/yuantang/sshield/internal/logging"
-	"github.com/yuantang/sshield/internal/rbac"
-	"github.com/yuantang/sshield/internal/security"
-	"github.com/yuantang/sshield/internal/serverkey"
-	"github.com/yuantang/sshield/internal/sshpool"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/approvals"
+	"github.com/tyuan511/bulwark/internal/auth"
+	"github.com/tyuan511/bulwark/internal/config"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/httpserver"
+	"github.com/tyuan511/bulwark/internal/logging"
+	"github.com/tyuan511/bulwark/internal/rbac"
+	"github.com/tyuan511/bulwark/internal/security"
+	"github.com/tyuan511/bulwark/internal/serverkey"
+	"github.com/tyuan511/bulwark/internal/sshpool"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 // fixture is a fully wired server over a temp database.
@@ -42,7 +42,7 @@ func testPostgresURL(t *testing.T) string {
 	t.Helper()
 	base := os.Getenv("TEST_POSTGRES_URL")
 	if base == "" {
-		base = "postgres://sshield:secret@127.0.0.1:54329/sshield_test?sslmode=disable"
+		base = "postgres://bulwark:secret@127.0.0.1:54329/bulwark_test?sslmode=disable"
 	}
 	var b [6]byte
 	_, _ = rand.Read(b[:])
@@ -100,7 +100,7 @@ func newFixture(t *testing.T) *fixture {
 	if err := db.SetEncryptionKey(serverKey); err != nil {
 		t.Fatal(err)
 	}
-	totpMgr := auth.NewTOTPManagerWithKey(serverKey, "SSHield")
+	totpMgr := auth.NewTOTPManagerWithKey(serverKey, "Bulwark")
 	guard := auth.NewLoginGuard(db, auth.GuardConfig{
 		LoginMaxAttempts: cfg.Security.LoginMaxAttempts, LockoutMinutes: cfg.Security.LockoutMinutes,
 		IPMaxAttempts: cfg.Security.IPMaxAttempts, IPWindowMinutes: cfg.Security.IPWindowMinutes,
@@ -147,7 +147,7 @@ func (c *client) do(method, path string, body any) (int, map[string]any) {
 		c.t.Fatalf("%s %s: %v", method, path, err)
 	}
 	defer resp.Body.Close()
-	if setCookie := resp.Header.Get("Set-Cookie"); setCookie != "" && strings.HasPrefix(setCookie, "sshield_session=") {
+	if setCookie := resp.Header.Get("Set-Cookie"); setCookie != "" && strings.HasPrefix(setCookie, "bulwark_session=") {
 		if !strings.Contains(setCookie, "Max-Age=0") {
 			c.cookie = setCookie[:strings.Index(setCookie, ";")]
 		}
@@ -260,7 +260,10 @@ func TestMemberSeesOnlyGrantedServers(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = f.db.AddGroupMember("grp-ops", "usr-bob")
-	if err := f.db.CreateHostGrant(&domain.HostGrant{ID: "g1", UserGroupID: "grp-ops", GroupName: "prod", CanConnect: true, CanExecute: true}); err != nil {
+	if err := f.db.CreateHostGrant(&domain.HostGrant{ID: "g1", UserGroupID: "grp-ops", ServerID: "srv-1", CanConnect: true, CanExecute: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.CreateHostGrant(&domain.HostGrant{ID: "g2", UserGroupID: "grp-ops", ServerID: "srv-2", CanConnect: true, CanExecute: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -277,12 +280,15 @@ func TestMemberSeesOnlyGrantedServers(t *testing.T) {
 	}
 	list := bob.list(body)
 	if len(list) != 2 {
-		t.Fatalf("bob must see exactly the 2 prod servers, got %d", len(list))
+		t.Fatalf("bob must see exactly the 2 granted servers, got %d", len(list))
 	}
 	for _, item := range list {
 		srv := item.(map[string]any)
 		if srv["id"] == "srv-3" {
 			t.Fatal("srv-3 must be hidden from bob")
+		}
+		if enabled, ok := srv["enabled"].(bool); !ok || !enabled {
+			t.Fatalf("member server payload must include enabled=true, got %#v", srv["enabled"])
 		}
 		if _, hasAuth := srv["credential_id"]; hasAuth {
 			t.Fatal("member responses must not include auth metadata")

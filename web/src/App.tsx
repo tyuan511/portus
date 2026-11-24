@@ -17,11 +17,10 @@ import { applyTheme, getSavedThemeId } from "@/lib/themes";
 import { WorkspaceTabsProvider, useWorkspaceTabs, type PageKey } from "@/lib/workspace-tabs";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Toaster } from "@/components/ui/sonner";
 import { BrandLogo } from "@/components/BrandLogo";
-import { LangToggle } from "@/components/sshield/LangToggle";
-import { ThemeToggle } from "@/components/sshield/ThemeToggle";
-import { WorkspaceTabBar } from "@/components/sshield/WorkspaceTabBar";
-import { WorkspaceView } from "@/components/sshield/WorkspaceView";
+import { WorkspaceTabBar } from "@/components/bulwark/WorkspaceTabBar";
+import { WorkspaceView } from "@/components/bulwark/WorkspaceView";
 import Login from "@/pages/Login";
 import Landing from "@/pages/Landing";
 
@@ -73,11 +72,8 @@ function AuthenticatedShell() {
         <div className="flex h-13 items-center justify-between border-b border-sidebar-border px-3 sm:px-4">
           <div className="flex items-center gap-2.5">
             <BrandLogo size={24} />
-            <span className="hidden text-sm font-semibold tracking-tight sm:inline">SSHield</span>
+            <span className="hidden text-sm font-semibold tracking-tight sm:inline">Bulwark</span>
           </div>
-          <span className="hidden rounded-full border border-border bg-secondary px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground sm:inline-block">
-            ENT
-          </span>
         </div>
 
         <nav className="flex flex-1 flex-col gap-5 overflow-y-auto px-2 py-3 sm:px-3">
@@ -122,12 +118,7 @@ function AuthenticatedShell() {
           ))}
         </nav>
 
-        <div className="flex flex-col gap-2 border-t border-sidebar-border p-2 sm:p-3">
-          <div className="hidden items-center justify-between gap-1 sm:flex">
-            <LangToggle compact />
-            <ThemeToggle compact />
-          </div>
-
+        <div className="flex flex-col gap-2 p-2 sm:p-3">
           <div className="flex items-center gap-2 rounded-lg border border-border/80 bg-background/60 p-1.5 sm:px-2.5 sm:py-2">
             <div className="flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-secondary font-mono text-[11px] font-medium text-foreground">
               {initials}
@@ -218,6 +209,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
+        <Toaster />
       </TooltipProvider>
     );
   }
@@ -227,6 +219,7 @@ export default function App() {
       <WorkspaceTabsProvider>
         <AuthenticatedShell />
       </WorkspaceTabsProvider>
+      <Toaster />
     </TooltipProvider>
   );
 }

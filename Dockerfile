@@ -1,7 +1,7 @@
 # Multi-stage build: web (pnpm) -> server (go, embedded dist) -> distroless runtime.
 #
-# Build:  docker build -t sshield-server .
-# Run:    docker run -p 8787:8787 -v ./data:/data sshield-server
+# Build:  docker build -t bulwark-server .
+# Run:    docker run -p 8787:8787 -v ./data:/data bulwark-server
 #         (see docker-compose.yml for the full stack with PostgreSQL)
 #
 # Override the build version with:  docker build --build-arg VERSION=v1.2.3 .
@@ -27,7 +27,7 @@ RUN pnpm build
 FROM golang:1.26-alpine AS build
 
 # Version is baked into internal/buildinfo.Version (also reported by
-# GET /api/health and `sshield-server -version`).
+# GET /api/health and `bulwark-server -version`).
 ARG VERSION=docker
 
 WORKDIR /src
@@ -42,8 +42,8 @@ COPY internal/ internal/
 COPY --from=web /web/dist internal/webui/dist
 
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
-    -ldflags "-s -w -X github.com/yuantang/sshield/internal/buildinfo.Version=${VERSION}" \
-    -o /out/sshield-server ./cmd/sshield-server
+    -ldflags "-s -w -X github.com/tyuan511/bulwark/internal/buildinfo.Version=${VERSION}" \
+    -o /out/bulwark-server ./cmd/bulwark-server
 
 # ------------------------------------------------------------- stage 3: runtime
 FROM gcr.io/distroless/static-debian12
@@ -56,15 +56,15 @@ FROM gcr.io/distroless/static-debian12
 # The binary is fully static (CGO_ENABLED=0); distroless/static ships the CA
 # certificates and tzdata needed for outbound webhook HTTPS calls.
 
-COPY --from=build /out/sshield-server /sshield-server
+COPY --from=build /out/bulwark-server /bulwark-server
 
 EXPOSE 8787
 VOLUME /data
 
 # Entrypoint is the bare binary (no shell in distroless). Extra CLI flags can
-# be appended at run time, e.g. `docker run ... sshield-server -config /data/sshield-server.yaml`.
+# be appended at run time, e.g. `docker run ... bulwark-server -config /data/bulwark-server.yaml`.
 # In practice no flag is needed: config discovery falls back to
-# <data_dir>/sshield-server.yaml (i.e. /data/sshield-server.yaml) and every
-# setting can be overridden via SSHIELD_* environment variables (see
+# <data_dir>/bulwark-server.yaml (i.e. /data/bulwark-server.yaml) and every
+# setting can be overridden via BULWARK_* environment variables (see
 # docker-compose.yml).
-ENTRYPOINT ["/sshield-server"]
+ENTRYPOINT ["/bulwark-server"]

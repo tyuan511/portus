@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/storage/db"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/storage/db"
 )
 
 // CreateTerminalSession records the opening of a PTY session.

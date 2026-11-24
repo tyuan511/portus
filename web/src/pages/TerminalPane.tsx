@@ -29,7 +29,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { ErrorText } from "@/components/ui/shared";
-import { StatusPill } from "@/components/sshield/StatusDot";
+import { StatusPill } from "@/components/bulwark/StatusDot";
 import { wsUrl } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import type { TerminalConnStatus } from "@/lib/workspace-tabs";
@@ -52,7 +52,7 @@ const XTERM_THEMES = {
 type ThemeMode = keyof typeof XTERM_THEMES;
 type PolicyMode = "audit" | "enforce";
 
-const FONT_SIZE_KEY = "sshield.term.fontSize";
+const FONT_SIZE_KEY = "bulwark.term.fontSize";
 const MIN_FONT_SIZE = 10;
 const MAX_FONT_SIZE = 20;
 const DEFAULT_FONT_SIZE = 13;

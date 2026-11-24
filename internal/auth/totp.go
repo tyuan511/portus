@@ -10,8 +10,8 @@ import (
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/serverkey"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/serverkey"
 )
 
 // TOTPManager handles second-factor enrollment and verification. Secrets are
@@ -50,7 +50,7 @@ func (m *TOTPManager) seal(plaintext string) string {
 		panic(err)
 	}
 	nonce := randomBytes(12)
-	ct := gcm.Seal(nil, nonce, []byte(plaintext), []byte("sshield-totp-v1"))
+	ct := gcm.Seal(nil, nonce, []byte(plaintext), []byte("bulwark-totp-v1"))
 	return hex.EncodeToString(nonce) + ":" + hex.EncodeToString(ct)
 }
 
@@ -72,7 +72,7 @@ func (m *TOTPManager) unseal(sealed string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	pt, err := gcm.Open(nil, nonce, ct, []byte("sshield-totp-v1"))
+	pt, err := gcm.Open(nil, nonce, ct, []byte("bulwark-totp-v1"))
 	if err != nil {
 		return "", false
 	}

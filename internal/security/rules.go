@@ -3,7 +3,7 @@ package security
 import (
 	"fmt"
 
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 // DefaultRules returns the built-in starter rule set: deny destructive

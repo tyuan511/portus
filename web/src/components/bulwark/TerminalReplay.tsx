@@ -111,7 +111,7 @@ export function TerminalReplay({ session, open, onOpenChange }: TerminalReplayPr
   const [progress, setProgress] = useState(0); // rendered playback clock, ms
   const [mode, setMode] = useState<ThemeMode>(currentMode);
 
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const eventsRef = useRef<TerminalEvent[]>([]);
@@ -137,11 +137,9 @@ export function TerminalReplay({ session, open, onOpenChange }: TerminalReplayPr
     if (term) term.options.theme = XTERM_THEMES[mode];
   }, [mode]);
 
-  // Read-only xterm instance, created while the dialog is open and disposed on close.
+  // Read-only xterm instance, created once the dialog portal mounts the host div and disposed on close.
   useEffect(() => {
-    if (!open) return;
-    const el = containerRef.current;
-    if (!el) return;
+    if (!open || !containerEl) return;
     const term = new Terminal({
       disableStdin: true,
       cursorBlink: false,
@@ -154,28 +152,28 @@ export function TerminalReplay({ session, open, onOpenChange }: TerminalReplayPr
     const fit = new FitAddon();
     fitRef.current = fit;
     term.loadAddon(fit);
-    term.open(el);
+    term.open(containerEl);
     try {
       fit.fit();
     } catch {
       /* hidden */
     }
     const ro = new ResizeObserver(() => {
-      if (el.clientWidth === 0 || el.clientHeight === 0) return;
+      if (containerEl.clientWidth === 0 || containerEl.clientHeight === 0) return;
       try {
         fit.fit();
       } catch {
         /* hidden */
       }
     });
-    ro.observe(el);
+    ro.observe(containerEl);
     return () => {
       ro.disconnect();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [open]);
+  }, [open, containerEl]);
 
   // Fetch the recording each time the dialog opens.
   useEffect(() => {
@@ -197,11 +195,12 @@ export function TerminalReplay({ session, open, onOpenChange }: TerminalReplayPr
       )
       .then((r) => {
         if (cancelled) return;
+        const evs = r.events ?? [];
         setRec(r.session ?? session);
-        setEvents(r.events);
-        eventsRef.current = r.events;
-        echoRef.current = computeEchoFlags(r.events);
-        setPlaying(true); // start as soon as the recording is ready
+        setEvents(evs);
+        eventsRef.current = evs;
+        echoRef.current = computeEchoFlags(evs);
+        if (evs.length > 0) setPlaying(true); // start as soon as the recording is ready
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : "load failed");
@@ -240,7 +239,7 @@ export function TerminalReplay({ session, open, onOpenChange }: TerminalReplayPr
 
   // Real-time playback: rAF advances the clock by dt * speed and drains events.
   useEffect(() => {
-    if (!playing || events.length === 0) return;
+    if (!playing || events.length === 0 || !containerEl) return;
     lastFrameRef.current = null;
     let raf = 0;
     const tick = (now: number) => {
@@ -262,7 +261,7 @@ export function TerminalReplay({ session, open, onOpenChange }: TerminalReplayPr
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, speed, durationMs, events, feedUpTo]);
+  }, [playing, speed, durationMs, events, feedUpTo, containerEl]);
 
   // Seek: rewind the buffer and instantly replay everything up to the target.
   const seek = (ms: number) => {
@@ -272,6 +271,13 @@ export function TerminalReplay({ session, open, onOpenChange }: TerminalReplayPr
     feedUpTo(ms);
     setProgress(ms);
     lastUiRef.current = performance.now();
+  };
+
+  const togglePlay = () => {
+    if (!playing && clockRef.current >= durationMs && cursorRef.current >= events.length) {
+      seek(0);
+    }
+    setPlaying((p) => !p);
   };
 
   const handleOpenChange = (o: boolean) => {
@@ -312,7 +318,7 @@ export function TerminalReplay({ session, open, onOpenChange }: TerminalReplayPr
 
         <div className="relative overflow-hidden rounded-lg border border-border">
           <div
-            ref={containerRef}
+            ref={setContainerEl}
             className="terminal-host h-[440px]"
             style={{ backgroundColor: XTERM_THEMES[mode].background }}
           />
@@ -328,7 +334,7 @@ export function TerminalReplay({ session, open, onOpenChange }: TerminalReplayPr
             variant="outline"
             size="icon-sm"
             disabled={events.length === 0}
-            onClick={() => setPlaying((p) => !p)}
+            onClick={togglePlay}
             aria-label={playing ? t("audit.sessions.pause") : t("audit.sessions.play")}
           >
             {playing ? <Pause className="size-4" /> : <Play className="size-4" />}

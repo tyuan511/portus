@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Webhook notifications for approval, policy-denial and file-transfer events
   (`notifications.webhook_url`).
 - Docker packaging: multi-stage `Dockerfile`, reference `docker-compose.yml`
-  (PostgreSQL 16 + sshield-server) and GitHub Actions CI.
+  (PostgreSQL 16 + bulwark-server) and GitHub Actions CI.
 - CLI: `-config <path>` flag for explicit configuration files and `-version`
   to print the build version (also injected via ldflags into
   `internal/buildinfo.Version` and reported by `GET /api/health`).

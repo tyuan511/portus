@@ -1,11 +1,11 @@
 # Backup & Restore
 
-SSHield keeps its state in exactly two places, and both must be backed up:
+Bulwark keeps its state in exactly two places, and both must be backed up:
 
 1. **The PostgreSQL database** — hosts, credentials rows (encrypted), users, grants, sessions,
    audit chain, MCP host sessions, terminal recordings.
 2. **`server.key`** — the 32-byte AEAD root key in `storage.data_dir` (default
-   `~/.local/share/sshield`, 0600). It decrypts the credential rows and TOTP secrets inside
+   `~/.local/share/bulwark`, 0600). It decrypts the credential rows and TOTP secrets inside
    that database.
 
 Everything else in the data dir is disposable (`bootstrap-admin-password.txt` is a one-time hint).
@@ -13,12 +13,12 @@ Everything else in the data dir is disposable (`bootstrap-admin-password.txt` is
 ## 1. Database backup (pg_dump)
 
 ```bash
-pg_dump --format=custom --file=/secure/backups/sshield-$(date +%F).dump \
-  "postgres://sshield:secret@127.0.0.1:5432/sshield?sslmode=disable"
+pg_dump --format=custom --file=/secure/backups/bulwark-$(date +%F).dump \
+  "postgres://bulwark:secret@127.0.0.1:5432/bulwark?sslmode=disable"
 ```
 
 - The custom format supports `pg_restore`, parallel restore and selective restore.
-- **Schema layout**: all SSHield tables live in the default `public` schema (the embedded
+- **Schema layout**: all Bulwark tables live in the default `public` schema (the embedded
   migrations issue plain `CREATE TABLE` statements) — no extra `--schema` handling needed.
 - Schedule it with cron/systemd timers; keep dumps offline if the server is internet-adjacent.
 - Terminal recordings (`terminal_sessions` / `terminal_events`) are usually the largest tables.
@@ -27,8 +27,8 @@ pg_dump --format=custom --file=/secure/backups/sshield-$(date +%F).dump \
 ## 2. `server.key` backup
 
 ```bash
-cp -p ~/.local/share/sshield/server.key /secure/backups/sshield-server.key
-chmod 600 /secure/backups/sshield-server.key
+cp -p ~/.local/share/bulwark/server.key /secure/backups/bulwark-server.key
+chmod 600 /secure/backups/bulwark-server.key
 ```
 
 - Keep the mode at **0600** and own it by the service user when restoring.
@@ -41,23 +41,23 @@ chmod 600 /secure/backups/sshield-server.key
 
 ## 3. Restore runbook (new machine)
 
-1. **Install the binary** (and the data dir, e.g. `/var/lib/sshield`).
+1. **Install the binary** (and the data dir, e.g. `/var/lib/bulwark`).
 2. **Restore `server.key`** into the data dir first:
    ```bash
-   install -m 600 -o sshield -g sshield /secure/backups/sshield-server.key \
-     /var/lib/sshield/server.key
+   install -m 600 -o bulwark -g bulwark /secure/backups/bulwark-server.key \
+     /var/lib/bulwark/server.key
    ```
 3. **Start PostgreSQL** and create the role/database if fresh:
    ```sql
-   CREATE ROLE sshield LOGIN PASSWORD 'secret';
-   CREATE DATABASE sshield OWNER sshield;
+   CREATE ROLE bulwark LOGIN PASSWORD 'secret';
+   CREATE DATABASE bulwark OWNER bulwark;
    ```
 4. **Restore the dump** into the empty database:
    ```bash
-   pg_restore --dbname="postgres://sshield:secret@127.0.0.1:5432/sshield?sslmode=disable" \
-     --no-owner --role=sshield /secure/backups/sshield-2026-01-31.dump
+   pg_restore --dbname="postgres://bulwark:secret@127.0.0.1:5432/bulwark?sslmode=disable" \
+     --no-owner --role=bulwark /secure/backups/bulwark-2026-01-31.dump
    ```
-5. **Start sshield-server.** Boot applies pending schema migrations automatically (a dump from
+5. **Start bulwark-server.** Boot applies pending schema migrations automatically (a dump from
    an older release restores cleanly and then upgrades); the bootstrap sequence is a no-op
    because the users table is already populated.
 6. **Verify**: `GET /api/health` returns `status: ok` plus the build `version`; sign in and run
@@ -68,7 +68,7 @@ any credential or TOTP secret — treat the key as the more critical of the two 
 
 ## 4. Retention
 
-Backups only stay manageable if growth is bounded. Review in `sshield-server.yaml`:
+Backups only stay manageable if growth is bounded. Review in `bulwark-server.yaml`:
 
 - `retention.terminal_days` — recorded PTY sessions (usually the bulk of the data)
 - `retention.mcp_session_days` — MCP host-session registry rows

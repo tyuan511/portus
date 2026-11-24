@@ -8,7 +8,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 
-	"github.com/yuantang/sshield/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/apierr"
 )
 
 // Envelope is the wire format of every /api JSON response.

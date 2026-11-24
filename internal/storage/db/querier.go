@@ -49,7 +49,9 @@ type Querier interface {
 	CreateUser(ctx context.Context, arg CreateUserParams) error
 	CreateUserGroup(ctx context.Context, arg CreateUserGroupParams) error
 	DeleteCredential(ctx context.Context, id string) (int64, error)
+	DeleteGroupMembershipsForUser(ctx context.Context, userID string) error
 	DeleteHostGrant(ctx context.Context, id string) (int64, error)
+	DeleteHostGrantByPair(ctx context.Context, arg DeleteHostGrantByPairParams) (int64, error)
 	DeleteRule(ctx context.Context, id string) (int64, error)
 	DeleteServer(ctx context.Context, id string) (int64, error)
 	DeleteSession(ctx context.Context, id string) (int64, error)
@@ -75,6 +77,7 @@ type Querier interface {
 	GetUserGroup(ctx context.Context, id string) (UserGroup, error)
 	InsertAudit(ctx context.Context, arg InsertAuditParams) error
 	InsertTerminalSession(ctx context.Context, arg InsertTerminalSessionParams) error
+	ListAllGroupMemberships(ctx context.Context) ([]UserGroupMember, error)
 	ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, error)
 	ListApiTokensForUser(ctx context.Context, userID string) ([]ApiToken, error)
 	ListCredentials(ctx context.Context) ([]ListCredentialsRow, error)

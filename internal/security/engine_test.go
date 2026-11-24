@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 func engine() (*Engine, []*domain.SecurityRule) {

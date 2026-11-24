@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"time"
 
-	"github.com/yuantang/sshield/internal/auth"
+	"github.com/tyuan511/bulwark/internal/auth"
 )
 
 func timeNowUTC() time.Time { return time.Now().UTC() }

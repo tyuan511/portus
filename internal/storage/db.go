@@ -20,7 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/yuantang/sshield/internal/storage/db"
+	"github.com/tyuan511/bulwark/internal/storage/db"
 )
 
 // migrationsFS embeds the numbered SQL migration files; sqlc reads the same
@@ -44,7 +44,7 @@ type DB struct {
 var _ = context.Background
 
 // Open connects to PostgreSQL and ensures the schema exists.
-// dsn is a pgx URL, e.g. "postgres://user:pass@host:5432/sshield?sslmode=disable".
+// dsn is a pgx URL, e.g. "postgres://user:pass@host:5432/bulwark?sslmode=disable".
 // Migrations are applied from db/migrations on first boot; later schema
 // changes ship as additional numbered migration files executed at startup.
 func Open(dsn string, auditJSONLPath string) (*DB, error) {

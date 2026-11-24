@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Pencil, Plus, Trash2, Users, X } from "lucide-react";
 import { cn } from "cn";
-import { ConfirmDialog } from "@/components/sshield/ConfirmDialog";
+import { ConfirmDialog } from "@/components/bulwark/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";

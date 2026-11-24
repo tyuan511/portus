@@ -10,13 +10,13 @@ import (
 	"github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/yuantang/sshield/internal/apierr"
-	"github.com/yuantang/sshield/internal/approvals"
-	"github.com/yuantang/sshield/internal/domain"
-	"github.com/yuantang/sshield/internal/metrics"
-	"github.com/yuantang/sshield/internal/notify"
-	"github.com/yuantang/sshield/internal/sshpool"
-	"github.com/yuantang/sshield/internal/storage"
+	"github.com/tyuan511/bulwark/internal/apierr"
+	"github.com/tyuan511/bulwark/internal/approvals"
+	"github.com/tyuan511/bulwark/internal/domain"
+	"github.com/tyuan511/bulwark/internal/metrics"
+	"github.com/tyuan511/bulwark/internal/notify"
+	"github.com/tyuan511/bulwark/internal/sshpool"
+	"github.com/tyuan511/bulwark/internal/storage"
 )
 
 // registerWebSockets mounts the approval event stream and the interactive
@@ -257,7 +257,7 @@ func (s *Server) handleTerminalWS(conn *websocket.Conn) {
 		switch verdict.Decision {
 		case domain.DecisionDeny:
 			recorder.record(directionNotice, "[blocked by policy: "+verdict.Reason+"] "+cmd)
-			writeNotice("sshield: command blocked by policy — " + verdict.Reason)
+			writeNotice("bulwark: command blocked by policy — " + verdict.Reason)
 			s.auditTerminalLine(identity, asset, traceID, cmd, verdict, verdict.Reason)
 			recordDenialMetrics("terminal")
 			s.notify.Send("policy.terminal_denied",
@@ -267,7 +267,7 @@ func (s *Server) handleTerminalWS(conn *websocket.Conn) {
 		case domain.DecisionAskApproval:
 			if verdict.ApprovalStatus != domain.ApprovalApproved {
 				recorder.record(directionNotice, "[approval "+string(verdict.ApprovalStatus)+"] "+cmd)
-				writeNotice("sshield: approval " + string(verdict.ApprovalStatus) + " — command not executed")
+				writeNotice("bulwark: approval " + string(verdict.ApprovalStatus) + " — command not executed")
 				s.auditTerminalLine(identity, asset, traceID, cmd, verdict, verdict.Reason)
 				recordDenialMetrics("terminal")
 				metrics.ApprovalsDecisionsTotal.WithLabelValues(string(verdict.ApprovalStatus)).Inc()

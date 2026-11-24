@@ -14,7 +14,7 @@ import (
 
 	"mvdan.cc/sh/v3/syntax"
 
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 // Engine evaluates shell commands against security rules using the AST.

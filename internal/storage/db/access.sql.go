@@ -138,30 +138,40 @@ func (q *Queries) CreateApiToken(ctx context.Context, arg CreateApiTokenParams) 
 }
 
 const createHostGrant = `-- name: CreateHostGrant :exec
-INSERT INTO host_grants (id, user_group_id, group_name,
-    can_connect, can_execute, can_transfer, created_by, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO host_grants (id, user_group_id, server_id,
+    can_connect, can_execute, can_transfer, terminal_no_approval, mcp_no_approval, created_by, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (user_group_id, server_id) DO UPDATE SET
+    can_connect = excluded.can_connect,
+    can_execute = excluded.can_execute,
+    can_transfer = excluded.can_transfer,
+    terminal_no_approval = excluded.terminal_no_approval,
+    mcp_no_approval = excluded.mcp_no_approval
 `
 
 type CreateHostGrantParams struct {
-	ID          string
-	UserGroupID string
-	GroupName   string
-	CanConnect  int32
-	CanExecute  int32
-	CanTransfer int32
-	CreatedBy   string
-	CreatedAt   string
+	ID                 string
+	UserGroupID        string
+	ServerID           string
+	CanConnect         int32
+	CanExecute         int32
+	CanTransfer        int32
+	TerminalNoApproval int32
+	McpNoApproval      int32
+	CreatedBy          string
+	CreatedAt          string
 }
 
 func (q *Queries) CreateHostGrant(ctx context.Context, arg CreateHostGrantParams) error {
 	_, err := q.db.ExecContext(ctx, createHostGrant,
 		arg.ID,
 		arg.UserGroupID,
-		arg.GroupName,
+		arg.ServerID,
 		arg.CanConnect,
 		arg.CanExecute,
 		arg.CanTransfer,
+		arg.TerminalNoApproval,
+		arg.McpNoApproval,
 		arg.CreatedBy,
 		arg.CreatedAt,
 	)
@@ -222,12 +232,38 @@ func (q *Queries) CreateUserGroup(ctx context.Context, arg CreateUserGroupParams
 	return err
 }
 
+const deleteGroupMembershipsForUser = `-- name: DeleteGroupMembershipsForUser :exec
+DELETE FROM user_group_members WHERE user_id = $1
+`
+
+func (q *Queries) DeleteGroupMembershipsForUser(ctx context.Context, userID string) error {
+	_, err := q.db.ExecContext(ctx, deleteGroupMembershipsForUser, userID)
+	return err
+}
+
 const deleteHostGrant = `-- name: DeleteHostGrant :execrows
 DELETE FROM host_grants WHERE id = $1
 `
 
 func (q *Queries) DeleteHostGrant(ctx context.Context, id string) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteHostGrant, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteHostGrantByPair = `-- name: DeleteHostGrantByPair :execrows
+DELETE FROM host_grants WHERE user_group_id = $1 AND server_id = $2
+`
+
+type DeleteHostGrantByPairParams struct {
+	UserGroupID string
+	ServerID    string
+}
+
+func (q *Queries) DeleteHostGrantByPair(ctx context.Context, arg DeleteHostGrantByPairParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteHostGrantByPair, arg.UserGroupID, arg.ServerID)
 	if err != nil {
 		return 0, err
 	}
@@ -326,6 +362,33 @@ func (q *Queries) GetUserGroup(ctx context.Context, id string) (UserGroup, error
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listAllGroupMemberships = `-- name: ListAllGroupMemberships :many
+SELECT group_id, user_id FROM user_group_members ORDER BY group_id, user_id
+`
+
+func (q *Queries) ListAllGroupMemberships(ctx context.Context) ([]UserGroupMember, error) {
+	rows, err := q.db.QueryContext(ctx, listAllGroupMemberships)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserGroupMember{}
+	for rows.Next() {
+		var i UserGroupMember
+		if err := rows.Scan(&i.GroupID, &i.UserID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAllSessions = `-- name: ListAllSessions :many
@@ -507,25 +570,30 @@ func (q *Queries) ListGroupsForUser(ctx context.Context, userID string) ([]UserG
 }
 
 const listHostGrants = `-- name: ListHostGrants :many
-SELECT g.id, g.user_group_id, g.group_name, g.can_connect, g.can_execute, g.created_by, g.created_at, g.can_transfer, ug.id AS ug_id, ug.name AS ug_name, ug.description AS ug_description,
-       ug.created_at AS ug_created_at
-FROM host_grants g JOIN user_groups ug ON ug.id = g.user_group_id
+SELECT g.id, g.user_group_id, g.server_id, g.can_connect, g.can_execute, g.can_transfer, g.created_by, g.created_at, g.terminal_no_approval, g.mcp_no_approval, ug.id AS ug_id, ug.name AS ug_name, ug.description AS ug_description,
+       ug.created_at AS ug_created_at, s.name AS server_name
+FROM host_grants g
+JOIN user_groups ug ON ug.id = g.user_group_id
+JOIN servers s ON s.id = g.server_id
 ORDER BY g.created_at DESC
 `
 
 type ListHostGrantsRow struct {
-	ID            string
-	UserGroupID   string
-	GroupName     string
-	CanConnect    int32
-	CanExecute    int32
-	CreatedBy     string
-	CreatedAt     string
-	CanTransfer   int32
-	UgID          string
-	UgName        string
-	UgDescription string
-	UgCreatedAt   string
+	ID                 string
+	UserGroupID        string
+	ServerID           string
+	CanConnect         int32
+	CanExecute         int32
+	CanTransfer        int32
+	CreatedBy          string
+	CreatedAt          string
+	TerminalNoApproval int32
+	McpNoApproval      int32
+	UgID               string
+	UgName             string
+	UgDescription      string
+	UgCreatedAt        string
+	ServerName         string
 }
 
 func (q *Queries) ListHostGrants(ctx context.Context) ([]ListHostGrantsRow, error) {
@@ -540,16 +608,19 @@ func (q *Queries) ListHostGrants(ctx context.Context) ([]ListHostGrantsRow, erro
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserGroupID,
-			&i.GroupName,
+			&i.ServerID,
 			&i.CanConnect,
 			&i.CanExecute,
+			&i.CanTransfer,
 			&i.CreatedBy,
 			&i.CreatedAt,
-			&i.CanTransfer,
+			&i.TerminalNoApproval,
+			&i.McpNoApproval,
 			&i.UgID,
 			&i.UgName,
 			&i.UgDescription,
 			&i.UgCreatedAt,
+			&i.ServerName,
 		); err != nil {
 			return nil, err
 		}
@@ -719,14 +790,22 @@ func (q *Queries) TouchSession(ctx context.Context, arg TouchSessionParams) erro
 }
 
 const updateHostGrant = `-- name: UpdateHostGrant :execrows
-UPDATE host_grants SET can_connect = $2, can_execute = $3, can_transfer = $4 WHERE id = $1
+UPDATE host_grants
+SET can_connect = $2,
+    can_execute = $3,
+    can_transfer = $4,
+    terminal_no_approval = $5,
+    mcp_no_approval = $6
+WHERE id = $1
 `
 
 type UpdateHostGrantParams struct {
-	ID          string
-	CanConnect  int32
-	CanExecute  int32
-	CanTransfer int32
+	ID                 string
+	CanConnect         int32
+	CanExecute         int32
+	CanTransfer        int32
+	TerminalNoApproval int32
+	McpNoApproval      int32
 }
 
 func (q *Queries) UpdateHostGrant(ctx context.Context, arg UpdateHostGrantParams) (int64, error) {
@@ -735,6 +814,8 @@ func (q *Queries) UpdateHostGrant(ctx context.Context, arg UpdateHostGrantParams
 		arg.CanConnect,
 		arg.CanExecute,
 		arg.CanTransfer,
+		arg.TerminalNoApproval,
+		arg.McpNoApproval,
 	)
 	if err != nil {
 		return 0, err

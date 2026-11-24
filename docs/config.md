@@ -1,15 +1,15 @@
 # Configuration Reference
 
 The server binary takes `-config <path>` (YAML/TOML) and `-version` (prints the build
-version and exits). Without `-config`, the file is discovered via `$SSHIELD_CONFIG`,
-then `<data_dir>/sshield-server.yaml`. A legacy `sshield-server.toml` in the data dir
+version and exits). Without `-config`, the file is discovered via `$BULWARK_CONFIG`,
+then `<data_dir>/bulwark-server.yaml`. A legacy `bulwark-server.toml` in the data dir
 is still discovered as a fallback. A missing file is not an error — defaults apply.
-Copy `sshield-server.yaml.example` as a starting point.
+Copy `bulwark-server.yaml.example` as a starting point.
 
-Environment overrides use the `SSHIELD_` prefix with dots mapped to underscores
-(e.g. `security.lockout_minutes` → `SSHIELD_SECURITY_LOCKOUT_MINUTES`,
-`terminal.enforce` → `SSHIELD_TERMINAL_ENFORCE`).
-Legacy singles still work: `SSHIELD_ADDR`, `SSHIELD_DB_URL`, `SSHIELD_AUDIT_JSONL`.
+Environment overrides use the `BULWARK_` prefix with dots mapped to underscores
+(e.g. `security.lockout_minutes` → `BULWARK_SECURITY_LOCKOUT_MINUTES`,
+`terminal.enforce` → `BULWARK_TERMINAL_ENFORCE`).
+Legacy singles still work: `BULWARK_ADDR`, `BULWARK_DB_URL`, `BULWARK_AUDIT_JSONL`.
 
 ## `server`
 
@@ -23,8 +23,8 @@ Legacy singles still work: `SSHIELD_ADDR`, `SSHIELD_DB_URL`, `SSHIELD_AUDIT_JSON
 
 | Key | Default | Notes |
 |---|---|---|
-| `db_url` | `postgres://sshield:sshield@127.0.0.1:5432/sshield?sslmode=disable` | PostgreSQL connection string (pgx URL) |
-| `data_dir` | `~/.local/share/sshield` | Home for the server key, bootstrap hint and (by default) the log file |
+| `db_url` | `postgres://bulwark:bulwark@127.0.0.1:5432/bulwark?sslmode=disable` | PostgreSQL connection string (pgx URL) |
+| `data_dir` | `~/.local/share/bulwark` | Home for the server key, bootstrap hint and (by default) the log file |
 | `audit_jsonl` | `""` | Optional JSONL mirror of the audit chain (0600 file, appended per event) |
 
 PostgreSQL is the only supported backend; all data access goes through
@@ -33,10 +33,10 @@ the binary (`internal/storage/migrations`, applied idempotently at boot).
 Create the database before first boot — tables are created automatically:
 
 ```sql
-CREATE DATABASE sshield;
+CREATE DATABASE bulwark;
 -- or with a dedicated role:
-CREATE ROLE sshield LOGIN PASSWORD 'secret';
-CREATE DATABASE sshield OWNER sshield;
+CREATE ROLE bulwark LOGIN PASSWORD 'secret';
+CREATE DATABASE bulwark OWNER bulwark;
 ```
 
 ## `bootstrap` (first boot only, when the users table is empty)

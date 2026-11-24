@@ -1,4 +1,4 @@
-export interface SshieldTheme {
+export interface BulwarkTheme {
   id: string;
   name: string;
   mode: "dark" | "light";
@@ -9,7 +9,7 @@ export interface SshieldTheme {
 // Vercel-style monochrome brand: white canvas with near-black ink and a
 // solid near-black CTA (inverted on Night). The UI stays strictly greyscale;
 // chroma lives only in the emerald shield logo.
-export const SSHIELD_THEMES: SshieldTheme[] = [
+export const BULWARK_THEMES: BulwarkTheme[] = [
   {
     id: "daylight",
     name: "Daylight",
@@ -33,13 +33,13 @@ const LEGACY_THEME_IDS: Record<string, string> = {
   "supabase-night": "night",
 };
 
-const STORAGE_KEY = "sshield.theme";
+const STORAGE_KEY = "bulwark.theme";
 
 export function getSavedThemeId(): string {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     const resolved = saved ? LEGACY_THEME_IDS[saved] ?? saved : undefined;
-    if (resolved && SSHIELD_THEMES.some((t) => t.id === resolved)) {
+    if (resolved && BULWARK_THEMES.some((t) => t.id === resolved)) {
       return resolved;
     }
   } catch {
@@ -48,8 +48,8 @@ export function getSavedThemeId(): string {
   return "daylight";
 }
 
-export function applyTheme(themeId: string): SshieldTheme {
-  const theme = SSHIELD_THEMES.find((t) => t.id === themeId) ?? SSHIELD_THEMES[0];
+export function applyTheme(themeId: string): BulwarkTheme {
+  const theme = BULWARK_THEMES.find((t) => t.id === themeId) ?? BULWARK_THEMES[0];
   const root = document.documentElement;
   root.setAttribute("data-theme", theme.id);
   if (theme.mode === "dark") {

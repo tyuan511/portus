@@ -3,7 +3,7 @@
 ## Recommended topology
 
 ```
-internet ──TLS──▶ nginx/caddy (443) ──▶ sshield-server 127.0.0.1:8787
+internet ──TLS──▶ nginx/caddy (443) ──▶ bulwark-server 127.0.0.1:8787
 ```
 
 Keep the server bound to loopback or a management network; terminate TLS at the proxy.
@@ -12,35 +12,35 @@ Keep the server bound to loopback or a management network; terminate TLS at the 
 
 ```ini
 [Unit]
-Description=SSHield Enterprise
+Description=Bulwark Enterprise
 After=network.target postgresql.service
 
 [Service]
-User=sshield
-Group=sshield
-ExecStart=/opt/sshield/bin/sshield-server -config /etc/sshield/sshield-server.yaml
-Environment=SSHIELD_ENV=prod
+User=bulwark
+Group=bulwark
+ExecStart=/opt/bulwark/bin/bulwark-server -config /etc/bulwark/bulwark-server.yaml
+Environment=BULWARK_ENV=prod
 Restart=on-failure
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/sshield
+ReadWritePaths=/var/lib/bulwark
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-`-config` is optional; without it the server discovers `$SSHIELD_CONFIG`, then
-`<data_dir>/sshield-server.yaml`. `./sshield-server -version` prints the build version.
+`-config` is optional; without it the server discovers `$BULWARK_CONFIG`, then
+`<data_dir>/bulwark-server.yaml`. `./bulwark-server -version` prints the build version.
 
 ### nginx
 
 ```nginx
 server {
     listen 443 ssl http2;
-    server_name sshield.example.com;
+    server_name bulwark.example.com;
 
-    ssl_certificate     /etc/letsencrypt/live/sshield.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/sshield.example.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/bulwark.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bulwark.example.com/privkey.pem;
 
     location / {
         proxy_pass http://127.0.0.1:8787;
@@ -82,14 +82,14 @@ If the UI is served from a different origin than the API, set
 ## Docker Compose
 
 A reference `docker-compose.yml` is provided at the repo root: it starts PostgreSQL plus
-sshield-server, with a named volume for the data dir. Essentials to get right:
+bulwark-server, with a named volume for the data dir. Essentials to get right:
 
 - **The data volume must be persistent.** It holds `server.key` — the single encryption root
   for stored SSH credentials and TOTP secrets. If the volume is recreated, every stored
   credential and enrolled TOTP secret becomes undecryptable. Back the key up separately (see
   [backup.md](backup.md)).
 - Point `storage.db_url` at the compose `postgres` service (e.g. via the
-  `SSHIELD_STORAGE_DB_URL` environment override).
+  `BULWARK_STORAGE_DB_URL` environment override).
 - Liveness probe: `GET /api/health` (unauthenticated; also returns the build `version`).
 - Migrations run automatically at boot; the data volume and the database volume are
   independent — losing the database volume is recoverable from a `pg_dump`, losing the data
@@ -97,9 +97,9 @@ sshield-server, with a named volume for the data dir. Essentials to get right:
 
 ## Version identification
 
-- `./sshield-server -version` prints the build version.
+- `./bulwark-server -version` prints the build version.
 - The version is injected at build time via
-  `go build -ldflags "-X github.com/yuantang/sshield/internal/buildinfo.Version=<tag>"`;
+  `go build -ldflags "-X github.com/tyuan511/bulwark/internal/buildinfo.Version=<tag>"`;
   binaries built without it report `dev`.
 - `GET /api/health` always reports the running version — useful for rollout verification.
 

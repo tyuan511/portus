@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yuantang/sshield/internal/domain"
+	"github.com/tyuan511/bulwark/internal/domain"
 )
 
 var lastTestDSN string
@@ -18,7 +18,7 @@ func testDB(t *testing.T) *DB {
 	t.Helper()
 	base := os.Getenv("TEST_POSTGRES_URL")
 	if base == "" {
-		base = "postgres://sshield:secret@127.0.0.1:54329/sshield_test?sslmode=disable"
+		base = "postgres://bulwark:secret@127.0.0.1:54329/bulwark_test?sslmode=disable"
 	}
 	var b [6]byte
 	_, _ = rand.Read(b[:])
@@ -183,15 +183,21 @@ func TestRBACGrantEvaluation(t *testing.T) {
 		}
 	}
 
-	// Grant group "ops": connect on "prod", connect+execute on "db".
+	// Grant group "ops": connect on srv-1 and srv-2, connect+execute on srv-3.
 	if err := db.CreateHostGrant(&domain.HostGrant{
-		ID: "grant-1", UserGroupID: "grp-ops", GroupName: "prod",
+		ID: "grant-1", UserGroupID: "grp-ops", ServerID: "srv-1",
 		CanConnect: true, CanExecute: false,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.CreateHostGrant(&domain.HostGrant{
-		ID: "grant-2", UserGroupID: "grp-ops", GroupName: "db",
+		ID: "grant-2", UserGroupID: "grp-ops", ServerID: "srv-2",
+		CanConnect: true, CanExecute: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateHostGrant(&domain.HostGrant{
+		ID: "grant-3", UserGroupID: "grp-ops", ServerID: "srv-3",
 		CanConnect: true, CanExecute: true,
 	}); err != nil {
 		t.Fatal(err)
