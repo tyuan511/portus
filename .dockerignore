@@ -1,7 +1,0 @@
-bin/
-web/node_modules
-web/dist
-internal/webui/dist
-.git
-data/
-*.log
