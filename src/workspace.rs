@@ -24,7 +24,7 @@ use crate::preferences::{
 use crate::quick_connect::{QuickConnectEvent, QuickConnectPalette};
 use crate::settings::{HostProfile, HostProtocol, Language, SettingsStore, Snippet};
 use crate::sftp_view::{SftpView, SftpViewEvent};
-use crate::ssh::ServerTelemetry;
+use crate::ssh::{ServerTelemetry, supports_sftp};
 use crate::terminal::TerminalSession;
 use crate::theme::{Colors, Theme};
 use crate::{
@@ -203,6 +203,7 @@ impl Workspace {
                 this.vibrancy = vibrancy;
                 apply_window_style(window, opacity, vibrancy);
             }
+            this.sync_file_drawer(window, cx);
             cx.notify();
         });
 
@@ -552,12 +553,12 @@ impl Workspace {
     }
 
     fn open_sftp(&mut self, host: HostProfile, window: &mut Window, cx: &mut Context<Self>) {
-        if host.protocol != HostProtocol::Ssh {
+        if !supports_sftp(&host, &self.settings.read(cx).current.hosts) {
             let language = self.settings.read(cx).current.language;
             crate::notify::info(
                 language.text(
-                    "GUI SFTP is only supported for SSH hosts.",
-                    "当前主机协议不支持界面化 SFTP。",
+                    "SFTP is unavailable for this host.",
+                    "当前主机不支持 SFTP。",
                 ),
                 window,
                 cx,
@@ -746,7 +747,7 @@ impl Workspace {
     ) {
         if self.right_drawer == Some(drawer) {
             self.right_drawer = None;
-        } else {
+        } else if drawer != RightDrawer::Files || self.file_drawer_terminal(cx).is_some() {
             self.right_drawer = Some(drawer);
             if drawer == RightDrawer::Files {
                 self.sync_file_drawer(window, cx);
@@ -777,14 +778,28 @@ impl Workspace {
         self.toggle_right_drawer(RightDrawer::Tunnels, window, cx);
     }
 
+    fn file_drawer_terminal(&self, cx: &Context<Self>) -> Option<Entity<TerminalSession>> {
+        if self.in_vault {
+            return None;
+        }
+        let all_hosts = &self.settings.read(cx).current.hosts;
+        self.active_terminal().filter(|terminal| {
+            terminal
+                .read(cx)
+                .host_profile()
+                .is_none_or(|host| supports_sftp(host, all_hosts))
+        })
+    }
+
     fn sync_file_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.right_drawer != Some(RightDrawer::Files) {
             return;
         }
-        let host = self
-            .active_terminal()
-            .and_then(|t| t.read(cx).host_profile().cloned())
-            .filter(|h| h.protocol == HostProtocol::Ssh);
+        let terminal = self.file_drawer_terminal(cx);
+        if terminal.is_none() {
+            self.right_drawer = None;
+        }
+        let host = terminal.and_then(|t| t.read(cx).host_profile().cloned());
         self.file_drawer.update(cx, |drawer, cx| {
             drawer.sync_target(host.as_ref(), window, cx);
         });
@@ -2036,10 +2051,15 @@ impl Workspace {
         };
 
         cx.spawn_in(window, async move |ws, cx| {
-            let result = match tokio::time::timeout(std::time::Duration::from_secs(20), rx).await {
-                Ok(Ok(res)) => res,
-                Ok(Err(_)) => Err("SSH session closed while fetching logs.".to_owned()),
-                Err(_) => Err("Timed out fetching Docker logs.".to_owned()),
+            let timeout = cx
+                .background_executor()
+                .timer(std::time::Duration::from_secs(20));
+            let result = tokio::select! {
+                biased;
+                reply = rx => reply.unwrap_or_else(|_| {
+                    Err("SSH session closed while fetching logs.".to_owned())
+                }),
+                _ = timeout => Err("Timed out fetching Docker logs.".to_owned()),
             };
             let _ = ws.update(cx, |this, cx| {
                 let Some(state) = this.docker_logs.as_mut() else {
@@ -2551,6 +2571,7 @@ impl Workspace {
         let language = self.language;
         let vibrancy = self.vibrancy;
         let active_term = self.active_terminal();
+        let can_sftp = self.file_drawer_terminal(cx).is_some();
         let (is_ssh, connected, host_label, telemetry, is_split, tunnel_count, has_host) =
             match active_term {
             Some(ref term_entity) => {
@@ -2738,7 +2759,7 @@ impl Workspace {
                             this.toggle_right_drawer(RightDrawer::Docker, window, cx);
                         }))
                     }))
-                    .child(
+                    .children(can_sftp.then(|| {
                         status_pill_btn(
                             "sb-sftp",
                             Some(Icon::Folder),
@@ -2749,8 +2770,8 @@ impl Workspace {
                         )
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.toggle_right_drawer(RightDrawer::Files, window, cx);
-                        })),
-                    )
+                        }))
+                    }))
                     .child(
                         status_pill_btn(
                             "sb-snippets",

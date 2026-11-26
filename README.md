@@ -53,7 +53,7 @@ cargo run --locked
 在 **设置 → MCP 服务** 中选择传输方式和客户端，再点 **复制配置**。
 
 - **Streamable HTTP** 由桌面应用提供，默认地址为 `http://127.0.0.1:7331/mcp`，仅监听本机回环地址。需要人工审批时，在桌面应用中处理。
-- **stdio** 由客户端以 `portus --mcp-stdio` 启动。使用源码构建时，配置中的启动命令填写二进制的绝对路径。该模式会拒绝需要人工审批的请求。
+- **stdio** 由客户端以 `--mcp-stdio` 参数启动 Portus。使用源码构建时，配置中的启动命令填写二进制的绝对路径。该模式会拒绝需要人工审批的请求。
 
 主机的默认授权为 **禁止**。可在 **主机授权与策略** 中查看或调整各主机的权限。
 
@@ -73,3 +73,14 @@ cargo test --locked
 桌面入口在 [`src/main.rs`](src/main.rs)。[`src/workspace.rs`](src/workspace.rs) 管理工作区，[`src/terminal.rs`](src/terminal.rs) 和 [`src/ssh.rs`](src/ssh.rs) 分别处理终端与内置 SSH 会话。终端组件及网格实现位于 [`vendor/`](vendor/)。
 
 可在浏览器中打开 [交互原型](prototype/index.html) 查看界面和操作流程。终端输出性能数据及复测方法见 [PTY 网格基准](benchmarks/pty-grid.md)。
+
+## 版本发布
+
+将 `Cargo.toml` 和 `Cargo.lock` 中的版本同步后，在包含发布工作流的提交上创建并推送 `vX.Y.Z` 标签。标签必须与 Cargo 包版本一致。
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+[发布工作流](.github/workflows/release.yml) 会测试并构建 macOS arm64，在 [GitHub Releases](https://github.com/tyuan511/portus/releases) 上传 `Portus-v0.1.0-macos-arm64.dmg`，Release 正文留空。打开 DMG 后，将 `Portus.app` 拖入 Applications。应用包使用 ad-hoc 签名，尚未进行 Apple 公证。

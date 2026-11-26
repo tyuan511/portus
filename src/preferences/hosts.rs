@@ -19,6 +19,7 @@ use crate::settings::{
     HostIcon, HostProfile, HostProtocol, KeychainEntry, KeychainKind, Language, SettingsStore,
     group_hosts,
 };
+use crate::ssh::supports_sftp;
 use crate::theme::Colors;
 use crate::vault::{decrypt_secret, encrypt_secret};
 use model::{copy_command, merge_candidates, read_configs, validate_profile_for};
@@ -673,18 +674,11 @@ impl HostsPage {
         language: Language,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let Some(host) = self
-            .store
-            .read(cx)
-            .current
-            .hosts
-            .iter()
-            .find(|h| h.id == host_id)
-            .cloned()
-        else {
+        let hosts = &self.store.read(cx).current.hosts;
+        let Some(host) = hosts.iter().find(|h| h.id == host_id) else {
             return div().into_any_element();
         };
-        let is_ssh = host.protocol == HostProtocol::Ssh;
+        let can_sftp = supports_sftp(host, hosts);
         let host_conn = host.clone();
         let host_sftp = host.clone();
         let host_cmd = host.clone();
@@ -747,7 +741,7 @@ impl HostsPage {
                         cx.emit(HostsEvent::Connect(host_conn.clone()));
                     })),
             )
-            .children(is_ssh.then(|| {
+            .children(can_sftp.then(|| {
                 menu_item("ctx-sftp", Icon::Folder, language.text("Open SFTP", "打开文件传输"), false)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.close_context_menu(cx);
@@ -1708,6 +1702,7 @@ impl Render for HostsPage {
                 .children(hosts.into_iter().map(|host| {
                     let id = host.id;
                     let is_sel = selected_id == Some(id);
+                    let can_sftp = supports_sftp(&host, &saved.hosts);
                     let auth_label = host
                         .keychain_id
                         .and_then(|kid| keychain.iter().find(|k| k.id == kid))
@@ -1832,7 +1827,7 @@ impl Render for HostsPage {
                                 .items_center()
                                 .justify_end()
                                 .gap(px(2.))
-                                .child(
+                                .children(can_sftp.then(|| {
                                     Button::new(("hl-sftp", id))
                                         .ghost()
                                         .xsmall()
@@ -1840,8 +1835,8 @@ impl Render for HostsPage {
                                         .on_click(cx.listener(move |_, _, _, cx| {
                                             cx.stop_propagation();
                                             cx.emit(HostsEvent::OpenSftp(host_sftp.clone()));
-                                        })),
-                                )
+                                        }))
+                                }))
                                 .child(
                                     Button::new(("hl-conn", id))
                                         .ghost()
@@ -1897,6 +1892,7 @@ impl Render for HostsPage {
                                 .children(owned_items.into_iter().map(|host| {
                                     let id = host.id;
                                     let is_sel = selected_id == Some(id);
+                                    let can_sftp = supports_sftp(&host, &saved.hosts);
                                     let badge_bg = match host.protocol {
                                         HostProtocol::Ssh => host.icon.icon().macos_color(),
                                         HostProtocol::Mosh => 0xaf52de,
@@ -2047,7 +2043,7 @@ impl Render for HostsPage {
                                                         .gap(px(2.))
                                                         .opacity(0.0)
                                                         .group_hover(card_group, |s| s.opacity(1.0))
-                                                        .child(
+                                                        .children(can_sftp.then(|| {
                                                             Button::new(("hc-sftp", id))
                                                                 .ghost()
                                                                 .xsmall()
@@ -2061,8 +2057,8 @@ impl Render for HostsPage {
                                                                             ),
                                                                         );
                                                                     },
-                                                                )),
-                                                        )
+                                                                ))
+                                                        }))
                                                         .child(
                                                             Button::new(("hc-conn", id))
                                                                 .ghost()

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use gpui_kit::{
     AppContext as _, ClickEvent, Context, Entity, EventEmitter, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
     component::{
         Sizable as _,
         button::{Button, ButtonVariants as _},
@@ -52,6 +52,7 @@ pub struct FileDrawer {
     store: Entity<SettingsStore>,
     mode: Mode,
     client: Option<SftpClient>,
+    sftp_events: Option<Task<()>>,
     connected: bool,
     remote_entries: Vec<RemoteEntry>,
     selected_path: Option<String>,
@@ -84,6 +85,7 @@ impl FileDrawer {
             store,
             mode: Mode::Local { root },
             client: None,
+            sftp_events: None,
             connected: true,
             remote_entries: Vec::new(),
             selected_path: None,
@@ -138,6 +140,7 @@ impl FileDrawer {
     }
 
     pub fn shutdown_sftp(&mut self) {
+        self.sftp_events = None;
         self.prompt_sub = None;
         if let Some(client) = self.client.take() {
             client.send(SftpRequest::Close);
@@ -160,7 +163,7 @@ impl FileDrawer {
         let client = SftpClient::spawn(host, all_hosts, tx);
         self.client = Some(client);
 
-        cx.spawn_in(window, async move |view, cx| {
+        self.sftp_events = Some(cx.spawn_in(window, async move |view, cx| {
             while let Ok(ev) = rx.recv().await {
                 let keep = cx.update(|window, cx| {
                     view.update(cx, |this, cx| this.handle_sftp_event(ev, window, cx))
@@ -170,8 +173,7 @@ impl FileDrawer {
                     break;
                 }
             }
-        })
-        .detach();
+        }));
         cx.notify();
     }
 

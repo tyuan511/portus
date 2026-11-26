@@ -355,13 +355,18 @@ fn collect_jump_hops(
     }
 }
 
-fn parse_relay_commands(raw: &str) -> Vec<String> {
+fn relay_command_lines(raw: &str) -> impl Iterator<Item = &str> {
     raw.split(['\n', '\r'])
         .flat_map(|line| line.split(";;"))
         .map(str::trim)
         .filter(|cmd| !cmd.is_empty())
-        .map(str::to_owned)
-        .collect()
+}
+
+/// Checks the configured route. The server's SFTP subsystem is checked at connection time.
+pub(crate) fn supports_sftp(host: &HostProfile, all_hosts: &[HostProfile]) -> bool {
+    host.protocol == HostProtocol::Ssh
+        && (relay_command_lines(&host.jump_relay_command).next().is_none()
+            || resolve_jump_chain(host, all_hosts).is_empty())
 }
 
 fn strip_ansi(bytes: &[u8]) -> Cow<'_, str> {
@@ -912,7 +917,7 @@ pub(crate) async fn connect_target_with_forwarding(
 ) -> Result<client::Handle<ClientHandler>, String> {
     let config = client_config();
     let jumps = resolve_jump_chain(host, all_hosts);
-    if !jumps.is_empty() && !parse_relay_commands(&host.jump_relay_command).is_empty() {
+    if !jumps.is_empty() && relay_command_lines(&host.jump_relay_command).next().is_some() {
         return Err(
             "Jump relay commands are only supported in interactive SSH terminal sessions, not SFTP or port forwarding."
                 .into(),
@@ -1344,7 +1349,9 @@ async fn run_ssh_session(
     mut control_rx: mpsc::UnboundedReceiver<SshControlRequest>,
 ) {
     let jumps = resolve_jump_chain(&host, &all_hosts);
-    let relay_commands = parse_relay_commands(&host.jump_relay_command);
+    let relay_commands: Vec<String> = relay_command_lines(&host.jump_relay_command)
+        .map(str::to_owned)
+        .collect();
     let use_relay = !jumps.is_empty() && !relay_commands.is_empty();
 
     let (session, jump_endpoint) = if use_relay {
@@ -2321,6 +2328,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sftp_requires_ssh_without_an_interactive_jump_relay() {
+        let mut host = sample_host(1, "Target", "target.example", "deploy", 22);
+        assert!(supports_sftp(&host, &[]));
+        for protocol in [HostProtocol::Mosh, HostProtocol::Telnet, HostProtocol::Serial] {
+            host.protocol = protocol;
+            assert!(!supports_sftp(&host, &[]));
+        }
+
+        host.protocol = HostProtocol::Ssh;
+        host.jump_host = "relay@jump.example".into();
+        host.jump_relay_command = " ;; \n ".into();
+        assert!(supports_sftp(&host, &[]));
+        host.jump_relay_command = "su - admin".into();
+        assert!(!supports_sftp(&host, &[]));
+
+        host.jump_host.clear();
+        assert!(supports_sftp(&host, &[]));
+        let jump = sample_host(2, "Bastion", "jump.example", "relay", 22);
+        host.jump_host_id = Some(jump.id);
+        assert!(!supports_sftp(&host, &[jump]));
+    }
+
     struct PtyBenchCapture {
         count_output: AtomicBool,
         output_x: AtomicUsize,
@@ -2565,7 +2595,7 @@ mod tests {
             "Password: "
         );
         assert_eq!(
-            parse_relay_commands("su - admin\n;; sudo -i"),
+            relay_command_lines("su - admin\n;; sudo -i").collect::<Vec<_>>(),
             vec!["su - admin", "sudo -i"]
         );
     }

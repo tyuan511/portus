@@ -5,6 +5,10 @@ edition = "2024"
 rust-version = "1.98"
 publish = false
 
+[[bin]]
+name = "Portus"
+path = "src/main.rs"
+
 [dependencies]
 aes-gcm = "0.11"
 argon2 = "0.6"
