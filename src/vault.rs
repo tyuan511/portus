@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::Write as _;
-use std::path::PathBuf;
+use std::io::{self, Write as _};
+use std::path::Path;
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -10,11 +10,15 @@ use data_encoding::BASE64;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{HostProfile, PortForwardRule, Settings, Snippet};
+use crate::settings::{
+    HostProfile, KeychainEntry, LOCAL_KEY_FILE, PortForwardRule, Settings, Snippet, config_dir,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VaultPayload {
     pub hosts: Vec<HostProfile>,
+    #[serde(default)]
+    pub keychain: Vec<KeychainEntry>,
     pub snippets: Vec<Snippet>,
     pub tunnels: Vec<PortForwardRule>,
 }
@@ -41,6 +45,7 @@ pub fn export_vault(settings: &Settings, passphrase: &str) -> Result<Vec<u8>, St
     }
     let payload = VaultPayload {
         hosts: settings.hosts.clone(),
+        keychain: settings.keychain.clone(),
         snippets: settings.snippets.clone(),
         tunnels: settings.tunnels.clone(),
     };
@@ -151,39 +156,52 @@ pub fn merge_vault_into(settings: &mut Settings, payload: VaultPayload) -> (usiz
         }
     }
 
+    let mut kc_names: HashSet<String> = settings
+        .keychain
+        .iter()
+        .map(|k| k.name.to_lowercase())
+        .collect();
+    for mut entry in payload.keychain {
+        if kc_names.insert(entry.name.to_lowercase())
+            && let Some(ids) = settings.keychain_ids(1)
+        {
+            entry.id = ids.start;
+            settings.next_keychain_id = ids.end;
+            settings.keychain.push(entry);
+        }
+    }
+
     (added_hosts, added_snippets, added_tunnels)
 }
 
 const SECRET_PREFIX: &str = "enc:v1:";
 
-fn local_secret_key_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|parent| parent.join("Bulwark").join(".host_key"))
+fn read_local_key(path: &Path) -> io::Result<[u8; 32]> {
+    fs::read(path)?
+        .try_into()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid local key length"))
 }
 
-fn load_or_create_local_key() -> Result<[u8; 32], String> {
-    let path = local_secret_key_path()
-        .ok_or_else(|| "Could not locate application config directory.".to_string())?;
-    if let Ok(bytes) = fs::read(&path)
-        && bytes.len() == 32
-    {
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&bytes);
-        return Ok(key);
+fn load_or_create_local_key() -> io::Result<[u8; 32]> {
+    let directory = config_dir()?;
+    let path = directory.join(LOCAL_KEY_FILE);
+    match read_local_key(&path) {
+        Ok(key) => return Ok(key),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create key directory: {e}"))?;
-    }
+
+    fs::create_dir_all(&directory)?;
     let mut key = [0u8; 32];
     rand::rng().fill_bytes(&mut key);
-    let mut file = fs::File::create(&path).map_err(|e| format!("Failed to create key file: {e}"))?;
-    file.write_all(&key)
-        .map_err(|e| format!("Failed to write key file: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    file.write_all(&key)?;
+    file.as_file().sync_all()?;
+    match file.persist_noclobber(&path) {
+        Ok(_) => Ok(key),
+        Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => read_local_key(&path),
+        Err(error) => Err(error.error),
     }
-    Ok(key)
 }
 
 pub fn encrypt_secret_with_key(plaintext: &str, key: &[u8; 32]) -> Result<String, String> {
@@ -225,7 +243,8 @@ pub fn encrypt_secret(plaintext: &str) -> Result<String, String> {
     if plaintext.is_empty() {
         return Ok(String::new());
     }
-    let key = load_or_create_local_key()?;
+    let key =
+        load_or_create_local_key().map_err(|error| format!("Could not load local key: {error}"))?;
     encrypt_secret_with_key(plaintext, &key)
 }
 
@@ -236,7 +255,7 @@ pub fn decrypt_secret(stored: &str) -> Option<String> {
     if !stored.starts_with(SECRET_PREFIX) {
         return Some(stored.to_owned());
     }
-    let key = load_or_create_local_key().ok()?;
+    let key = read_local_key(&config_dir().ok()?.join(LOCAL_KEY_FILE)).ok()?;
     decrypt_secret_with_key(stored, &key)
 }
 
@@ -272,11 +291,13 @@ mod tests {
             username: "ops".into(),
             port: 22,
             baud_rate: 115200,
+            keychain_id: None,
             identity_file: String::new(),
             password: String::new(),
             jump_host: String::new(),
             jump_host_id: None,
             jump_relay_command: String::new(),
+            jump_relay_keychain_id: None,
             jump_relay_password: String::new(),
             group: "Prod".into(),
             tags: vec!["edge".into()],

@@ -1,16 +1,14 @@
 mod model;
 
-use std::fs;
-use std::io::Read as _;
-
 use gpui_kit::{
-    App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FontWeight,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _,
+    PathPromptOptions, Pixels, Point, Render, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, anchored, deferred,
     component::{
-        Disableable as _, IndexPath, Sizable as _,
+        IndexPath, Sizable as _,
         button::{Button, ButtonVariants as _},
-        input::{InputEvent, InputState},
+        input::InputState,
         select::{Select, SelectEvent, SelectState},
     },
     div, px, rgb, transparent_black,
@@ -18,859 +16,347 @@ use gpui_kit::{
 
 use crate::icons::Icon;
 use crate::settings::{
-    HostIcon, HostProfile, HostProtocol, Language, Settings, SettingsStore, group_hosts,
+    HostIcon, HostProfile, HostProtocol, KeychainEntry, KeychainKind, Language, SettingsStore,
+    group_hosts,
 };
 use crate::theme::Colors;
 use crate::vault::{decrypt_secret, encrypt_secret};
-use model::{
-    ImportBatch, copy_command, host_matches, merge_candidates, read_configs,
-    validate_profile_for,
-};
+use model::{copy_command, merge_candidates, read_configs, validate_profile_for};
 
 use super::{SelectChoice, danger_button, input_field, primary_button, secondary_button};
 
+pub enum HostsEvent {
+    Connect(HostProfile),
+    OpenSftp(HostProfile),
+}
+
+impl EventEmitter<HostsEvent> for HostsPage {}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SshAuthMethod {
-    PrivateKey,
-    Password,
+enum HostViewMode {
+    Cards,
+    List,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum KeychainChoice {
+    None,
+    Entry(u64),
 }
 
 #[derive(Clone, PartialEq, Eq)]
 enum JumpChoice {
     None,
     Host(u64),
-    Legacy(String),
 }
-
-fn discover_ssh_keys() -> Vec<String> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
-    let ssh_dir = home.join(".ssh");
-    let Ok(entries) = fs::read_dir(&ssh_dir) else {
-        return Vec::new();
-    };
-    let preferred = ["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"];
-    let mut found: Vec<String> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if name.starts_with('.')
-            || name.ends_with(".pub")
-            || matches!(
-                name,
-                "config"
-                    | "known_hosts"
-                    | "known_hosts.old"
-                    | "authorized_keys"
-                    | "authorized_keys2"
-                    | "environment"
-                    | "rc"
-            )
-        {
-            continue;
-        }
-        let is_preferred = preferred.contains(&name);
-        let looks_like_key = if is_preferred {
-            true
-        } else {
-            let mut buf = [0u8; 32];
-            fs::File::open(&path)
-                .and_then(|mut f| f.read(&mut buf))
-                .ok()
-                .is_some_and(|n| {
-                    std::str::from_utf8(&buf[..n])
-                        .ok()
-                        .is_some_and(|s| s.starts_with("-----BEGIN "))
-                })
-        };
-        if looks_like_key {
-            found.push(name.to_owned());
-        }
-    }
-    found.sort_by(|a, b| {
-        let pa = preferred.iter().position(|p| p == a).unwrap_or(preferred.len());
-        let pb = preferred.iter().position(|p| p == b).unwrap_or(preferred.len());
-        pa.cmp(&pb).then_with(|| a.cmp(b))
-    });
-    found.into_iter().map(|name| format!("~/.ssh/{name}")).collect()
-}
-
-fn build_key_select_items(
-    current: &str,
-    discovered: &[String],
-    language: Language,
-) -> Vec<SelectChoice<String>> {
-    let mut items = Vec::with_capacity(discovered.len() + 2);
-    items.push(SelectChoice::new(
-        language.text("Auto (scan ~/.ssh)", "自动（默认扫描 ~/.ssh）"),
-        String::new(),
-    ));
-    for path in discovered {
-        items.push(SelectChoice::new(path.clone(), path.clone()));
-    }
-    if !current.is_empty() && !discovered.iter().any(|p| p == current) {
-        items.push(SelectChoice::new(current.to_owned(), current.to_owned()));
-    }
-    items
-}
-
-fn build_protocol_items() -> Vec<SelectChoice<HostProtocol>> {
-    [
-        (HostProtocol::Ssh, "SSH"),
-        (HostProtocol::Telnet, "Telnet"),
-        (HostProtocol::Serial, "Serial"),
-        (HostProtocol::Mosh, "Mosh"),
-    ]
-    .into_iter()
-    .map(|(proto, label)| SelectChoice::new(label, proto))
-    .collect()
-}
-
-fn build_jump_items(
-    existing_hosts: &[HostProfile],
-    self_id: Option<u64>,
-    legacy_jump: &str,
-    language: Language,
-) -> Vec<SelectChoice<JumpChoice>> {
-    let mut items = vec![SelectChoice::new(
-        language.text("None", "无"),
-        JumpChoice::None,
-    )];
-    for host in existing_hosts {
-        if host.protocol == HostProtocol::Ssh && Some(host.id) != self_id {
-            items.push(SelectChoice::new(
-                format!("{} ({})", host.name, host.endpoint()),
-                JumpChoice::Host(host.id),
-            ));
-        }
-    }
-    if !legacy_jump.is_empty() {
-        items.push(SelectChoice::new(
-            legacy_jump.to_owned(),
-            JumpChoice::Legacy(legacy_jump.to_owned()),
-        ));
-    }
-    items
-}
-
-const FIELDS: [(&str, &str, &str); 7] = [
-    ("Name", "名称", "Production API"),
-    ("Host", "地址", "server.example.com"),
-    ("Username", "用户名", "deploy"),
-    ("Port", "端口", "22"),
-    ("Identity file", "私钥文件", "~/.ssh/id_ed25519"),
-    ("Group", "分组", "Production"),
-    ("Tags", "标签（逗号分隔）", "prod, api"),
-];
 
 struct HostEditor {
-    id: Option<u64>,
+    edit_id: Option<u64>,
     protocol: HostProtocol,
-    auth_method: SshAuthMethod,
     icon: HostIcon,
-    fields: [Entity<InputState>; FIELDS.len()],
+    keychain_choice: KeychainChoice,
+    jump_choice: JumpChoice,
+    jump_relay_keychain_choice: KeychainChoice,
+    name: Entity<InputState>,
+    group: Entity<InputState>,
+    tags: Entity<InputState>,
+    address: Entity<InputState>,
+    port: Entity<InputState>,
+    username: Entity<InputState>,
+    identity_file: Entity<InputState>,
     password: Entity<InputState>,
-    jump_host_id: Option<u64>,
-    legacy_jump_host: String,
     jump_relay_command: Entity<InputState>,
     jump_relay_password: Entity<InputState>,
-    discovered_keys: Vec<String>,
-    protocol_select: Entity<SelectState<Vec<SelectChoice<HostProtocol>>>>,
-    key_select: Entity<SelectState<Vec<SelectChoice<String>>>>,
+    keychain_select: Entity<SelectState<Vec<SelectChoice<KeychainChoice>>>>,
     jump_select: Entity<SelectState<Vec<SelectChoice<JumpChoice>>>>,
-    _select_subs: Vec<Subscription>,
+    jump_relay_keychain_select: Entity<SelectState<Vec<SelectChoice<KeychainChoice>>>>,
+    _subs: Vec<Subscription>,
 }
 
 impl HostEditor {
     fn new(
-        profile: Option<&HostProfile>,
-        id: Option<u64>,
-        existing_hosts: &[HostProfile],
+        host: Option<&HostProfile>,
+        all_hosts: &[HostProfile],
+        keychain: &[KeychainEntry],
         language: Language,
         window: &mut Window,
-        cx: &mut App,
+        cx: &mut Context<HostsPage>,
     ) -> Self {
-        let protocol = profile.map(|h| h.protocol).unwrap_or(HostProtocol::Ssh);
-        let icon = profile.map(|h| h.icon).unwrap_or_default();
-        let discovered_keys = discover_ssh_keys();
-        let raw_password = profile
-            .and_then(|host| decrypt_secret(&host.password))
+        let edit_id = host.map(|h| h.id);
+        let protocol = host.map(|h| h.protocol).unwrap_or(HostProtocol::Ssh);
+        let icon = host.map(|h| h.icon).unwrap_or(HostIcon::Server);
+        let name_v = host.map(|h| h.name.clone()).unwrap_or_default();
+        let group_v = host
+            .map(|h| h.group.clone())
+            .unwrap_or_else(|| "Production".into());
+        let tags_v = host.map(|h| h.tags.join(", ")).unwrap_or_default();
+        let addr_v = host.map(|h| h.address.clone()).unwrap_or_default();
+        let port_v = match host {
+            Some(h) if h.protocol == HostProtocol::Serial => h.baud_rate.to_string(),
+            Some(h) => h.port.to_string(),
+            None => "22".into(),
+        };
+        let user_v = host
+            .map(|h| h.username.clone())
+            .unwrap_or_else(|| "root".into());
+        let id_file_v = host.map(|h| h.identity_file.clone()).unwrap_or_default();
+        let pwd_v = host
+            .and_then(|h| decrypt_secret(&h.password))
             .unwrap_or_default();
-        let auth_method = match profile {
-            Some(host) if host.identity_file.trim().is_empty() && !raw_password.is_empty() => {
-                SshAuthMethod::Password
-            }
-            _ => SshAuthMethod::PrivateKey,
-        };
-        let default_identity = match profile {
-            Some(host) => host.identity_file.clone(),
-            None => discovered_keys.first().cloned().unwrap_or_default(),
-        };
-        let values = match profile {
-            Some(host) => [
-                host.name.clone(),
-                host.address.clone(),
-                host.username.clone(),
-                if host.protocol == HostProtocol::Serial {
-                    host.baud_rate.to_string()
-                } else {
-                    host.port.to_string()
-                },
-                default_identity.clone(),
-                host.group.clone(),
-                host.tags.join(", "),
-            ],
-            None => [
-                String::new(),
-                String::new(),
-                String::new(),
-                "22".into(),
-                default_identity.clone(),
-                String::new(),
-                String::new(),
-            ],
-        };
-        let mut fields = FIELDS
-            .into_iter()
-            .zip(values)
-            .map(|((_, _, placeholder), value)| {
-                cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .placeholder(placeholder)
-                        .default_value(value)
-                })
+        let relay_cmd_v = host.map(|h| h.jump_relay_command.clone()).unwrap_or_default();
+        let relay_pwd_v = host
+            .and_then(|h| decrypt_secret(&h.jump_relay_password))
+            .unwrap_or_default();
+
+        let keychain_choice = host
+            .and_then(|h| h.keychain_id)
+            .filter(|id| keychain.iter().any(|k| k.id == *id))
+            .map(KeychainChoice::Entry)
+            .unwrap_or(KeychainChoice::None);
+
+        let jump_choice = host
+            .and_then(|h| h.jump_host_id)
+            .filter(|id| all_hosts.iter().any(|candidate| candidate.id == *id))
+            .map(JumpChoice::Host)
+            .unwrap_or(JumpChoice::None);
+
+        let jump_relay_keychain_choice = host
+            .and_then(|h| h.jump_relay_keychain_id)
+            .filter(|id| {
+                keychain
+                    .iter()
+                    .any(|k| k.id == *id && k.kind == KeychainKind::Password)
             })
-            .collect::<Vec<_>>()
-            .into_iter();
+            .map(KeychainChoice::Entry)
+            .unwrap_or(KeychainChoice::None);
+
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(language.text("e.g. prod-api-01", "例如 prod-api-01"))
+                .default_value(name_v)
+        });
+        let group = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(language.text("Production", "Production"))
+                .default_value(group_v)
+        });
+        let tags = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(language.text("api, hkg, docker", "api, hkg, docker"))
+                .default_value(tags_v)
+        });
+        let address = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(match protocol {
+                    HostProtocol::Serial => "/dev/cu.usbserial-110",
+                    _ => "10.0.14.21",
+                })
+                .default_value(addr_v)
+        });
+        let port = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(match protocol {
+                    HostProtocol::Serial => "115200",
+                    HostProtocol::Telnet => "23",
+                    _ => "22",
+                })
+                .default_value(port_v)
+        });
+        let username = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("root")
+                .default_value(user_v)
+        });
+        let identity_file = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("~/.ssh/id_ed25519")
+                .default_value(id_file_v)
+        });
         let password = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(language.text("SSH password", "输入 SSH 密码"))
-                .default_value(raw_password)
                 .masked(true)
+                .placeholder(language.text("Optional direct password", "可选直填密码"))
+                .default_value(pwd_v)
         });
-        let mut jump_host_id = profile.and_then(|host| {
-            host.jump_host_id
-                .filter(|jid| Some(*jid) != id && existing_hosts.iter().any(|h| h.id == *jid))
-        });
-        if jump_host_id.is_none()
-            && let Some(host) = profile
-            && !host.jump_host.is_empty()
-        {
-            jump_host_id = existing_hosts
-                .iter()
-                .find(|h| {
-                    Some(h.id) != id
-                        && h.protocol == HostProtocol::Ssh
-                        && (h.ssh_jump_target() == host.jump_host || h.name == host.jump_host)
-                })
-                .map(|h| h.id);
-        }
-        let legacy_jump_host = if jump_host_id.is_none() {
-            profile.map(|h| h.jump_host.clone()).unwrap_or_default()
-        } else {
-            String::new()
-        };
-        let raw_relay_cmd = profile
-            .map(|host| host.jump_relay_command.clone())
-            .unwrap_or_default();
         let jump_relay_command = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(language.text(
-                    "Optional relay command (e.g. su admin)",
-                    "可选中继命令（如 su admin）",
+                    "Optional, e.g. su - admin (separate steps with ;)",
+                    "可选，如 su - admin（多条命令用 ; 分隔）",
                 ))
-                .default_value(raw_relay_cmd)
+                .default_value(relay_cmd_v)
         });
-        let raw_relay_password = profile
-            .and_then(|host| decrypt_secret(&host.jump_relay_password))
-            .unwrap_or_default();
         let jump_relay_password = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(language.text(
-                    "Optional relay password (prompted if empty)",
-                    "可选中继密码（留空则连接时询问）",
-                ))
-                .default_value(raw_relay_password)
                 .masked(true)
+                .placeholder(language.text(
+                    "Optional relay password (encrypted locally)",
+                    "可选中继命令密码（本地加密保存）",
+                ))
+                .default_value(relay_pwd_v)
         });
 
-        let protocol_items = build_protocol_items();
-        let protocol_ix = protocol_items
+        let mut kc_items = vec![SelectChoice::new(
+            language.text("Direct / Auto (~/.ssh)", "不使用密钥库（直填或自动扫描 ~/.ssh）"),
+            KeychainChoice::None,
+        )];
+        for entry in keychain {
+            let kind = match entry.kind {
+                KeychainKind::SshKey => "SSH Key",
+                KeychainKind::Password => "Password",
+            };
+            kc_items.push(SelectChoice::new(
+                format!("{} ({kind})", entry.name),
+                KeychainChoice::Entry(entry.id),
+            ));
+        }
+        let kc_idx = kc_items
             .iter()
-            .position(|item| item.value == protocol)
-            .map(|row| IndexPath::default().row(row));
-        let protocol_select =
-            cx.new(|cx| SelectState::new(protocol_items, protocol_ix, window, cx));
+            .position(|c| c.value == keychain_choice)
+            .unwrap_or(0);
+        let keychain_select =
+            cx.new(|cx| SelectState::new(kc_items, Some(IndexPath::new(kc_idx)), window, cx));
 
-        let key_items = build_key_select_items(&default_identity, &discovered_keys, language);
-        let key_ix = key_items
+        let mut jump_items = vec![SelectChoice::new(
+            language.text("Direct (No Jump Host)", "直连（无跳板机）"),
+            JumpChoice::None,
+        )];
+        for h in all_hosts {
+            if Some(h.id) != edit_id && h.protocol == HostProtocol::Ssh {
+                jump_items.push(SelectChoice::new(
+                    format!("{} ({})", h.name, h.endpoint()),
+                    JumpChoice::Host(h.id),
+                ));
+            }
+        }
+        let jump_idx = jump_items
             .iter()
-            .position(|item| item.value == default_identity)
-            .map(|row| IndexPath::default().row(row))
-            .or_else(|| Some(IndexPath::default().row(0)));
-        let key_select = cx.new(|cx| SelectState::new(key_items, key_ix, window, cx));
+            .position(|c| c.value == jump_choice)
+            .unwrap_or(0);
+        let jump_select =
+            cx.new(|cx| SelectState::new(jump_items, Some(IndexPath::new(jump_idx)), window, cx));
 
-        let jump_items = build_jump_items(existing_hosts, id, &legacy_jump_host, language);
-        let current_jump = match jump_host_id {
-            Some(hid) => JumpChoice::Host(hid),
-            None if !legacy_jump_host.is_empty() => JumpChoice::Legacy(legacy_jump_host.clone()),
-            None => JumpChoice::None,
-        };
-        let jump_ix = jump_items
+        let mut relay_kc_items = vec![SelectChoice::new(
+            language.text("Direct / Ask at connect", "不使用密钥库（直填或连接时询问）"),
+            KeychainChoice::None,
+        )];
+        for entry in keychain.iter().filter(|k| k.kind == KeychainKind::Password) {
+            relay_kc_items.push(SelectChoice::new(
+                entry.name.clone(),
+                KeychainChoice::Entry(entry.id),
+            ));
+        }
+        let relay_kc_idx = relay_kc_items
             .iter()
-            .position(|item| item.value == current_jump)
-            .map(|row| IndexPath::default().row(row))
-            .or_else(|| Some(IndexPath::default().row(0)));
-        let jump_select = cx.new(|cx| SelectState::new(jump_items, jump_ix, window, cx));
+            .position(|c| c.value == jump_relay_keychain_choice)
+            .unwrap_or(0);
+        let jump_relay_keychain_select = cx.new(|cx| {
+            SelectState::new(relay_kc_items, Some(IndexPath::new(relay_kc_idx)), window, cx)
+        });
+
+        let kc_sub = cx.subscribe(&keychain_select, |this, _, ev: &SelectEvent<Vec<SelectChoice<KeychainChoice>>>, cx| {
+            if let SelectEvent::Confirm(Some(choice)) = ev
+                && let Some(editor) = &mut this.editor
+            {
+                editor.keychain_choice = choice.clone();
+                cx.notify();
+            }
+        });
+        let jump_sub = cx.subscribe(&jump_select, |this, _, ev: &SelectEvent<Vec<SelectChoice<JumpChoice>>>, cx| {
+            if let SelectEvent::Confirm(Some(choice)) = ev
+                && let Some(editor) = &mut this.editor
+            {
+                editor.jump_choice = choice.clone();
+                cx.notify();
+            }
+        });
+        let relay_kc_sub = cx.subscribe(&jump_relay_keychain_select, |this, _, ev: &SelectEvent<Vec<SelectChoice<KeychainChoice>>>, cx| {
+            if let SelectEvent::Confirm(Some(choice)) = ev
+                && let Some(editor) = &mut this.editor
+            {
+                editor.jump_relay_keychain_choice = choice.clone();
+                cx.notify();
+            }
+        });
 
         Self {
-            id,
+            edit_id,
             protocol,
-            auth_method,
             icon,
-            fields: std::array::from_fn(|_| {
-                fields.next().expect("one initial value for each field")
-            }),
+            keychain_choice,
+            jump_choice,
+            jump_relay_keychain_choice,
+            name,
+            group,
+            tags,
+            address,
+            port,
+            username,
+            identity_file,
             password,
-            jump_host_id,
-            legacy_jump_host,
             jump_relay_command,
             jump_relay_password,
-            discovered_keys,
-            protocol_select,
-            key_select,
+            keychain_select,
             jump_select,
-            _select_subs: Vec::new(),
+            jump_relay_keychain_select,
+            _subs: vec![kc_sub, jump_sub, relay_kc_sub],
         }
     }
-
-    fn profile(
-        &self,
-        id: u64,
-        existing_hosts: &[HostProfile],
-        language: Language,
-        cx: &App,
-    ) -> Result<HostProfile, &'static str> {
-        let [name, address, username, port, raw_identity_file, group, tags] = self
-            .fields
-            .each_ref()
-            .map(|field| field.read(cx).value().trim().to_owned());
-        let jump_host = match self.jump_host_id {
-            Some(jid) => existing_hosts
-                .iter()
-                .find(|h| h.id == jid)
-                .map(HostProfile::ssh_jump_target)
-                .unwrap_or_default(),
-            None => self.legacy_jump_host.clone(),
-        };
-        let (identity_file, encrypted_password) = if self.protocol == HostProtocol::Ssh {
-            match self.auth_method {
-                SshAuthMethod::PrivateKey => (raw_identity_file, String::new()),
-                SshAuthMethod::Password => {
-                    let raw_password = self.password.read(cx).value().to_owned();
-                    let encrypted = if !raw_password.is_empty() {
-                        encrypt_secret(&raw_password).map_err(|_| {
-                            language.text("Could not encrypt password.", "无法加密密码。")
-                        })?
-                    } else {
-                        String::new()
-                    };
-                    (String::new(), encrypted)
-                }
-            }
-        } else {
-            (raw_identity_file, String::new())
-        };
-        let relay_command = self.jump_relay_command.read(cx).value().trim().to_owned();
-        let raw_relay_password = self.jump_relay_password.read(cx).value().to_owned();
-        let encrypted_relay_password = if self.protocol == HostProtocol::Ssh
-            && !jump_host.is_empty()
-            && !relay_command.is_empty()
-            && !raw_relay_password.is_empty()
-        {
-            encrypt_secret(&raw_relay_password).map_err(|_| {
-                language.text("Could not encrypt relay password.", "无法加密中继密码。")
-            })?
-        } else {
-            String::new()
-        };
-        validate_profile_for(
-            id,
-            self.protocol,
-            self.icon,
-            [
-                name,
-                address,
-                username,
-                port,
-                identity_file,
-                jump_host,
-                group,
-                tags,
-            ],
-            encrypted_password,
-            self.jump_host_id,
-            relay_command,
-            encrypted_relay_password,
-            language,
-        )
-    }
 }
-
-pub enum HostsEvent {
-    Connect(HostProfile),
-}
-
-impl EventEmitter<HostsEvent> for HostsPage {}
 
 pub struct HostsPage {
     store: Entity<SettingsStore>,
-    search: Entity<InputState>,
-    selected_tag: Option<String>,
+    view_mode: HostViewMode,
+    proto_filter: Option<HostProtocol>,
+    group_filter: Option<String>,
+    search_query: String,
+    selected_host_id: Option<u64>,
+    context_menu: Option<(u64, Point<Pixels>)>,
     editor: Option<HostEditor>,
-    loading_import: bool,
-    import: Option<ImportBatch>,
-    _updates: [Subscription; 2],
+    pending_click_gen: u64,
+    _updates: Subscription,
 }
 
 impl HostsPage {
-    pub fn new(store: Entity<SettingsStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let language = store.read(cx).current.language;
-        let search = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(language.text("Search hosts…", "搜索主机…"))
-        });
-        if let Some(err) = store.read(cx).load_error() {
-            crate::notify::error(err.to_owned(), window, cx);
-        }
-        let updates = [
-            cx.subscribe(&search, |_, _, event, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
-                }
-            }),
-            cx.observe(&store, |_, _, cx| cx.notify()),
-        ];
+    pub fn new(store: Entity<SettingsStore>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let updates = cx.observe(&store, |_, _, cx| cx.notify());
         Self {
             store,
-            search,
-            selected_tag: None,
+            view_mode: HostViewMode::Cards,
+            proto_filter: None,
+            group_filter: None,
+            search_query: String::new(),
+            selected_host_id: None,
+            context_menu: None,
             editor: None,
-            loading_import: false,
-            import: None,
+            pending_click_gen: 0,
             _updates: updates,
         }
     }
 
-    fn language(&self, cx: &App) -> Language {
-        self.store.read(cx).current.language
-    }
-
-    fn saved_host(&self, id: u64, cx: &App) -> Option<HostProfile> {
-        self.store
-            .read(cx)
-            .current
-            .hosts
-            .iter()
-            .find(|host| host.id == id)
-            .cloned()
-    }
-
-    pub(crate) fn edit_host(
+    fn handle_host_click(
         &mut self,
-        id: Option<u64>,
+        host: HostProfile,
+        click_count: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let profile = id.and_then(|id| self.saved_host(id, cx));
-        self.show_editor(
-            profile.as_ref(),
-            profile.as_ref().map(|host| host.id),
-            window,
-            cx,
-        );
-    }
-
-    fn show_editor(
-        &mut self,
-        profile: Option<&HostProfile>,
-        id: Option<u64>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let language = self.language(cx);
-        let existing_hosts = self.store.read(cx).current.hosts.clone();
-        let mut editor = HostEditor::new(profile, id, &existing_hosts, language, window, cx);
-        let proto_sub = cx.subscribe_in(
-            &editor.protocol_select,
-            window,
-            |this, _, event: &SelectEvent<Vec<SelectChoice<HostProtocol>>>, window, cx| {
-                if let SelectEvent::Confirm(Some(proto)) = event
-                    && let Some(editor) = &mut this.editor
-                {
-                    editor.protocol = *proto;
-                    let default_port = match proto {
-                        HostProtocol::Ssh | HostProtocol::Mosh => "22",
-                        HostProtocol::Telnet => "23",
-                        HostProtocol::Serial => "115200",
-                    };
-                    editor.fields[3].update(cx, |input, cx| {
-                        input.set_value(default_port, window, cx);
-                    });
-                    cx.notify();
-                }
-            },
-        );
-        let key_sub = cx.subscribe_in(
-            &editor.key_select,
-            window,
-            |this, _, event: &SelectEvent<Vec<SelectChoice<String>>>, window, cx| {
-                if let SelectEvent::Confirm(Some(path)) = event
-                    && let Some(editor) = &mut this.editor
-                {
-                    editor.fields[4].update(cx, |input, cx| {
-                        input.set_value(path.clone(), window, cx);
-                    });
-                    cx.notify();
-                }
-            },
-        );
-        let jump_sub = cx.subscribe_in(
-            &editor.jump_select,
-            window,
-            |this, _, event: &SelectEvent<Vec<SelectChoice<JumpChoice>>>, _, cx| {
-                if let SelectEvent::Confirm(Some(choice)) = event
-                    && let Some(editor) = &mut this.editor
-                {
-                    match choice {
-                        JumpChoice::None => {
-                            editor.jump_host_id = None;
-                            editor.legacy_jump_host.clear();
-                        }
-                        JumpChoice::Host(hid) => {
-                            editor.jump_host_id = Some(*hid);
-                            editor.legacy_jump_host.clear();
-                        }
-                        JumpChoice::Legacy(raw) => {
-                            editor.jump_host_id = None;
-                            editor.legacy_jump_host = raw.clone();
-                        }
-                    }
-                    cx.notify();
-                }
-            },
-        );
-        editor._select_subs = vec![proto_sub, key_sub, jump_sub];
-        editor.fields[0].update(cx, |field, cx| field.focus(window, cx));
-        self.editor = Some(editor);
-        self.import = None;
-        cx.notify();
-    }
-
-    fn duplicate_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mut profile) = self
-            .editor
-            .as_ref()
-            .and_then(|editor| editor.id)
-            .and_then(|id| self.saved_host(id, cx))
-        else {
-            return;
-        };
-        profile
-            .name
-            .push_str(self.language(cx).text(" copy", " 副本"));
-        self.show_editor(Some(&profile), None, window, cx);
-    }
-
-    fn cancel_edit(&mut self, cx: &mut Context<Self>) {
-        self.editor = None;
-        cx.notify();
-    }
-
-    fn save(
-        &mut self,
-        change: impl FnOnce(&mut Settings),
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let result = self.store.update(cx, |store, cx| {
-            let result = store.update(change);
-            if result.is_ok() {
-                cx.notify();
-            }
-            result
-        });
-        if let Err(err) = result {
-            crate::notify::error(err, window, cx);
-            false
-        } else {
-            true
-        }
-    }
-
-    fn save_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editor) = &self.editor else { return };
-        let language = self.language(cx);
-        if editor
-            .id
-            .is_some_and(|id| self.saved_host(id, cx).is_none())
-        {
-            crate::notify::error(
-                language.text("This host has been removed.", "这台主机已被删除。"),
-                window,
-                cx,
-            );
-            return;
-        }
-        let allocation = self.store.read(cx).current.host_ids(1);
-        let Some(id) = editor
-            .id
-            .or_else(|| allocation.as_ref().map(|ids| ids.start))
-        else {
-            crate::notify::error(
-                language.text("Could not allocate a host ID.", "无法分配主机 ID。"),
-                window,
-                cx,
-            );
-            return;
-        };
-        let existing_hosts = self.store.read(cx).current.hosts.clone();
-        let mut profile = match editor.profile(id, &existing_hosts, language, cx) {
-            Ok(profile) => profile,
-            Err(error) => {
-                crate::notify::error(error, window, cx);
-                return;
-            }
-        };
-        if self.save(
-            |settings| {
-                if let Some(existing) = settings.hosts.iter_mut().find(|host| host.id == id) {
-                    profile.last_connected = existing.last_connected;
-                    *existing = profile;
-                } else {
-                    settings.hosts.push(profile);
-                    settings.next_host_id = id + 1;
-                }
-            },
-            window,
-            cx,
-        ) {
-            if let Some(editor) = &mut self.editor {
-                editor.id = Some(id);
-            }
-            self.search
-                .update(cx, |search, cx| search.set_value("", window, cx));
-            crate::notify::success(language.text("Host saved.", "主机已保存。"), window, cx);
-        }
-    }
-
-    fn remove_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.editor.as_ref().and_then(|editor| editor.id) else {
-            return;
-        };
-        let language = self.language(cx);
-        if self.save(
-            |settings| settings.hosts.retain(|host| host.id != id),
-            window,
-            cx,
-        ) {
-            self.cancel_edit(cx);
-            crate::notify::success(
-                language.text("Host removed.", "主机已删除。"),
-                window,
-                cx,
-            );
-        }
-    }
-
-    fn connect_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(host) = self
-            .editor
-            .as_ref()
-            .and_then(|editor| editor.id)
-            .and_then(|id| self.saved_host(id, cx))
-        {
+        self.close_context_menu(cx);
+        self.pending_click_gen = self.pending_click_gen.wrapping_add(1);
+        if click_count >= 2 {
             cx.emit(HostsEvent::Connect(host));
-        }
-    }
-
-    fn copy_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(host) = self
-            .editor
-            .as_ref()
-            .and_then(|editor| editor.id)
-            .and_then(|id| self.saved_host(id, cx))
-        else {
-            return;
-        };
-        cx.write_to_clipboard(ClipboardItem::new_string(copy_command(&host)));
-        let language = self.language(cx);
-        crate::notify::success(
-            language.text("SSH command copied to clipboard.", "已复制 SSH 命令到剪贴板。"),
-            window,
-            cx,
-        );
-    }
-
-    fn choose_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.loading_import {
             return;
         }
-        let language = self.language(cx);
-        let selection = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: Some(
-                language
-                    .text("Choose an OpenSSH config", "选择 OpenSSH 配置文件")
-                    .into(),
-            ),
-        });
-        self.loading_import = true;
-        cx.notify();
-        let executor = cx.background_executor().clone();
-        let window_handle = window.window_handle();
-        cx.spawn(async move |view, cx| {
-            let result = match selection.await {
-                Ok(Ok(Some(paths))) => {
-                    executor
-                        .spawn(async move { read_configs(paths, language).map(Some) })
-                        .await
-                }
-                Ok(Ok(None)) | Err(_) => Ok(None),
-                Ok(Err(error)) => Err(error.to_string()),
-            };
-            let _ = view.update(cx, |view, cx| {
-                view.loading_import = false;
-                match result {
-                    Ok(Some(import)) => {
-                        view.import = Some(import);
-                        cx.notify();
-                    }
-                    Ok(None) => cx.notify(),
-                    Err(error) => {
-                        let msg = format!(
-                            "{} {error}",
-                            language.text("Could not import the config.", "无法导入配置。")
-                        );
-                        let _ = window_handle.update(cx, |_, window, cx| {
-                            crate::notify::error(msg, window, cx);
-                        });
-                        cx.notify();
-                    }
-                }
-            });
-        })
-        .detach();
-    }
-
-    fn import_hosts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(batch) = &self.import else { return };
-        let current = &self.store.read(cx).current;
-        let (mut candidates, skipped) = merge_candidates(&current.hosts, batch);
-        let count = candidates.len();
-        if count == 0 {
-            self.import = None;
-            cx.notify();
-            return;
-        }
-        let Some(ids) = current.host_ids(count) else {
-            let language = self.language(cx);
-            crate::notify::error(
-                language.text("Could not allocate host IDs.", "无法分配主机 ID。"),
-                window,
-                cx,
-            );
-            return;
-        };
-        let start = ids.start;
-        let next = ids.end;
-        for (host, id) in candidates.iter_mut().zip(ids) {
-            host.id = id;
-        }
-        if self.save(
-            |settings| {
-                settings.hosts.extend(candidates);
-                settings.next_host_id = next;
-            },
-            window,
-            cx,
-        ) {
-            self.edit_host(Some(start), window, cx);
-            self.search
-                .update(cx, |search, cx| search.set_value("", window, cx));
-            crate::notify::success(
-                import_summary(count, skipped, self.language(cx), true),
-                window,
-                cx,
-            );
-        }
-    }
-
-    fn choose_key(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let Some(editor) = &self.editor else { return };
-        let field = editor.fields[4].clone();
-        let language = self.language(cx);
-        let receiver = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some(
-                language
-                    .text("Choose an SSH identity file", "选择 SSH 私钥文件")
-                    .into(),
-            ),
-        });
-        cx.spawn_in(window, async move |view, cx| {
-            let result = receiver.await;
+        let click_gen = self.pending_click_gen;
+        let id = host.id;
+        cx.spawn_in(window, async move |page, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(220))
+                .await;
             let _ = cx.update(|window, cx| {
-                let _ = view.update(cx, |view, cx| {
-                    if !view
-                        .editor
-                        .as_ref()
-                        .is_some_and(|editor| editor.fields[4] == field)
-                    {
-                        return;
-                    }
-                    match result {
-                        Ok(Ok(Some(paths))) => {
-                            if let Some(path) = paths.first() {
-                                let value = path.to_string_lossy().into_owned();
-                                field.update(cx, |input, cx| {
-                                    input.set_value(value.clone(), window, cx)
-                                });
-                                if let Some(editor) = &view.editor {
-                                    let items = build_key_select_items(
-                                        &value,
-                                        &editor.discovered_keys,
-                                        language,
-                                    );
-                                    editor.key_select.update(cx, |select, cx| {
-                                        select.set_items(items, window, cx);
-                                        select.set_selected_value(&value, window, cx);
-                                    });
-                                }
-                            }
-                        }
-                        Ok(Err(error)) => crate::notify::error(
-                            format!(
-                                "{} {error}",
-                                language.text(
-                                    "Could not select the identity file.",
-                                    "无法选择私钥文件。",
-                                )
-                            ),
-                            window,
-                            cx,
-                        ),
-                        _ => {}
+                let _ = page.update(cx, |this, cx| {
+                    if this.pending_click_gen == click_gen {
+                        this.edit_host(id, window, cx);
                     }
                 });
             });
@@ -878,1081 +364,1113 @@ impl HostsPage {
         .detach();
     }
 
-    fn toggle_group(&mut self, group: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.save(
-            |settings| {
-                if let Some(pos) = settings
-                    .collapsed_groups
+    pub fn set_group_filter(&mut self, group: Option<String>, cx: &mut Context<Self>) {
+        self.group_filter = group;
+        cx.notify();
+    }
+
+    pub fn set_search_query(&mut self, query: String, cx: &mut Context<Self>) {
+        self.search_query = query;
+        cx.notify();
+    }
+
+    pub fn open_new_host_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let saved = self.store.read(cx).current.clone();
+        self.pending_click_gen = self.pending_click_gen.wrapping_add(1);
+        self.selected_host_id = None;
+        self.context_menu = None;
+        let editor = HostEditor::new(
+            None,
+            &saved.hosts,
+            &saved.keychain,
+            saved.language,
+            window,
+            cx,
+        );
+        editor.name.update(cx, |input, cx| input.focus(window, cx));
+        self.editor = Some(editor);
+        cx.notify();
+    }
+
+    pub fn edit_host(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let saved = self.store.read(cx).current.clone();
+        let Some(host) = saved.hosts.iter().find(|h| h.id == id).cloned() else {
+            return;
+        };
+        self.pending_click_gen = self.pending_click_gen.wrapping_add(1);
+        self.selected_host_id = Some(id);
+        self.context_menu = None;
+        let editor = HostEditor::new(
+            Some(&host),
+            &saved.hosts,
+            &saved.keychain,
+            saved.language,
+            window,
+            cx,
+        );
+        self.editor = Some(editor);
+        cx.notify();
+    }
+
+    pub fn close_editor(&mut self, cx: &mut Context<Self>) {
+        self.pending_click_gen = self.pending_click_gen.wrapping_add(1);
+        self.editor = None;
+        self.selected_host_id = None;
+        cx.notify();
+    }
+
+    fn set_editor_protocol(&mut self, protocol: HostProtocol, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = &mut self.editor {
+            editor.protocol = protocol;
+            let default_port = match protocol {
+                HostProtocol::Serial => "115200",
+                HostProtocol::Telnet => "23",
+                HostProtocol::Ssh | HostProtocol::Mosh => "22",
+            };
+            editor.port.update(cx, |input, cx| {
+                input.set_value(default_port, window, cx);
+            });
+            cx.notify();
+        }
+    }
+
+    fn browse_identity_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select SSH Identity File".into()),
+        });
+        cx.spawn_in(window, async move |page, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let display = path.to_string_lossy().into_owned();
+            let _ = cx.update(|window, cx| {
+                let _ = page.update(cx, |this, cx| {
+                    if let Some(editor) = &this.editor {
+                        editor.identity_file.update(cx, |input, cx| {
+                            input.set_value(display, window, cx);
+                        });
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn save_editor(&mut self, connect_after: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = &self.editor else {
+            return;
+        };
+        let saved = self.store.read(cx).current.clone();
+        let language = saved.language;
+        let edit_id = editor.edit_id;
+        let protocol = editor.protocol;
+        let icon = editor.icon;
+        let keychain_id = match editor.keychain_choice {
+            KeychainChoice::Entry(id) => Some(id),
+            KeychainChoice::None => None,
+        };
+        let (jump_host_id, jump_host_str) = match editor.jump_choice {
+            JumpChoice::Host(jid) => {
+                let target = saved
+                    .hosts
                     .iter()
-                    .position(|existing| existing == &group)
-                {
-                    settings.collapsed_groups.remove(pos);
-                } else {
-                    settings.collapsed_groups.push(group);
+                    .find(|h| h.id == jid)
+                    .map(HostProfile::ssh_jump_target)
+                    .unwrap_or_default();
+                (Some(jid), target)
+            }
+            JumpChoice::None => (None, String::new()),
+        };
+
+        let values = [
+            editor.name.read(cx).value().to_string(),
+            editor.address.read(cx).value().to_string(),
+            editor.username.read(cx).value().to_string(),
+            editor.port.read(cx).value().to_string(),
+            editor.identity_file.read(cx).value().to_string(),
+            jump_host_str,
+            editor.group.read(cx).value().to_string(),
+            editor.tags.read(cx).value().to_string(),
+        ];
+
+        let raw_pw = editor.password.read(cx).value().to_string();
+        let encrypted_pw = if !raw_pw.is_empty() {
+            match encrypt_secret(&raw_pw) {
+                Ok(enc) => enc,
+                Err(err) => {
+                    crate::notify::error(err, window, cx);
+                    return;
                 }
-            },
+            }
+        } else {
+            String::new()
+        };
+
+        let relay_keychain_id = match editor.jump_relay_keychain_choice {
+            KeychainChoice::Entry(id) if jump_host_id.is_some() => Some(id),
+            _ => None,
+        };
+        let raw_relay_cmd = editor.jump_relay_command.read(cx).value().to_string();
+        let raw_relay_pw = editor.jump_relay_password.read(cx).value().to_string();
+        let encrypted_relay_pw = if relay_keychain_id.is_none() && !raw_relay_pw.is_empty() {
+            match encrypt_secret(&raw_relay_pw) {
+                Ok(enc) => enc,
+                Err(err) => {
+                    crate::notify::error(err, window, cx);
+                    return;
+                }
+            }
+        } else {
+            String::new()
+        };
+
+        let temp_id = edit_id.unwrap_or(0);
+        let mut profile = match validate_profile_for(
+            temp_id,
+            protocol,
+            icon,
+            values,
+            encrypted_pw,
+            jump_host_id,
+            raw_relay_cmd,
+            encrypted_relay_pw,
+            language,
+        ) {
+            Ok(p) => p,
+            Err(err) => {
+                crate::notify::error(err, window, cx);
+                return;
+            }
+        };
+        profile.keychain_id = keychain_id;
+        profile.jump_relay_keychain_id = if profile.jump_relay_command.is_empty() {
+            None
+        } else {
+            relay_keychain_id
+        };
+        if let Some(id) = edit_id
+            && let Some(prev) = saved.hosts.iter().find(|h| h.id == id)
+        {
+            profile.last_connected = prev.last_connected;
+        }
+
+        let mut final_profile = profile.clone();
+        let result = self.store.update(cx, |store, cx| {
+            let res = store.update(|settings| {
+                if let Some(id) = edit_id {
+                    if let Some(existing) = settings.hosts.iter_mut().find(|h| h.id == id) {
+                        *existing = profile.clone();
+                    }
+                } else if let Some(ids) = settings.host_ids(1) {
+                    profile.id = ids.start;
+                    final_profile.id = ids.start;
+                    settings.next_host_id = ids.end;
+                    settings.hosts.push(profile);
+                }
+            });
+            cx.notify();
+            res
+        });
+
+        match result {
+            Ok(()) => {
+                self.editor = None;
+                self.selected_host_id = None;
+                crate::notify::success(
+                    language.text("Host saved.", "主机已保存。"),
+                    window,
+                    cx,
+                );
+                if connect_after {
+                    cx.emit(HostsEvent::Connect(final_profile));
+                }
+                cx.notify();
+            }
+            Err(err) => crate::notify::error(err, window, cx),
+        }
+    }
+
+    fn open_context_menu(&mut self, host_id: u64, pos: Point<Pixels>, cx: &mut Context<Self>) {
+        self.context_menu = Some((host_id, pos));
+        self.selected_host_id = Some(host_id);
+        cx.notify();
+    }
+
+    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.context_menu.take().is_some() {
+            if self.editor.is_none() {
+                self.selected_host_id = None;
+            }
+            cx.notify();
+        }
+    }
+
+    fn duplicate_host(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let language = self.store.read(cx).current.language;
+        let suffix = language.text(" (Copy)", " (副本)");
+        let result = self.store.update(cx, |store, cx| {
+            let res = store.update(|settings| {
+                if let Some(orig) = settings.hosts.iter().find(|h| h.id == id).cloned()
+                    && let Some(ids) = settings.host_ids(1)
+                {
+                    let mut dup = orig;
+                    dup.id = ids.start;
+                    dup.name = format!("{}{suffix}", dup.name);
+                    dup.last_connected = None;
+                    settings.next_host_id = ids.end;
+                    settings.hosts.push(dup);
+                }
+            });
+            cx.notify();
+            res
+        });
+        match result {
+            Ok(()) => crate::notify::success(
+                language.text("Host duplicated.", "已复制主机配置。"),
+                window,
+                cx,
+            ),
+            Err(err) => crate::notify::error(err, window, cx),
+        }
+    }
+
+    fn copy_host_command(&self, host: &HostProfile, window: &mut Window, cx: &mut Context<Self>) {
+        let language = self.store.read(cx).current.language;
+        let text = match host.protocol {
+            HostProtocol::Ssh => copy_command(host),
+            _ => host.endpoint(),
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        crate::notify::success(
+            language.text("Copied connection command.", "已复制连接命令。"),
             window,
             cx,
         );
     }
 
-    fn host_list(
+    fn copy_host_address(&self, host: &HostProfile, window: &mut Window, cx: &mut Context<Self>) {
+        let language = self.store.read(cx).current.language;
+        cx.write_to_clipboard(ClipboardItem::new_string(host.address.clone()));
+        crate::notify::success(
+            language.text("Copied host address.", "已复制主机地址。"),
+            window,
+            cx,
+        );
+    }
+
+    fn render_context_menu(
         &self,
+        host_id: u64,
+        pos: Point<Pixels>,
         colors: Colors,
         language: Language,
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
-        let selected = self.editor.as_ref().and_then(|editor| editor.id);
-        let query = self.search.read(cx).value().trim().to_lowercase();
-        let settings = &self.store.read(cx).current;
-        let all_hosts = &settings.hosts;
-        let collapsed = &settings.collapsed_groups;
-        let total = all_hosts.len();
-
-        let mut all_tags: Vec<String> = all_hosts
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let Some(host) = self
+            .store
+            .read(cx)
+            .current
+            .hosts
             .iter()
-            .flat_map(|host| host.tags.iter().cloned())
-            .collect();
-        all_tags.sort_by_key(|t| t.to_lowercase());
-        all_tags.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+            .find(|h| h.id == host_id)
+            .cloned()
+        else {
+            return div().into_any_element();
+        };
+        let is_ssh = host.protocol == HostProtocol::Ssh;
+        let host_conn = host.clone();
+        let host_sftp = host.clone();
+        let host_cmd = host.clone();
+        let host_addr = host.clone();
 
-        let filtered: Vec<_> = all_hosts
-            .iter()
-            .filter(|host| {
-                host_matches(host, &query)
-                    && self.selected_tag.as_ref().is_none_or(|tag| {
-                        host.tags.iter().any(|t| t.eq_ignore_ascii_case(tag))
+        let menu_item = |id: &'static str,
+                         icon: Icon,
+                         label: &'static str,
+                         danger: bool| {
+            let text_color = if danger {
+                colors.danger
+            } else {
+                colors.foreground
+            };
+            let icon_color = if danger {
+                colors.danger
+            } else {
+                colors.secondary
+            };
+            div()
+                .id(id)
+                .h(px(28.))
+                .px(px(9.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .text_size(px(12.5))
+                .text_color(rgb(text_color))
+                .hover(|s| {
+                    s.bg(if danger {
+                        colors.danger_soft()
+                    } else {
+                        colors.accent_soft()
                     })
-            })
-            .collect();
-        let grouped = group_hosts(filtered.iter().copied());
+                })
+                .child(icon.render(px(13.), icon_color))
+                .child(label)
+        };
 
-        let mut entries = div()
-            .id("host-list")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .px(px(10.))
-            .pb(px(12.))
+        let menu_card = div()
+            .id("host-context-menu")
+            .w(px(196.))
+            .p(px(5.))
+            .rounded(px(10.))
+            .bg(colors.popover_bg())
+            .border_1()
+            .border_color(colors.hairline_strong())
+            .shadow_xl()
             .flex()
             .flex_col()
-            .gap(px(4.));
-
-        if filtered.is_empty() {
-            entries = entries.child(
-                div()
-                    .px(px(10.))
-                    .py(px(18.))
-                    .text_center()
-                    .text_size(px(12.5))
-                    .text_color(rgb(colors.muted))
-                    .child(if query.is_empty() && self.selected_tag.is_none() {
-                        language.text("No saved hosts yet", "暂无已保存的主机")
-                    } else {
-                        language.text("No matching hosts", "没有匹配的主机")
-                    }),
-            );
-        }
-
-        for (group_index, (group_name, items)) in grouped.into_iter().enumerate() {
-            let is_collapsed = !group_name.is_empty()
-                && collapsed.iter().any(|g| g == &group_name)
-                && query.is_empty()
-                && self.selected_tag.is_none();
-
-            if !group_name.is_empty() {
-                let count = items.len();
-                let toggle_name = group_name.clone();
-                let chevron = if is_collapsed {
-                    Icon::ChevronRight
-                } else {
-                    Icon::ChevronDown
-                };
-                entries = entries.child(
-                    Button::new(("host-group", group_index))
-                        .ghost()
-                        .w_full()
-                        .h(px(26.))
-                        .px(px(6.))
-                        .mt(px(4.))
-                        .rounded_md()
-                        .justify_between()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(5.))
-                                .min_w_0()
-                                .child(chevron.render(px(11.), colors.muted))
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(rgb(colors.secondary))
-                                        .truncate()
-                                        .child(group_name),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.5))
-                                .text_color(rgb(colors.muted))
-                                .child(count.to_string()),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.toggle_group(toggle_name.clone(), window, cx);
-                        })),
-                );
-            }
-
-            if is_collapsed {
-                continue;
-            }
-
-            entries = entries.children(items.into_iter().map(|host| {
-                let id = host.id;
-                let is_selected = selected == Some(id);
-                let tags_line = if host.tags.is_empty() {
-                    None
-                } else {
-                    Some(
-                        host.tags
-                            .iter()
-                            .take(3)
-                            .map(|t| format!("#{t}"))
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                    )
-                };
-                Button::new(("host", id))
-                    .ghost()
-                    .relative()
-                    .w_full()
-                    .h(if tags_line.is_some() { px(62.) } else { px(52.) })
-                    .px(px(10.))
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(if is_selected {
-                        colors.accent_border()
-                    } else {
-                        transparent_black().into()
-                    })
-                    .bg(if is_selected {
-                        colors.accent_subtle()
-                    } else {
-                        transparent_black().into()
-                    })
-                    .justify_start()
-                    .gap(px(10.))
-                    .children(is_selected.then(|| {
-                        div()
-                            .absolute()
-                            .left_0()
-                            .top(px(10.))
-                            .bottom(px(10.))
-                            .w(px(2.5))
-                            .rounded_r_full()
-                            .bg(rgb(colors.accent))
+            .gap(px(1.))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .child(
+                menu_item("ctx-connect", Icon::Play, language.text("Connect", "连接"), false)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.close_context_menu(cx);
+                        cx.emit(HostsEvent::Connect(host_conn.clone()));
+                    })),
+            )
+            .children(is_ssh.then(|| {
+                menu_item("ctx-sftp", Icon::Folder, language.text("Open SFTP", "打开文件传输"), false)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.close_context_menu(cx);
+                        cx.emit(HostsEvent::OpenSftp(host_sftp.clone()));
                     }))
+            }))
+            .child(div().my(px(4.)).h(px(1.)).bg(colors.hairline()))
+            .child(
+                menu_item("ctx-edit", Icon::Edit, language.text("Edit", "编辑"), false)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_context_menu(cx);
+                        this.edit_host(host_id, window, cx);
+                    })),
+            )
+            .child(
+                menu_item("ctx-dup", Icon::Duplicate, language.text("Duplicate", "复制主机"), false)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_context_menu(cx);
+                        this.duplicate_host(host_id, window, cx);
+                    })),
+            )
+            .child(
+                menu_item(
+                    "ctx-copy-cmd",
+                    Icon::Terminal,
+                    language.text("Copy SSH Command", "复制连接命令"),
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_context_menu(cx);
+                    this.copy_host_command(&host_cmd, window, cx);
+                })),
+            )
+            .child(
+                menu_item(
+                    "ctx-copy-addr",
+                    Icon::Globe,
+                    language.text("Copy Address", "复制地址"),
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_context_menu(cx);
+                    this.copy_host_address(&host_addr, window, cx);
+                })),
+            )
+            .child(div().my(px(4.)).h(px(1.)).bg(colors.hairline()))
+            .child(
+                menu_item("ctx-delete", Icon::Trash, language.text("Delete", "删除"), true)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_context_menu(cx);
+                        this.delete_host(host_id, window, cx);
+                    })),
+            );
+
+        div()
+            .id("host-context-menu-backdrop")
+            .absolute()
+            .inset_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.close_context_menu(cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| this.close_context_menu(cx)),
+            )
+            .child(deferred(
+                anchored()
+                    .position(pos)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(menu_card),
+            ))
+            .into_any_element()
+    }
+
+    fn delete_host(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let language = self.store.read(cx).current.language;
+        let result = self.store.update(cx, |store, cx| {
+            let res = store.update(|settings| {
+                settings.hosts.retain(|h| h.id != id);
+            });
+            cx.notify();
+            res
+        });
+        match result {
+            Ok(()) => {
+                if self.selected_host_id == Some(id) {
+                    self.selected_host_id = None;
+                    self.editor = None;
+                }
+                crate::notify::info(language.text("Host deleted.", "主机已删除。"), window, cx);
+                cx.notify();
+            }
+            Err(err) => crate::notify::error(err, window, cx),
+        }
+    }
+
+    fn import_ssh_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let language = self.store.read(cx).current.language;
+        let Some(config_path) = dirs::home_dir().map(|h| h.join(".ssh").join("config")) else {
+            crate::notify::error(
+                language.text("Could not locate ~/.ssh/config.", "无法定位 ~/.ssh/config。"),
+                window,
+                cx,
+            );
+            return;
+        };
+        let batch = match read_configs(vec![config_path], language) {
+            Ok(b) => b,
+            Err(err) => {
+                crate::notify::error(err, window, cx);
+                return;
+            }
+        };
+        if batch.profiles.is_empty() {
+            crate::notify::info(
+                language.text(
+                    "No importable hosts found in ~/.ssh/config.",
+                    "在 ~/.ssh/config 中未找到可导入的主机。",
+                ),
+                window,
+                cx,
+            );
+            return;
+        }
+        let mut added = 0usize;
+        let result = self.store.update(cx, |store, cx| {
+            let res = store.update(|settings| {
+                let (mut imported, _) = merge_candidates(&settings.hosts, &batch);
+                if let Some(ids) = settings.host_ids(imported.len()) {
+                    for (host, id) in imported.iter_mut().zip(ids.clone()) {
+                        host.id = id;
+                    }
+                    settings.next_host_id = ids.end;
+                }
+                added = imported.len();
+                settings.hosts.extend(imported);
+            });
+            cx.notify();
+            res
+        });
+        match result {
+            Ok(()) => {
+                let msg = if added > 0 {
+                    format!(
+                        "{} {added} {}",
+                        language.text("Imported", "已导入"),
+                        language.text("hosts from ~/.ssh/config.", "台主机（来自 ~/.ssh/config）。")
+                    )
+                } else {
+                    language
+                        .text("All ~/.ssh/config hosts are already imported.", "~/.ssh/config 中的主机已全部导入。")
+                        .to_owned()
+                };
+                crate::notify::success(msg, window, cx);
+            }
+            Err(err) => crate::notify::error(err, window, cx),
+        }
+    }
+
+    fn filtered_hosts(&self, cx: &App) -> Vec<HostProfile> {
+        let hosts = &self.store.read(cx).current.hosts;
+        let q = self.search_query.trim().to_lowercase();
+        hosts
+            .iter()
+            .filter(|h| {
+                if let Some(group) = &self.group_filter
+                    && h.group.trim() != group.as_str()
+                {
+                    return false;
+                }
+                if let Some(proto) = self.proto_filter
+                    && h.protocol != proto
+                {
+                    return false;
+                }
+                if !q.is_empty() {
+                    let hay = format!(
+                        "{} {} {} {}",
+                        h.name,
+                        h.endpoint(),
+                        h.group,
+                        h.tags.join(" ")
+                    )
+                    .to_lowercase();
+                    if !q.split_whitespace().all(|term| hay.contains(term)) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn render_editor_fields(
+        &self,
+        editor: &HostEditor,
+        colors: Colors,
+        language: Language,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let proto = editor.protocol;
+        let is_serial = proto == HostProtocol::Serial;
+        let is_telnet = proto == HostProtocol::Telnet;
+        let using_keychain = !matches!(editor.keychain_choice, KeychainChoice::None);
+
+        let proto_seg = div()
+            .flex()
+            .gap(px(3.))
+            .p(px(2.))
+            .rounded(px(7.))
+            .bg(colors.surface_glass())
+            .border_1()
+            .border_color(colors.hairline())
+            .children(
+                [
+                    (HostProtocol::Ssh, "SSH"),
+                    (HostProtocol::Mosh, "Mosh"),
+                    (HostProtocol::Telnet, "Telnet"),
+                    (HostProtocol::Serial, "Serial"),
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(idx, (p, label))| {
+                    let active = proto == p;
+                    div()
+                        .id(("proto-seg", idx))
+                        .flex_1()
+                        .h(px(24.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(11.5))
+                        .font_weight(if active {
+                            FontWeight::MEDIUM
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .bg(if active {
+                            colors.surface_active_glass()
+                        } else {
+                            transparent_black().into()
+                        })
+                        .text_color(rgb(if active {
+                            colors.foreground
+                        } else {
+                            colors.secondary
+                        }))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_editor_protocol(p, window, cx);
+                        }))
+                        .child(label)
+                }),
+            );
+
+        let general_section = div()
+            .p(px(12.))
+            .rounded(px(10.))
+            .bg(colors.surface_glass())
+            .border_1()
+            .border_color(colors.hairline())
+            .flex()
+            .flex_col()
+            .gap(px(9.))
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(colors.muted))
+                    .child(language.text("IDENTITY", "协议与标识")),
+            )
+            .child(proto_seg)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(9.))
                     .child(
                         div()
-                            .size(px(30.))
-                            .rounded_lg()
-                            .flex_shrink_0()
                             .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(if is_selected {
-                                colors.accent_soft()
-                            } else {
-                                rgb(colors.surface)
-                            })
-                            .child(host.icon.icon().render(
-                                px(14.),
-                                if is_selected {
-                                    colors.accent
-                                } else {
-                                    colors.muted
-                                },
-                            )),
+                            .flex_col()
+                            .gap(px(3.))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(rgb(colors.secondary))
+                                    .child(language.text("Host Name", "主机名称")),
+                            )
+                            .child(input_field(&editor.name, None, colors)),
                     )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(rgb(colors.secondary))
+                                    .child(language.text("Group", "所属分组")),
+                            )
+                            .child(input_field(&editor.group, None, colors)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(rgb(colors.secondary))
+                            .child(language.text("Tags (comma separated)", "标签（逗号分隔）")),
+                    )
+                    .child(input_field(&editor.tags, None, colors)),
+            );
+
+        let conn_section = div()
+            .p(px(12.))
+            .rounded(px(10.))
+            .bg(colors.surface_glass())
+            .border_1()
+            .border_color(colors.hairline())
+            .flex()
+            .flex_col()
+            .gap(px(9.))
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(colors.muted))
+                    .child(if is_serial {
+                        language.text("SERIAL PORT", "串口参数")
+                    } else {
+                        language.text("CONNECTION", "连接目标")
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .items_start()
-                            .gap(px(1.))
+                            .gap(px(3.))
                             .child(
                                 div()
-                                    .w_full()
-                                    .truncate()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(rgb(colors.foreground))
-                                    .child(host.name.clone()),
+                                    .text_size(px(11.))
+                                    .text_color(rgb(colors.secondary))
+                                    .child(if is_serial {
+                                        language.text("Device Path", "串口设备路径")
+                                    } else {
+                                        language.text("Address / IP", "主机地址 / IP")
+                                    }),
                             )
+                            .child(input_field(&editor.address, None, colors)),
+                    )
+                    .child(
+                        div()
+                            .w(px(92.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.))
                             .child(
                                 div()
-                                    .w_full()
-                                    .truncate()
-                                    .text_size(px(11.5))
-                                    .text_color(rgb(colors.muted))
-                                    .child(host.endpoint()),
+                                    .text_size(px(11.))
+                                    .text_color(rgb(colors.secondary))
+                                    .child(if is_serial {
+                                        language.text("Baud Rate", "波特率")
+                                    } else {
+                                        language.text("Port", "端口")
+                                    }),
                             )
-                            .children(tags_line.map(|line| {
-                                div()
-                                    .w_full()
-                                    .truncate()
-                                    .text_size(px(10.5))
-                                    .text_color(rgb(colors.accent))
-                                    .child(line)
-                            })),
+                            .child(input_field(&editor.port, None, colors)),
+                    ),
+            )
+            .children((!is_serial && !is_telnet).then(|| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(rgb(colors.secondary))
+                            .child(language.text("Username", "用户名")),
                     )
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.edit_host(Some(id), window, cx)),
-                    )
+                    .child(input_field(&editor.username, None, colors))
             }));
-        }
 
-        let mut header = div()
-            .p(px(14.))
+        let auth_section = (!is_serial && !is_telnet).then(|| {
+            div()
+                .p(px(12.))
+                .rounded(px(10.))
+                .bg(colors.surface_glass())
+                .border_1()
+                .border_color(colors.hairline())
+                .flex()
+                .flex_col()
+                .gap(px(9.))
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(colors.muted))
+                        .child(language.text("AUTH & BASTION", "认证与跳板机")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(rgb(colors.secondary))
+                                .child(language.text("Keychain Credential", "密钥库凭证")),
+                        )
+                        .child(Select::new(&editor.keychain_select)),
+                )
+                .children((!using_keychain).then(|| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(rgb(colors.secondary))
+                                        .child(language.text("Identity File (optional)", "私钥路径（可选）")),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .child(input_field(&editor.identity_file, None, colors)),
+                                        )
+                                        .child(
+                                            secondary_button(
+                                                "host-browse-id",
+                                                Some(Icon::Folder),
+                                                language.text("Browse", "浏览"),
+                                                colors,
+                                            )
+                                            .h(px(28.))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.browse_identity_file(window, cx);
+                                            })),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(rgb(colors.secondary))
+                                        .child(language.text("Password (optional)", "密码（可选，本地加密）")),
+                                )
+                                .child(input_field(&editor.password, Some(Icon::Lock), colors)),
+                        )
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(rgb(colors.secondary))
+                                .child(language.text("Jump Host / Bastion", "跳板机")),
+                        )
+                        .child(Select::new(&editor.jump_select)),
+                )
+                .children((!matches!(editor.jump_choice, JumpChoice::None)).then(|| {
+                    let using_relay_kc =
+                        !matches!(editor.jump_relay_keychain_choice, KeychainChoice::None);
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(rgb(colors.secondary))
+                                        .child(language.text(
+                                            "Jump Relay Command (optional)",
+                                            "跳板机中继命令（可选）",
+                                        )),
+                                )
+                                .child(input_field(&editor.jump_relay_command, Some(Icon::Terminal), colors)),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(rgb(colors.secondary))
+                                        .child(language.text(
+                                            "Relay Password Credential (optional)",
+                                            "中继密码凭证（密钥库）",
+                                        )),
+                                )
+                                .child(Select::new(&editor.jump_relay_keychain_select)),
+                        )
+                        .children((!using_relay_kc).then(|| {
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(rgb(colors.secondary))
+                                        .child(language.text(
+                                            "Relay Password (optional)",
+                                            "中继命令密码（可选直填）",
+                                        )),
+                                )
+                                .child(input_field(&editor.jump_relay_password, Some(Icon::Lock), colors))
+                        }))
+                }))
+        });
+
+        div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(px(12.))
+            .child(general_section)
+            .child(conn_section)
+            .children(auth_section)
+    }
+
+    fn render_inspector(
+        &self,
+        editor: &HostEditor,
+        colors: Colors,
+        language: Language,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let edit_id = editor.edit_id;
+        let is_edit = edit_id.is_some();
+        let raw_name = editor.name.read(cx).value().trim().to_owned();
+        let display_title = if is_edit {
+            if raw_name.is_empty() {
+                language.text("Edit Host", "编辑主机").to_owned()
+            } else {
+                raw_name
+            }
+        } else {
+            language.text("New Host", "新建主机").to_owned()
+        };
+
+        div()
+            .id("inspector-drawer-panel")
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right_0()
+            .w(px(340.))
+            .bg(colors.popover_bg())
+            .border_l_1()
+            .border_color(colors.hairline_strong())
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
             .child(
                 div()
+                    .h(px(54.))
+                    .px(px(16.))
+                    .border_b_1()
+                    .border_color(colors.hairline())
                     .flex()
                     .items_center()
                     .justify_between()
                     .child(
                         div()
-                            .text_size(px(14.))
+                            .text_size(px(13.5))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(colors.foreground))
-                            .child(language.text("SSH Hosts", "SSH 主机")),
+                            .truncate()
+                            .child(display_title),
                     )
                     .child(
-                        div()
-                            .px(px(7.))
-                            .py(px(2.))
-                            .rounded_full()
-                            .bg(rgb(colors.surface))
-                            .text_size(px(11.))
-                            .text_color(rgb(colors.muted))
-                            .child(total.to_string()),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .child(
-                        primary_button(
-                            "add-host",
-                            Some(Icon::Plus),
-                            language.text("New", "新建"),
-                            colors,
-                        )
-                        .flex_1()
-                        .disabled(self.loading_import)
-                        .on_click(cx.listener(
-                            |this, _, window, cx| this.edit_host(None, window, cx),
-                        )),
-                    )
-                    .child(
-                        secondary_button(
-                            "import-hosts",
-                            Some(Icon::Import),
-                            language.text("Import", "导入"),
-                            colors,
-                        )
-                        .flex_1()
-                        .disabled(self.loading_import)
-                        .on_click(cx.listener(|this, _, window, cx| this.choose_config(window, cx))),
-                    ),
-            )
-            .child(input_field(&self.search, Some(Icon::Search), colors));
-
-        if !all_tags.is_empty() {
-            header = header.child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(4.))
-                    .children(all_tags.into_iter().enumerate().map(|(ix, tag)| {
-                        let active = self
-                            .selected_tag
-                            .as_ref()
-                            .is_some_and(|t| t.eq_ignore_ascii_case(&tag));
-                        let tag_click = tag.clone();
-                        Button::new(("tag-filter", ix))
+                        Button::new("inspector-close")
+                            .ghost()
                             .xsmall()
-                            .h(px(22.))
-                            .px(px(8.))
-                            .rounded_full()
-                            .bg(if active {
-                                colors.accent_soft()
-                            } else {
-                                rgb(colors.surface).into()
-                            })
-                            .text_color(rgb(if active {
-                                colors.accent
-                            } else {
-                                colors.secondary
-                            }))
-                            .cursor_pointer()
-                            .child(format!("#{tag}"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if active {
-                                    this.selected_tag = None;
-                                } else {
-                                    this.selected_tag = Some(tag_click.clone());
-                                }
-                                cx.notify();
-                            }))
-                    })),
-            );
-        }
-
-        div()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .w(px(260.))
-            .bg(rgb(colors.panel))
-            .border_r_1()
-            .border_color(rgb(colors.line))
-            .child(header)
-            .child(entries)
-    }
-
-    fn empty_state(
-        &self,
-        colors: Colors,
-        language: Language,
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .p(px(32.))
-            .gap(px(12.))
-            .child(
-                div()
-                    .size(px(52.))
-                    .rounded_2xl()
-                    .bg(colors.accent_soft())
-                    .border_1()
-                    .border_color(colors.accent_border())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(Icon::Server.render(px(24.), colors.accent)),
-            )
-            .child(
-                div()
-                    .text_size(px(16.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(colors.foreground))
-                    .child(language.text("Manage SSH Hosts", "管理 SSH 主机")),
-            )
-            .child(
-                div()
-                    .max_w(px(340.))
-                    .text_center()
-                    .text_size(px(12.5))
-                    .text_color(rgb(colors.muted))
-                    .child(language.text(
-                        "Select a host from the list to inspect or edit, create a new profile, or import from your OpenSSH config.",
-                        "从左侧选择一台主机进行编辑，或新建主机配置，也可以直接从 OpenSSH 配置文件导入。",
-                    )),
-            )
-            .child(
-                div()
-                    .pt(px(6.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(
-                        primary_button(
-                            "empty-add-host",
-                            Some(Icon::Plus),
-                            language.text("New Host", "新建主机"),
-                            colors,
-                        )
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.edit_host(None, window, cx)),
-                        ),
-                    )
-                    .child(
-                        secondary_button(
-                            "empty-import-hosts",
-                            Some(Icon::Import),
-                            language.text("Import OpenSSH…", "导入 OpenSSH…"),
-                            colors,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| this.choose_config(window, cx))),
+                            .icon(Icon::Close)
+                            .on_click(cx.listener(|this, _, _, cx| this.close_editor(cx))),
                     ),
             )
-    }
-
-    fn host_form(
-        &self,
-        editor: &HostEditor,
-        colors: Colors,
-        language: Language,
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
-        let field = |index: usize| {
-            let (english, chinese, _) = FIELDS[index];
-            div()
-                .flex()
-                .flex_col()
-                .min_w_0()
-                .flex_1()
-                .gap(px(5.))
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(rgb(colors.secondary))
-                        .child(language.text(english, chinese)),
-                )
-                .child(if index == 4 {
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(Select::new(&editor.key_select)),
-                        )
-                        .child(
-                            secondary_button(
-                                "pick-identity",
-                                Some(Icon::Folder),
-                                language.text("Browse…", "浏览…"),
-                                colors,
-                            )
-                            .flex_shrink_0()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.choose_key(window, cx)),
-                            ),
-                        )
-                } else {
-                    div().child(input_field(&editor.fields[index], None, colors))
-                })
-        };
-
-        let saved = editor.id.and_then(|id| self.saved_host(id, cx));
-        let title = if saved.is_some() {
-            language.text("Edit Host", "编辑主机")
-        } else {
-            language.text("New Host", "新建主机")
-        };
-
-        let mut actions = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .justify_between()
-            .flex_wrap()
-            .gap(px(8.));
-
-        let mut left = div()
-            .flex()
-            .items_center()
-            .flex_wrap()
-            .gap(px(8.))
-            .child(
-                primary_button(
-                    "save-host",
-                    Some(Icon::Check),
-                    language.text("Save Host", "保存主机"),
-                    colors,
-                )
-                .on_click(cx.listener(|this, _, window, cx| this.save_host(window, cx))),
-            )
-            .child(
-                secondary_button(
-                    "cancel-host",
-                    None,
-                    language.text("Cancel", "取消"),
-                    colors,
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.cancel_edit(cx))),
-            );
-
-        if saved.is_some() {
-            left = left.child(
-                Button::new("connect-host")
-                    .ghost()
-                    .small()
-                    .h(px(32.))
-                    .px(px(12.))
-                    .rounded_lg()
-                    .bg(colors.success_soft())
-                    .border_1()
-                    .border_color(colors.success_border())
-                    .text_color(rgb(colors.success))
-                    .icon(Icon::Play)
-                    .label(language.text("Connect", "连接"))
-                    .on_click(cx.listener(|this, _, _, cx| this.connect_selected(cx))),
-            );
-            left = left
-                .child(
-                    secondary_button(
-                        "copy-host-command",
-                        Some(Icon::Copy),
-                        language.text("Copy SSH", "复制 SSH"),
-                        colors,
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| this.copy_selected(window, cx))),
-                )
-                .child(
-                    secondary_button(
-                        "duplicate-host",
-                        Some(Icon::Duplicate),
-                        language.text("Duplicate", "副本"),
-                        colors,
-                    )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.duplicate_selected(window, cx)),
-                    ),
-                );
-        }
-
-        actions = actions.child(left);
-        if saved.is_some() {
-            let page = cx.entity().downgrade();
-            actions = actions.child(
-                danger_button(
-                    "remove-host",
-                    Some(Icon::Trash),
-                    language.text("Remove", "删除"),
-                    false,
-                    colors,
-                )
-                .on_click(move |_, window, cx| {
-                    let page = page.clone();
-                    crate::notify::confirm(
-                        language.text("Remove Host", "删除主机"),
-                        language.text(
-                            "Remove this host permanently?",
-                            "确定要删除这台主机吗？",
-                        ),
-                        language.text("Remove", "确认删除"),
-                        move |window, cx| {
-                            let _ = page.update(cx, |this, cx| this.remove_host(window, cx));
-                        },
-                        window,
-                        cx,
-                    );
-                }),
-            );
-        }
-
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
             .child(
                 div()
-                    .id("host-fields")
+                    .id("inspector-body-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .p(px(24.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(16.))
-                            .max_w(px(580.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .flex_wrap()
-                                    .gap(px(8.))
-                                    .child(
-                                        div()
-                                            .text_size(px(18.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(rgb(colors.foreground))
-                                            .child(title),
-                                    )
-                                    .children(saved.map(|host| {
-                                        div()
-                                            .px(px(10.))
-                                            .py(px(4.))
-                                            .rounded_full()
-                                            .bg(rgb(colors.surface))
-                                            .border_1()
-                                            .border_color(rgb(colors.line))
-                                            .text_size(px(11.5))
-                                            .text_color(rgb(colors.secondary))
-                                            .child(host.endpoint())
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .p(px(18.))
-                                    .rounded_xl()
-                                    .bg(rgb(colors.panel))
-                                    .border_1()
-                                    .border_color(rgb(colors.line))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(14.))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(5.))
-                                            .child(
-                                                div()
-                                                    .text_size(px(12.))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(rgb(colors.secondary))
-                                                    .child(language.text("Protocol", "连接协议")),
-                                            )
-                                            .child(Select::new(&editor.protocol_select)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(5.))
-                                            .child(
-                                                div()
-                                                    .text_size(px(12.))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(rgb(colors.secondary))
-                                                    .child(language.text("Icon", "图标")),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .flex_wrap()
-                                                    .gap(px(6.))
-                                                    .children(HostIcon::ALL.into_iter().enumerate().map(
-                                                        |(ix, host_icon)| {
-                                                            let active = editor.icon == host_icon;
-                                                            Button::new(("host-icon", ix))
-                                                                .size(px(34.))
-                                                                .rounded_lg()
-                                                                .border_1()
-                                                                .border_color(if active {
-                                                                    colors.accent_border()
-                                                                } else {
-                                                                    rgb(colors.line).into()
-                                                                })
-                                                                .bg(if active {
-                                                                    colors.accent_soft()
-                                                                } else {
-                                                                    rgb(colors.surface).into()
-                                                                })
-                                                                .flex()
-                                                                .items_center()
-                                                                .justify_center()
-                                                                .cursor_pointer()
-                                                                .child(host_icon.icon().render(
-                                                                    px(16.),
-                                                                    if active {
-                                                                        colors.accent
-                                                                    } else {
-                                                                        colors.secondary
-                                                                    },
-                                                                ))
-                                                                .on_click(cx.listener(
-                                                                    move |this, _, _, cx| {
-                                                                        if let Some(editor) =
-                                                                            &mut this.editor
-                                                                        {
-                                                                            editor.icon = host_icon;
-                                                                        }
-                                                                        cx.notify();
-                                                                    },
-                                                                ))
-                                                        },
-                                                    )),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .gap(px(12.))
-                                            .child(field(0))
-                                            .child(field(1)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .gap(px(12.))
-                                            .child(field(2))
-                                            .child(div().w(px(110.)).child(field(3))),
-                                    )
-                                    .children((editor.protocol == HostProtocol::Ssh).then(|| {
-                                        let auth_toggle = div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(4.))
-                                            .p(px(3.))
-                                            .rounded_lg()
-                                            .bg(rgb(colors.background))
-                                            .border_1()
-                                            .border_color(rgb(colors.line))
-                                            .children(
-                                                [
-                                                    (
-                                                        SshAuthMethod::PrivateKey,
-                                                        Icon::Lock,
-                                                        language.text("Private Key", "私钥认证"),
-                                                    ),
-                                                    (
-                                                        SshAuthMethod::Password,
-                                                        Icon::Edit,
-                                                        language.text("Password", "密码认证"),
-                                                    ),
-                                                ]
-                                                .into_iter()
-                                                .enumerate()
-                                                .map(|(ix, (method, icon, label))| {
-                                                    let active = editor.auth_method == method;
-                                                    Button::new(("ssh-auth-method", ix))
-                                                        .flex_1()
-                                                        .h(px(28.))
-                                                        .with_variant(if active {
-                                                            gpui_kit::component::button::ButtonVariant::Primary
-                                                        } else {
-                                                            gpui_kit::component::button::ButtonVariant::Ghost
-                                                        })
-                                                        .small()
-                                                        .flex()
-                                                        .items_center()
-                                                        .gap(px(6.))
-                                                        .child(icon.render(
-                                                            px(13.),
-                                                            if active {
-                                                                colors.accent_fg
-                                                            } else {
-                                                                colors.muted
-                                                            },
-                                                        ))
-                                                        .child(label)
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                if let Some(editor) =
-                                                                    &mut this.editor
-                                                                {
-                                                                    editor.auth_method = method;
-                                                                }
-                                                                cx.notify();
-                                                            },
-                                                        ))
-                                                }),
-                                            );
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(10.))
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap(px(5.))
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(12.))
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .text_color(rgb(colors.secondary))
-                                                            .child(language.text(
-                                                                "Authentication",
-                                                                "认证方式",
-                                                            )),
-                                                    )
-                                                    .child(auth_toggle),
-                                            )
-                                            .child(match editor.auth_method {
-                                                SshAuthMethod::PrivateKey => {
-                                                    field(4).into_any_element()
-                                                }
-                                                SshAuthMethod::Password => div()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap(px(5.))
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(12.))
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .text_color(rgb(colors.secondary))
-                                                            .child(language.text(
-                                                                "Password (encrypted at rest)",
-                                                                "密码（本地加密存储）",
-                                                            )),
-                                                    )
-                                                    .child(input_field(
-                                                        &editor.password,
-                                                        Some(Icon::Lock),
-                                                        colors,
-                                                    ))
-                                                    .into_any_element(),
-                                            })
-                                    }))
-                                    .children(
-                                        (editor.protocol == HostProtocol::Mosh)
-                                            .then(|| field(4)),
-                                    )
-                                    .children(
-                                        matches!(
-                                            editor.protocol,
-                                            HostProtocol::Ssh | HostProtocol::Mosh
-                                        )
-                                        .then(|| {
-                                            let has_jump = editor.jump_host_id.is_some()
-                                                || !editor.legacy_jump_host.is_empty();
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .gap(px(10.))
-                                                .child(
-                                                    div()
-                                                        .flex()
-                                                        .flex_col()
-                                                        .gap(px(5.))
-                                                        .child(
-                                                            div()
-                                                                .text_size(px(12.))
-                                                                .font_weight(FontWeight::MEDIUM)
-                                                                .text_color(rgb(colors.secondary))
-                                                                .child(language.text(
-                                                                    "Jump host",
-                                                                    "跳板机",
-                                                                )),
-                                                        )
-                                                        .child(Select::new(&editor.jump_select)),
-                                                )
-                                                .children(
-                                                    (editor.protocol == HostProtocol::Ssh
-                                                        && has_jump)
-                                                        .then(|| {
-                                                            div()
-                                                                .flex()
-                                                                .flex_col()
-                                                                .gap(px(10.))
-                                                                .child(
-                                                                    div()
-                                                                        .flex()
-                                                                        .flex_col()
-                                                                        .gap(px(5.))
-                                                                        .child(
-                                                                            div()
-                                                                                .text_size(px(12.))
-                                                                                .font_weight(
-                                                                                    FontWeight::MEDIUM,
-                                                                                )
-                                                                                .text_color(rgb(
-                                                                                    colors.secondary,
-                                                                                ))
-                                                                                .child(
-                                                                                    language.text(
-                                                                                        "Jump relay command",
-                                                                                        "跳板机中继命令",
-                                                                                    ),
-                                                                                ),
-                                                                        )
-                                                                        .child(input_field(
-                                                                            &editor
-                                                                                .jump_relay_command,
-                                                                            Some(Icon::Terminal),
-                                                                            colors,
-                                                                        )),
-                                                                )
-                                                                .child(
-                                                                    div()
-                                                                        .flex()
-                                                                        .flex_col()
-                                                                        .gap(px(5.))
-                                                                        .child(
-                                                                            div()
-                                                                                .text_size(px(12.))
-                                                                                .font_weight(
-                                                                                    FontWeight::MEDIUM,
-                                                                                )
-                                                                                .text_color(rgb(
-                                                                                    colors.secondary,
-                                                                                ))
-                                                                                .child(
-                                                                                    language.text(
-                                                                                        "Relay password (encrypted at rest)",
-                                                                                        "中继密码（本地加密存储）",
-                                                                                    ),
-                                                                                ),
-                                                                        )
-                                                                        .child(input_field(
-                                                                            &editor
-                                                                                .jump_relay_password,
-                                                                            Some(Icon::Lock),
-                                                                            colors,
-                                                                        )),
-                                                                )
-                                                        }),
-                                                )
-                                        }),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .gap(px(12.))
-                                            .child(field(5))
-                                            .child(field(6)),
-                                    ),
-                            ),
-                    ),
+                    .p(px(14.))
+                    .child(self.render_editor_fields(editor, colors, language, cx)),
             )
             .child(
                 div()
-                    .px(px(24.))
-                    .py(px(12.))
-                    .bg(rgb(colors.panel))
+                    .px(px(14.))
+                    .py(px(11.))
                     .border_t_1()
-                    .border_color(rgb(colors.line))
-                    .child(actions),
-            )
-    }
-
-    fn import_preview(
-        &self,
-        batch: &ImportBatch,
-        colors: Colors,
-        language: Language,
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
-        let (profiles, skipped) = merge_candidates(&self.store.read(cx).current.hosts, batch);
-        let count = profiles.len();
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .child(
-                div()
-                    .px(px(24.))
-                    .pt(px(22.))
-                    .pb(px(14.))
+                    .border_color(colors.hairline())
                     .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .child(
-                        div()
-                            .text_size(px(18.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(colors.foreground))
-                            .child(language.text("Import OpenSSH Hosts", "导入 OpenSSH 主机")),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.5))
-                            .text_color(rgb(colors.muted))
-                            .child(import_summary(count, skipped, language, false)),
-                    ),
-            )
-            .child(
-                div()
-                    .id("import-preview")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px(px(24.))
-                    .pb(px(16.))
-                    .flex()
-                    .flex_col()
+                    .items_center()
+                    .justify_between()
                     .gap(px(6.))
-                    .children(profiles.into_iter().map(|host| {
-                        div()
-                            .px(px(12.))
-                            .py(px(10.))
-                            .rounded_lg()
-                            .bg(rgb(colors.panel))
-                            .border_1()
-                            .border_color(rgb(colors.line))
-                            .flex()
-                            .items_center()
-                            .gap(px(10.))
-                            .child(
-                                div()
-                                    .size(px(28.))
-                                    .rounded_md()
-                                    .bg(colors.accent_soft())
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(host.icon.icon().render(px(13.), colors.accent)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(1.))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .truncate()
-                                            .child(host.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(11.5))
-                                            .truncate()
-                                            .text_color(rgb(colors.muted))
-                                            .child(host.endpoint()),
-                                    ),
-                            )
-                    })),
-            )
-            .child(
-                div()
-                    .px(px(24.))
-                    .py(px(12.))
-                    .bg(rgb(colors.panel))
-                    .flex()
-                    .gap(px(8.))
-                    .border_t_1()
-                    .border_color(rgb(colors.line))
-                    .child(
-                        primary_button(
-                            "commit-import",
-                            Some(Icon::Import),
-                            language.text("Import Hosts", "确认导入"),
+                    .child(if let Some(id) = edit_id {
+                        danger_button(
+                            "insp-del",
+                            Some(Icon::Trash),
+                            language.text("Delete", "删除"),
+                            false,
                             colors,
                         )
-                        .disabled(count == 0)
-                        .on_click(cx.listener(|this, _, window, cx| this.import_hosts(window, cx))),
-                    )
-                    .child(
+                        .h(px(28.))
+                        .px(px(9.))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.delete_host(id, window, cx);
+                        }))
+                        .into_any_element()
+                    } else {
                         secondary_button(
-                            "cancel-import",
+                            "insp-cancel",
                             None,
                             language.text("Cancel", "取消"),
                             colors,
                         )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.import = None;
-                            cx.notify();
-                        })),
+                        .h(px(28.))
+                        .px(px(10.))
+                        .on_click(cx.listener(|this, _, _, cx| this.close_editor(cx)))
+                        .into_any_element()
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                secondary_button(
+                                    "insp-save",
+                                    None,
+                                    if is_edit {
+                                        language.text("Save", "保存")
+                                    } else {
+                                        language.text("Save Host", "保存主机")
+                                    },
+                                    colors,
+                                )
+                                .h(px(28.))
+                                .px(px(10.))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.save_editor(false, window, cx);
+                                })),
+                            )
+                            .child(
+                                primary_button(
+                                    "insp-connect",
+                                    Some(Icon::Play),
+                                    language.text("Save & Connect", "保存并连接"),
+                                    colors,
+                                )
+                                .h(px(28.))
+                                .px(px(10.))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.save_editor(true, window, cx);
+                                })),
+                            ),
                     ),
             )
+    }
+
+    fn protocol_label(proto: HostProtocol) -> &'static str {
+        match proto {
+            HostProtocol::Ssh => "SSH",
+            HostProtocol::Mosh => "MOSH",
+            HostProtocol::Telnet => "TELNET",
+            HostProtocol::Serial => "SERIAL",
+        }
+    }
+
+    fn protocol_color(proto: HostProtocol, colors: Colors) -> u32 {
+        match proto {
+            HostProtocol::Ssh => colors.accent,
+            HostProtocol::Mosh => 0xbf5af2,
+            HostProtocol::Telnet => colors.secondary,
+            HostProtocol::Serial => colors.warning(),
+        }
     }
 }
 
@@ -1960,41 +1478,656 @@ impl Render for HostsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = &self.store.read(cx).current;
         let colors = saved.theme.colors();
+        let vibrancy = saved.vibrancy;
+        let opacity = saved.opacity;
         let language = saved.language;
-        let mut detail = div().flex().flex_col().flex_1().min_w_0().min_h_0();
-        if self.loading_import {
-            detail = detail.child(
+        let keychain = saved.keychain.clone();
+        let hosts = self.filtered_hosts(cx);
+        let selected_id = self.selected_host_id;
+
+        let title = self
+            .group_filter
+            .clone()
+            .unwrap_or_else(|| language.text("All Hosts", "全部主机").to_owned());
+
+        let header = div()
+            .h(px(54.))
+            .px(px(22.))
+            .border_b_1()
+            .border_color(colors.hairline())
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(12.))
+            .child(
                 div()
-                    .flex_1()
+                    .text_size(px(17.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(colors.foreground))
+                    .child(title),
+            )
+            .child(
+                div()
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .text_color(rgb(colors.muted))
-                    .child(language.text("Reading OpenSSH config…", "正在读取 OpenSSH 配置…")),
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .p(px(2.))
+                            .rounded(px(7.))
+                            .bg(colors.surface_glass())
+                            .border_1()
+                            .border_color(colors.hairline())
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .id("hosts-view-cards")
+                                    .px(px(8.))
+                                    .h(px(23.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .text_size(px(11.5))
+                                    .bg(if self.view_mode == HostViewMode::Cards {
+                                        colors.surface_active_glass()
+                                    } else {
+                                        transparent_black().into()
+                                    })
+                                    .text_color(rgb(if self.view_mode == HostViewMode::Cards {
+                                        colors.foreground
+                                    } else {
+                                        colors.secondary
+                                    }))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.view_mode = HostViewMode::Cards;
+                                        cx.notify();
+                                    }))
+                                    .child(Icon::LayoutGrid.render(px(11.5), colors.secondary))
+                                    .child(language.text("Cards", "卡片")),
+                            )
+                            .child(
+                                div()
+                                    .id("hosts-view-list")
+                                    .px(px(8.))
+                                    .h(px(23.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .text_size(px(11.5))
+                                    .bg(if self.view_mode == HostViewMode::List {
+                                        colors.surface_active_glass()
+                                    } else {
+                                        transparent_black().into()
+                                    })
+                                    .text_color(rgb(if self.view_mode == HostViewMode::List {
+                                        colors.foreground
+                                    } else {
+                                        colors.secondary
+                                    }))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.view_mode = HostViewMode::List;
+                                        cx.notify();
+                                    }))
+                                    .child(Icon::List.render(px(11.5), colors.secondary))
+                                    .child(language.text("List", "列表")),
+                            ),
+                    )
+                    .child(
+                        secondary_button(
+                            "hosts-import-ssh",
+                            Some(Icon::Import),
+                            language.text("Import SSH Config", "导入 SSH Config"),
+                            colors,
+                        )
+                        .h(px(28.))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.import_ssh_config(window, cx);
+                        })),
+                    )
+                    .child(
+                        primary_button(
+                            "hosts-new-btn",
+                            Some(Icon::Plus),
+                            language.text("New Host", "新建主机"),
+                            colors,
+                        )
+                        .h(px(28.))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_new_host_modal(window, cx);
+                        })),
+                    ),
             );
-        } else if let Some(import) = &self.import {
-            detail = detail.child(self.import_preview(import, colors, language, cx));
-        } else if let Some(editor) = &self.editor {
-            detail = detail.child(self.host_form(editor, colors, language, cx));
-        } else {
-            detail = detail.child(self.empty_state(colors, language, cx));
-        }
-        div()
-            .flex()
-            .size_full()
-            .min_h_0()
-            .bg(rgb(colors.background))
-            .text_color(rgb(colors.foreground))
-            .child(self.host_list(colors, language, cx))
-            .child(detail)
-    }
-}
 
-fn import_summary(count: usize, skipped: usize, language: Language, saved: bool) -> String {
-    match (language, saved) {
-        (Language::English, true) => format!("{count} imported · {skipped} skipped"),
-        (Language::English, false) => format!("{count} ready to import · {skipped} skipped"),
-        (Language::ChineseSimplified, true) => format!("已导入 {count} 台 · 跳过 {skipped} 台"),
-        (Language::ChineseSimplified, false) => format!("可导入 {count} 台 · 跳过 {skipped} 台"),
+        let filter_bar = div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .mb(px(16.))
+            .children(
+                [
+                    (None, language.text("All Protocols", "全部协议")),
+                    (Some(HostProtocol::Ssh), "SSH"),
+                    (Some(HostProtocol::Mosh), "Mosh"),
+                    (Some(HostProtocol::Telnet), "Telnet"),
+                    (Some(HostProtocol::Serial), "Serial"),
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(idx, (proto, label))| {
+                    let active = self.proto_filter == proto;
+                    div()
+                        .id(("proto-filter", idx))
+                        .px(px(10.))
+                        .py(px(3.))
+                        .rounded_full()
+                        .cursor_pointer()
+                        .border_1()
+                        .border_color(if active {
+                            colors.accent_border()
+                        } else {
+                            colors.hairline()
+                        })
+                        .bg(if active {
+                            colors.accent_soft()
+                        } else {
+                            transparent_black().into()
+                        })
+                        .text_size(px(11.5))
+                        .font_weight(if active {
+                            FontWeight::MEDIUM
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .text_color(rgb(if active {
+                            colors.accent
+                        } else {
+                            colors.secondary
+                        }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.proto_filter = proto;
+                            cx.notify();
+                        }))
+                        .child(label)
+                }),
+            );
+
+        let content_body = if hosts.is_empty() {
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(10.))
+                .py(px(60.))
+                .child(Icon::Server.badge(px(44.)))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(colors.foreground))
+                        .child(language.text("No matching hosts", "暂无主机")),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(colors.secondary))
+                        .child(language.text(
+                            "Create a new host or import directly from ~/.ssh/config.",
+                            "点击右上角「新建主机」，或从 ~/.ssh/config 一键导入。",
+                        )),
+                )
+                .into_any_element()
+        } else if self.view_mode == HostViewMode::List {
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .px(px(10.))
+                        .py(px(6.))
+                        .border_b_1()
+                        .border_color(colors.hairline())
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(rgb(colors.muted))
+                        .child(div().w(px(180.)).child(language.text("Name", "名称")))
+                        .child(div().w(px(74.)).child(language.text("Protocol", "协议")))
+                        .child(div().flex_1().child(language.text("Endpoint", "连接地址")))
+                        .child(div().w(px(140.)).child(language.text("Auth", "密钥 / 凭证")))
+                        .child(div().w(px(110.)).child(language.text("Group", "分组")))
+                        .child(div().w(px(68.))),
+                )
+                .children(hosts.into_iter().map(|host| {
+                    let id = host.id;
+                    let is_sel = selected_id == Some(id);
+                    let auth_label = host
+                        .keychain_id
+                        .and_then(|kid| keychain.iter().find(|k| k.id == kid))
+                        .map(|k| k.name.clone())
+                        .unwrap_or_else(|| {
+                            if !host.identity_file.is_empty() {
+                                host.identity_file.clone()
+                            } else {
+                                "Auto".into()
+                            }
+                        });
+                    let host_click = host.clone();
+                    let host_conn = host.clone();
+                    let host_sftp = host.clone();
+
+                    div()
+                        .id(("host-list-row", id))
+                        .px(px(10.))
+                        .py(px(8.))
+                        .rounded(px(7.))
+                        .cursor_pointer()
+                        .border_b_1()
+                        .border_color(colors.hairline())
+                        .bg(if is_sel {
+                            colors.accent_soft()
+                        } else {
+                            transparent_black().into()
+                        })
+                        .hover(|s| s.bg(colors.surface_hover_glass()))
+                        .flex()
+                        .items_center()
+                        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                            this.handle_host_click(
+                                host_click.clone(),
+                                event.click_count(),
+                                window,
+                                cx,
+                            );
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.open_context_menu(id, ev.position, cx);
+                            }),
+                        )
+                        .child(
+                            div()
+                                .w(px(180.))
+                                .pr(px(8.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(host.icon.icon().badge_with_color(
+                                    px(22.),
+                                    match host.protocol {
+                                        HostProtocol::Ssh => host.icon.icon().macos_color(),
+                                        HostProtocol::Mosh => 0xaf52de,
+                                        HostProtocol::Telnet => 0x636366,
+                                        HostProtocol::Serial => 0xff9500,
+                                    },
+                                ))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(12.5))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(rgb(colors.foreground))
+                                        .child(host.name.clone()),
+                                ),
+                        )
+                        .child(
+                            div().w(px(74.)).flex().items_center().child(
+                                div()
+                                    .px(px(5.))
+                                    .py(px(1.5))
+                                    .rounded(px(4.))
+                                    .bg(colors.surface_active_glass())
+                                    .text_size(px(9.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(Self::protocol_color(host.protocol, colors)))
+                                    .child(Self::protocol_label(host.protocol)),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .pr(px(8.))
+                                .truncate()
+                                .text_size(px(11.5))
+                                .text_color(rgb(colors.secondary))
+                                .child(host.endpoint()),
+                        )
+                        .child(
+                            div()
+                                .w(px(140.))
+                                .pr(px(8.))
+                                .truncate()
+                                .text_size(px(11.5))
+                                .text_color(rgb(colors.muted))
+                                .child(auth_label),
+                        )
+                        .child(
+                            div()
+                                .w(px(110.))
+                                .truncate()
+                                .text_size(px(11.5))
+                                .text_color(rgb(colors.secondary))
+                                .child(if host.group.is_empty() {
+                                    "—".to_owned()
+                                } else {
+                                    host.group.clone()
+                                }),
+                        )
+                        .child(
+                            div()
+                                .w(px(68.))
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap(px(2.))
+                                .child(
+                                    Button::new(("hl-sftp", id))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(Icon::Folder)
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            cx.stop_propagation();
+                                            cx.emit(HostsEvent::OpenSftp(host_sftp.clone()));
+                                        })),
+                                )
+                                .child(
+                                    Button::new(("hl-conn", id))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(Icon::Play)
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            cx.stop_propagation();
+                                            cx.emit(HostsEvent::Connect(host_conn.clone()));
+                                        })),
+                                ),
+                        )
+                }))
+                .into_any_element()
+        } else {
+            let grouped = group_hosts(hosts.iter());
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(20.))
+                .children(grouped.into_iter().map(|(group_name, items)| {
+                    let group_label = if group_name.is_empty() {
+                        language.text("Ungrouped", "未分组").to_owned()
+                    } else {
+                        group_name
+                    };
+                    let count = items.len();
+                    let owned_items: Vec<HostProfile> = items.into_iter().cloned().collect();
+
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .text_size(px(11.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(colors.secondary))
+                                .child(group_label)
+                                .child(
+                                    div()
+                                        .text_color(rgb(colors.muted))
+                                        .child(count.to_string()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(10.))
+                                .children(owned_items.into_iter().map(|host| {
+                                    let id = host.id;
+                                    let is_sel = selected_id == Some(id);
+                                    let badge_bg = match host.protocol {
+                                        HostProtocol::Ssh => host.icon.icon().macos_color(),
+                                        HostProtocol::Mosh => 0xaf52de,
+                                        HostProtocol::Telnet => 0x636366,
+                                        HostProtocol::Serial => 0xff9500,
+                                    };
+                                    let card_group: gpui_kit::SharedString = format!("host-card-{id}").into();
+                                    let host_click = host.clone();
+                                    let host_conn = host.clone();
+                                    let host_sftp = host.clone();
+
+                                    div()
+                                        .id(("host-card", id))
+                                        .group(card_group.clone())
+                                        .w(px(264.))
+                                        .p(px(12.))
+                                        .rounded(px(10.))
+                                        .cursor_pointer()
+                                        .bg(if is_sel {
+                                            colors.accent_soft()
+                                        } else {
+                                            colors.surface_glass()
+                                        })
+                                        .border_1()
+                                        .border_color(if is_sel {
+                                            colors.accent_border()
+                                        } else {
+                                            colors.hairline()
+                                        })
+                                        .hover(|s| {
+                                            s.bg(colors.surface_hover_glass())
+                                                .border_color(colors.hairline_strong())
+                                        })
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(9.))
+                                        .on_click(cx.listener(
+                                            move |this, event: &ClickEvent, window, cx| {
+                                                this.handle_host_click(
+                                                    host_click.clone(),
+                                                    event.click_count(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        ))
+                                        .on_mouse_down(
+                                            MouseButton::Right,
+                                            cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                                                cx.stop_propagation();
+                                                this.open_context_menu(id, ev.position, cx);
+                                            }),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(10.))
+                                                .child(host.icon.icon().badge_with_color(px(32.), badge_bg))
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .gap(px(2.))
+                                                        .child(
+                                                            div()
+                                                                .flex()
+                                                                .items_center()
+                                                                .gap(px(6.))
+                                                                .child(
+                                                                    div()
+                                                                        .truncate()
+                                                                        .text_size(px(13.))
+                                                                        .font_weight(
+                                                                            FontWeight::SEMIBOLD,
+                                                                        )
+                                                                        .text_color(rgb(
+                                                                            colors.foreground,
+                                                                        ))
+                                                                        .child(host.name.clone()),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .flex_shrink_0()
+                                                                        .px(px(5.))
+                                                                        .py(px(1.))
+                                                                        .rounded(px(4.))
+                                                                        .bg(colors
+                                                                            .surface_active_glass())
+                                                                        .text_size(px(9.5))
+                                                                        .font_weight(
+                                                                            FontWeight::SEMIBOLD,
+                                                                        )
+                                                                        .text_color(rgb(
+                                                                            colors.secondary,
+                                                                        ))
+                                                                        .child(
+                                                                            Self::protocol_label(
+                                                                                host.protocol,
+                                                                            ),
+                                                                        ),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .truncate()
+                                                                .text_size(px(11.))
+                                                                .text_color(rgb(colors.secondary))
+                                                                .child(host.endpoint()),
+                                                        ),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .gap(px(6.))
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(4.))
+                                                        .flex_wrap()
+                                                        .children(host.tags.iter().take(3).map(
+                                                            |t| {
+                                                                div()
+                                                                    .px(px(6.))
+                                                                    .py(px(1.))
+                                                                    .rounded(px(4.))
+                                                                    .bg(colors.surface_glass())
+                                                                    .border_1()
+                                                                    .border_color(colors.hairline())
+                                                                    .text_size(px(10.))
+                                                                    .text_color(rgb(
+                                                                        colors.secondary,
+                                                                    ))
+                                                                    .child(format!("#{t}"))
+                                                            },
+                                                        )),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(2.))
+                                                        .opacity(0.0)
+                                                        .group_hover(card_group, |s| s.opacity(1.0))
+                                                        .child(
+                                                            Button::new(("hc-sftp", id))
+                                                                .ghost()
+                                                                .xsmall()
+                                                                .icon(Icon::Folder)
+                                                                .on_click(cx.listener(
+                                                                    move |_, _, _, cx| {
+                                                                        cx.stop_propagation();
+                                                                        cx.emit(
+                                                                            HostsEvent::OpenSftp(
+                                                                                host_sftp.clone(),
+                                                                            ),
+                                                                        );
+                                                                    },
+                                                                )),
+                                                        )
+                                                        .child(
+                                                            Button::new(("hc-conn", id))
+                                                                .ghost()
+                                                                .xsmall()
+                                                                .icon(Icon::Play)
+                                                                .on_click(cx.listener(
+                                                                    move |_, _, _, cx| {
+                                                                        cx.stop_propagation();
+                                                                        cx.emit(
+                                                                            HostsEvent::Connect(
+                                                                                host_conn.clone(),
+                                                                            ),
+                                                                        );
+                                                                    },
+                                                                )),
+                                                        ),
+                                                ),
+                                        )
+                                })),
+                        )
+                }))
+                .into_any_element()
+        };
+
+        let inspector_el = if let Some(e) = &self.editor {
+            Some(self.render_inspector(e, colors, language, cx))
+        } else {
+            None
+        };
+        let context_menu_el = if let Some((id, pos)) = self.context_menu {
+            Some(self.render_context_menu(id, pos, colors, language, cx))
+        } else {
+            None
+        };
+
+        div()
+            .relative()
+            .size_full()
+            .text_color(rgb(colors.foreground))
+            .flex()
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .bg(colors.content_bg(vibrancy, opacity))
+                    .flex()
+                    .flex_col()
+                    .child(header)
+                    .child(
+                        div()
+                            .id("hosts-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .px(px(22.))
+                            .py(px(16.))
+                            .flex()
+                            .flex_col()
+                            .child(filter_bar)
+                            .child(content_body),
+                    ),
+            )
+            .children(inspector_el)
+            .children(context_menu_el)
     }
 }

@@ -150,11 +150,13 @@ pub(super) fn validate_profile_for(
         username,
         port,
         baud_rate,
+        keychain_id: None,
         identity_file,
         password,
         jump_host,
         jump_host_id,
         jump_relay_command,
+        jump_relay_keychain_id: None,
         jump_relay_password,
         group: group.into(),
         tags: parse_tags(&tags),
@@ -264,6 +266,7 @@ pub(super) fn copy_command(host: &HostProfile) -> String {
     shell_words::join(args)
 }
 
+#[cfg(test)]
 pub(super) fn host_matches(host: &HostProfile, query: &str) -> bool {
     let name = host.name.to_lowercase();
     let endpoint = host.endpoint().to_lowercase();

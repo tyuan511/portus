@@ -1,6 +1,5 @@
 mod ime;
 
-use std::sync::{Arc, Mutex};
 use std::{future, path::Path};
 
 use gpui_kit::{
@@ -23,7 +22,7 @@ use ime::Composition;
 use crate::icons::Icon;
 use crate::protocols::{SerialTransport, TelnetTransport, spawn_mosh_pty};
 use crate::settings::{HostProfile, HostProtocol, Language, ShellSettings};
-use crate::ssh::{SshTransport, SshUiEvent};
+use crate::ssh::{ServerTelemetry, SshControl, SshTransport, SshUiEvent};
 use crate::theme::Colors;
 
 pub enum SessionTransport {
@@ -130,7 +129,6 @@ impl TerminalStatus {
 pub struct TerminalSession {
     terminal: Option<Entity<TerminalView<SessionTransport>>>,
     focus: FocusHandle,
-    log_buffer: Arc<Mutex<Vec<u8>>>,
     colors: Colors,
     palette: TerminalPalette,
     font_family: String,
@@ -140,7 +138,9 @@ pub struct TerminalSession {
     initial_title: String,
     ssh_host: Option<HostProfile>,
     ssh_hosts: Vec<HostProfile>,
+    ssh_control: Option<SshControl>,
     connected: bool,
+    telemetry: Option<ServerTelemetry>,
     status: Option<TerminalStatus>,
     prompt_sub: Option<Subscription>,
     search_open: bool,
@@ -172,10 +172,7 @@ impl TerminalSession {
         if let Some(cwd) = cwd {
             shell = shell.cwd(cwd);
         }
-        let log_buffer = Arc::new(Mutex::new(Vec::new()));
-        let log_hook = Arc::clone(&log_buffer);
         let result = TerminalBuilder::new()
-            .on_output(move |bytes| append_log(&log_hook, bytes))
             .connect(|sink| PtyTransport::spawn(&shell, sink).map(SessionTransport::Local));
 
         let terminal = match result {
@@ -184,7 +181,6 @@ impl TerminalSession {
                 return Self {
                     terminal: None,
                     focus: cx.focus_handle(),
-                    log_buffer,
                     colors,
                     palette,
                     font_family,
@@ -194,7 +190,9 @@ impl TerminalSession {
                     initial_title,
                     ssh_host: None,
                     ssh_hosts: Vec::new(),
+                    ssh_control: None,
                     connected: false,
+                    telemetry: None,
                     status: Some(TerminalStatus::StartFailed(error.to_string())),
                     prompt_sub: None,
                     search_open: false,
@@ -221,7 +219,6 @@ impl TerminalSession {
         Self {
             terminal: Some(view),
             focus,
-            log_buffer,
             colors,
             palette,
             font_family,
@@ -231,7 +228,9 @@ impl TerminalSession {
             initial_title,
             ssh_host: None,
             ssh_hosts: Vec::new(),
+            ssh_control: None,
             connected: true,
+            telemetry: None,
             status: None,
             prompt_sub: None,
             search_open: false,
@@ -261,7 +260,6 @@ impl TerminalSession {
         let mut session = Self {
             terminal: None,
             focus: cx.focus_handle(),
-            log_buffer: Arc::new(Mutex::new(Vec::new())),
             colors,
             palette,
             font_family,
@@ -271,7 +269,9 @@ impl TerminalSession {
             initial_title,
             ssh_host: Some(host),
             ssh_hosts: all_hosts,
+            ssh_control: None,
             connected: false,
+            telemetry: None,
             status: None,
             prompt_sub: None,
             search_open: false,
@@ -296,25 +296,23 @@ impl TerminalSession {
         self.connected = false;
         let endpoint = host.endpoint();
         self.status = Some(TerminalStatus::Connecting(endpoint.clone()));
-        crate::notify::info(
-            format!(
-                "{} {}…",
-                self.language.text("Connecting to", "正在连接"),
-                endpoint
-            ),
-            window,
-            cx,
-        );
 
-        let (ui_tx, ui_rx) = async_channel::unbounded::<SshUiEvent>();
-        let log_hook = Arc::clone(&self.log_buffer);
+        // Bound control-plane events so a stalled UI cannot retain an
+        // unbounded stream of telemetry updates.
+        let (ui_tx, ui_rx) = async_channel::bounded::<SshUiEvent>(64);
         let protocol = host.protocol;
         let all_hosts = self.ssh_hosts.clone();
+        let (control, mut control_rx_opt) = if protocol == HostProtocol::Ssh {
+            let (ctrl, rx) = SshControl::channel();
+            (Some(ctrl), Some(rx))
+        } else {
+            (None, None)
+        };
         let result = TerminalBuilder::new()
-            .on_output(move |bytes| append_log(&log_hook, bytes))
             .connect(|sink| match protocol {
                 HostProtocol::Ssh => {
-                    SshTransport::spawn(host, all_hosts, sink, ui_tx).map(SessionTransport::Ssh)
+                    let rx = control_rx_opt.take().expect("ssh control rx");
+                    SshTransport::spawn(host, all_hosts, sink, ui_tx, rx).map(SessionTransport::Ssh)
                 }
                 HostProtocol::Telnet => {
                     TelnetTransport::spawn(host.address, host.port, sink)
@@ -329,6 +327,7 @@ impl TerminalSession {
 
         match result {
             Ok(terminal) => {
+                self.ssh_control = control;
                 let style = build_terminal_style(&self.font_family, self.font_size, self.palette);
                 let view = cx.new(|cx| TerminalView::new(terminal, style, cx));
                 let focus = view.read(cx).focus_handle(cx);
@@ -397,6 +396,9 @@ impl TerminalSession {
                 self.prompt_sub = None;
                 self.focus.focus(window, cx);
             }
+            SshUiEvent::Telemetry(tele) => {
+                self.telemetry = Some(tele);
+            }
             SshUiEvent::Prompt(prompt) => {
                 self.prompt_sub =
                     crate::notify::push_ssh_prompt(prompt, self.language, window, cx);
@@ -444,6 +446,21 @@ impl TerminalSession {
         self.connected
     }
 
+    pub fn telemetry(&self) -> Option<&ServerTelemetry> {
+        self.telemetry.as_ref()
+    }
+
+    pub fn fetch_docker_logs(
+        &self,
+        container: String,
+        tail: usize,
+        timestamps: bool,
+    ) -> Option<tokio::sync::oneshot::Receiver<Result<String, String>>> {
+        self.ssh_control
+            .as_ref()
+            .map(|ctrl| ctrl.fetch_docker_logs(container, tail, timestamps))
+    }
+
     pub fn host_profile(&self) -> Option<&HostProfile> {
         self.ssh_host.as_ref()
     }
@@ -456,13 +473,6 @@ impl TerminalSession {
         &self.title
     }
 
-    pub fn export_log(&self) -> Vec<u8> {
-        self.log_buffer
-            .lock()
-            .map(|buf| buf.clone())
-            .unwrap_or_default()
-    }
-
     pub fn send_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         if let Some(view) = &self.terminal
             && let Err(error) = view.read(cx).terminal().write(bytes)
@@ -470,11 +480,6 @@ impl TerminalSession {
             self.status = Some(TerminalStatus::IoError(error.to_string()));
             cx.notify();
         }
-    }
-
-    pub fn clear_composition(&mut self, cx: &mut Context<Self>) {
-        self.composition = Composition::default();
-        cx.notify();
     }
 
     pub fn set_appearance(
@@ -678,6 +683,7 @@ impl TerminalSession {
     }
 
     pub fn shutdown(&mut self, cx: &App) {
+        self.ssh_control = None;
         if let Some(view) = self.terminal.take()
             && view.read(cx).terminal().exit_report().is_none()
             && let Err(error) = view.read(cx).terminal().terminate()
@@ -697,19 +703,9 @@ fn build_terminal_style(
     } else {
         font_family.trim().to_owned()
     };
-    TerminalStyle::new(family, px(f32::from(font_size))).palette(palette)
-}
-
-const MAX_LOG_BYTES: usize = 2 * 1024 * 1024;
-
-fn append_log(buffer: &Mutex<Vec<u8>>, bytes: &[u8]) {
-    if let Ok(mut guard) = buffer.lock() {
-        guard.extend_from_slice(bytes);
-        if guard.len() > MAX_LOG_BYTES {
-            let drain = guard.len() - MAX_LOG_BYTES;
-            guard.drain(..drain);
-        }
-    }
+    TerminalStyle::new(family, px(f32::from(font_size)))
+        .palette(palette)
+        .background_alpha(0.0)
 }
 
 fn default_font_family() -> &'static str {
@@ -769,7 +765,7 @@ fn shell_command(shell: &ShellSettings) -> PtyCommand {
     command
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
-        .env("TERM_PROGRAM", "Bulwark")
+        .env("TERM_PROGRAM", "Portus")
 }
 
 fn directory_title(path: &Path) -> String {
@@ -792,7 +788,6 @@ impl Render for TerminalSession {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(self.palette.background))
             .text_color(rgb(self.palette.foreground))
             .px(px(14.))
             .pt(px(10.))
@@ -825,6 +820,33 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use gpui_terminal::{GridSize, PtyCommand, PtyTransport, TerminalBuilder};
+
+    // Replay the bytes produced by 16 MiB of "X\n" under ONLCR. Everything
+    // between the clock reads is the real grid parser, including scrollback.
+    #[test]
+    #[ignore = "release-mode grid throughput benchmark"]
+    fn benchmark_grid_output_fragments() {
+        let payload = b"X\r\n".repeat(8 * 1024 * 1024);
+        let sizes = [3, 96, 4 * 1024, 64 * 1024];
+        for round in 0..5 {
+            for slot in 0..sizes.len() {
+                let chunk_size = sizes[(slot + round) % sizes.len()];
+                let mut grid = gpui_terminal::Grid::new(GridSize { columns: 120, rows: 40 });
+                let started = Instant::now();
+                for chunk in payload.chunks(chunk_size) {
+                    grid.feed(chunk);
+                }
+                let elapsed = started.elapsed();
+                assert_eq!(grid.cursor(), (0, 39));
+                assert_eq!(grid.row_text(38), "X");
+                assert_eq!(grid.row_text(39), "");
+                grid.scroll_display(i32::MAX / 2);
+                assert_eq!(grid.display_offset(), 10_000);
+                assert_eq!(grid.row_text(0), "X");
+                eprintln!("grid_replay chunk={chunk_size} round={round} ms={:.3}", elapsed.as_secs_f64() * 1000.0);
+            }
+        }
+    }
 
     #[test]
     fn local_pty_passes_input_and_size_and_reaps_the_shell() {

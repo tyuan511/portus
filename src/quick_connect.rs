@@ -314,34 +314,7 @@ impl Render for QuickConnectPalette {
                     })
                     .justify_start()
                     .gap(px(10.))
-                    .children(is_selected.then(|| {
-                        div()
-                            .absolute()
-                            .left_0()
-                            .top(px(8.))
-                            .bottom(px(8.))
-                            .w(px(2.5))
-                            .rounded_r_full()
-                            .bg(rgb(colors.accent))
-                    }))
-                    .child(
-                        div()
-                            .size(px(28.))
-                            .rounded_md()
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(if is_selected {
-                                colors.accent_soft()
-                            } else {
-                                rgb(colors.surface)
-                            })
-                            .child(icon.render(
-                                px(14.),
-                                if is_selected { colors.accent } else { colors.muted },
-                            )),
-                    )
+                    .child(icon.badge(px(26.)))
                     .child(
                         div()
                             .flex_1()
@@ -418,8 +391,10 @@ impl Render for QuickConnectPalette {
             .inset_0()
             .bg(colors.overlay_backdrop())
             .flex()
+            .items_start()
             .justify_center()
             .pt(px(72.))
+            .pb(px(32.))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_click(cx.listener(|_, _, _, cx| cx.emit(QuickConnectEvent::Close)))
             .child(
@@ -427,8 +402,9 @@ impl Render for QuickConnectPalette {
                     .id("quick-connect-card")
                     .w(px(580.))
                     .max_w(px(580.))
+                    .max_h(px(480.))
                     .rounded_2xl()
-                    .bg(rgb(colors.panel))
+                    .bg(colors.popover_bg())
                     .border_1()
                     .border_color(colors.hairline_strong())
                     .shadow_2xl()
@@ -460,6 +436,7 @@ impl Render for QuickConnectPalette {
                         div()
                             .px(px(14.))
                             .py(px(8.))
+                            .rounded_b(px(15.))
                             .bg(rgb(colors.chrome))
                             .border_t_1()
                             .border_color(colors.hairline())
@@ -543,11 +520,13 @@ pub fn parse_quick_ssh(raw: &str) -> Option<HostProfile> {
         username,
         port,
         baud_rate: 115200,
+        keychain_id: None,
         identity_file: String::new(),
         password: String::new(),
         jump_host: String::new(),
         jump_host_id: None,
         jump_relay_command: String::new(),
+        jump_relay_keychain_id: None,
         jump_relay_password: String::new(),
         group: String::new(),
         tags: Vec::new(),

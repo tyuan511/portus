@@ -409,12 +409,15 @@ impl SnippetsPage {
             }));
         }
 
+        let saved = &self.store.read(cx).current;
+        let vibrancy = saved.vibrancy;
+        let opacity = saved.opacity;
         div()
             .flex()
             .flex_col()
             .flex_shrink_0()
             .w(px(260.))
-            .bg(rgb(colors.panel))
+            .bg(colors.panel_bg(vibrancy, opacity))
             .border_r_1()
             .border_color(colors.hairline())
             .child(
@@ -574,8 +577,8 @@ impl SnippetsPage {
                     Button::new("run-snippet")
                         .ghost()
                         .small()
-                        .h(px(32.))
-                        .px(px(12.))
+                        .h(px(28.))
+                        .px(px(10.))
                         .rounded_lg()
                         .bg(colors.success_soft())
                         .border_1()
@@ -771,7 +774,15 @@ impl Render for SnippetsPage {
         let saved = &self.store.read(cx).current;
         let colors = saved.theme.colors();
         let language = saved.language;
-        let mut detail = div().flex().flex_col().flex_1().min_w_0().min_h_0();
+        let vibrancy = saved.vibrancy;
+        let opacity = saved.opacity;
+        let mut detail = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .bg(colors.content_bg(vibrancy, opacity));
         if let Some(editor) = &self.editor {
             detail = detail.child(self.snippet_form(editor, colors, language, cx));
         } else {
@@ -781,7 +792,6 @@ impl Render for SnippetsPage {
             .flex()
             .size_full()
             .min_h_0()
-            .bg(rgb(colors.background))
             .text_color(rgb(colors.foreground))
             .child(self.snippet_list(colors, language, cx))
             .child(detail)

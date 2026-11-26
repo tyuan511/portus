@@ -1,5 +1,5 @@
 [package]
-name = "bulwark"
+name = "portus"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
@@ -12,7 +12,7 @@ async-channel = "2"
 data-encoding = "2"
 dirs = "5"
 gpui-kit = "=0.7.0"
-gpui-terminal = { git = "https://github.com/pilgrimagesoftware/gpui-terminal.git", rev = "330093c76ca09174067d4d93a3f98bc3f2266c8a" }
+gpui-terminal = { path = "vendor/gpui-terminal" }
 rand = "0.10"
 russh = { version = "0.65", default-features = false, features = ["ring", "flate2"] }
 russh-sftp = "4"
@@ -22,8 +22,10 @@ serialport = "4"
 shell-words = "1"
 ssh2-config = "0.9"
 tempfile = "3"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "net", "time", "io-util", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "net", "time", "io-util", "io-std", "fs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSButton", "NSColor", "NSColorSpace", "NSControl", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSButton", "NSColor", "NSColorSpace", "NSControl", "NSImage", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSData"] }
 raw-window-handle = "0.6"

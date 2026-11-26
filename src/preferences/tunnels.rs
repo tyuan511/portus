@@ -15,7 +15,7 @@ use gpui_kit::{
 
 use crate::icons::Icon;
 use crate::settings::{
-    HostProfile, Language, PortForwardRule, Settings, SettingsStore, TunnelKind,
+    HostProfile, HostProtocol, Language, PortForwardRule, Settings, SettingsStore, TunnelKind,
 };
 use crate::theme::Colors;
 use crate::tunnel::{TunnelEvent, TunnelHandle, start_tunnel};
@@ -39,6 +39,7 @@ fn build_tunnel_kind_items(language: Language) -> Vec<SelectChoice<TunnelKind>> 
 fn build_tunnel_host_items(hosts: &[HostProfile]) -> Vec<SelectChoice<u64>> {
     hosts
         .iter()
+        .filter(|h| h.protocol == HostProtocol::Ssh)
         .map(|h| SelectChoice::new(format!("{} ({})", h.name, h.endpoint()), h.id))
         .collect()
 }
@@ -229,6 +230,26 @@ impl TunnelsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let host_supported = self
+            .store
+            .read(cx)
+            .current
+            .hosts
+            .iter()
+            .find(|host| host.id == host_id)
+            .is_some_and(|host| host.protocol == HostProtocol::Ssh);
+        if !host_supported {
+            let language = self.language(cx);
+            crate::notify::info(
+                language.text(
+                    "Port forwarding is only supported for SSH hosts.",
+                    "当前主机协议不支持端口转发。",
+                ),
+                window,
+                cx,
+            );
+            return;
+        }
         let existing = id.and_then(|id| self.saved_rule(id, cx));
         self.open_editor(existing.as_ref(), host_id, window, cx);
     }
@@ -261,9 +282,34 @@ impl TunnelsPage {
             .read(cx)
             .current
             .hosts
-            .first()
+            .iter()
+            .find(|host| host.protocol == HostProtocol::Ssh)
             .map(|h| h.id)
             .unwrap_or(0);
+        let host_id = existing
+            .as_ref()
+            .map(|rule| rule.host_id)
+            .unwrap_or(default_host);
+        let host_supported = self
+            .store
+            .read(cx)
+            .current
+            .hosts
+            .iter()
+            .find(|host| host.id == host_id)
+            .is_some_and(|host| host.protocol == HostProtocol::Ssh);
+        if existing.is_some() && !host_supported {
+            let language = self.language(cx);
+            crate::notify::info(
+                language.text(
+                    "Port forwarding is only supported for SSH hosts.",
+                    "当前主机协议不支持端口转发。",
+                ),
+                window,
+                cx,
+            );
+            return;
+        }
         self.open_editor(existing.as_ref(), default_host, window, cx);
     }
 
@@ -324,6 +370,25 @@ impl TunnelsPage {
         if editor.host_id == 0 {
             crate::notify::error(
                 language.text("Select an SSH host.", "请选择一台 SSH 主机。"),
+                window,
+                cx,
+            );
+            return false;
+        }
+        let host_supported = self
+            .store
+            .read(cx)
+            .current
+            .hosts
+            .iter()
+            .find(|host| host.id == editor.host_id)
+            .is_some_and(|host| host.protocol == HostProtocol::Ssh);
+        if !host_supported {
+            crate::notify::info(
+                language.text(
+                    "Port forwarding is only supported for SSH hosts.",
+                    "当前主机协议不支持端口转发。",
+                ),
                 window,
                 cx,
             );
@@ -429,6 +494,17 @@ impl TunnelsPage {
             );
             return;
         };
+        if host.protocol != HostProtocol::Ssh {
+            crate::notify::info(
+                self.language(cx).text(
+                    "Port forwarding is only supported for SSH hosts.",
+                    "当前主机协议不支持端口转发。",
+                ),
+                window,
+                cx,
+            );
+            return;
+        }
         let all_hosts = current.hosts.clone();
         let (tx, rx) = async_channel::unbounded::<TunnelEvent>();
         let handle = start_tunnel(rule, host, all_hosts, tx);
@@ -668,12 +744,15 @@ impl TunnelsPage {
                 )
         }));
 
+        let saved = &self.store.read(cx).current;
+        let vibrancy = saved.vibrancy;
+        let opacity = saved.opacity;
         div()
             .flex()
             .flex_col()
             .flex_shrink_0()
             .w(px(280.))
-            .bg(rgb(colors.panel))
+            .bg(colors.panel_bg(vibrancy, opacity))
             .border_r_1()
             .border_color(colors.hairline())
             .child(
@@ -831,8 +910,8 @@ impl TunnelsPage {
                 Button::new("run-tunnel-btn")
                     .ghost()
                     .small()
-                    .h(px(32.))
-                    .px(px(12.))
+                    .h(px(28.))
+                    .px(px(10.))
                     .rounded_lg()
                     .bg(if is_running {
                         colors.danger_soft()
@@ -1070,6 +1149,21 @@ impl TunnelsPage {
             .flex()
             .flex_col()
             .gap(px(8.));
+
+        if host.protocol != HostProtocol::Ssh {
+            body = body.child(
+                div()
+                    .p(px(14.))
+                    .text_center()
+                    .text_size(px(12.))
+                    .text_color(rgb(colors.muted))
+                    .child(language.text(
+                        "Port forwarding is only supported for SSH hosts.",
+                        "当前主机协议不支持端口转发。",
+                    )),
+            );
+            return body.into_any_element();
+        }
 
         if let Some(editor) = &self.editor
             && editor.host_id == host.id
@@ -1368,7 +1462,15 @@ impl Render for TunnelsPage {
         let saved = &self.store.read(cx).current;
         let colors = saved.theme.colors();
         let language = saved.language;
-        let mut detail = div().flex().flex_col().flex_1().min_w_0().min_h_0();
+        let vibrancy = saved.vibrancy;
+        let opacity = saved.opacity;
+        let mut detail = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .bg(colors.content_bg(vibrancy, opacity));
 
         if let Some(editor) = &self.editor {
             detail = detail.child(self.form(editor, colors, language, cx));
@@ -1379,7 +1481,6 @@ impl Render for TunnelsPage {
             .flex()
             .size_full()
             .min_h_0()
-            .bg(rgb(colors.background))
             .text_color(rgb(colors.foreground))
             .child(self.list(colors, language, cx))
             .child(detail)

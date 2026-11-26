@@ -1,6 +1,16 @@
 use std::borrow::Cow;
 
-use gpui_kit::{AssetSource, Pixels, Result, SharedString, Styled as _, Svg, rgb, svg};
+use gpui_kit::{
+    AssetSource, Div, Img, ParentElement as _, Pixels, Result, SharedString, Styled as _, Svg,
+    div, img, px, rgb, svg,
+};
+
+pub const APP_LOGO_PATH: &str = "icons/app_logo.png";
+pub const APP_LOGO_BYTES: &[u8] = include_bytes!("../assets/logo.png");
+
+pub fn app_logo(size: Pixels) -> Img {
+    img(APP_LOGO_PATH).size(size).flex_shrink_0()
+}
 
 pub struct Assets;
 
@@ -14,19 +24,15 @@ pub enum Icon {
     Close,
     Search,
     Import,
-    Copy,
     Duplicate,
     Trash,
     Folder,
-    Palette,
     Globe,
     Check,
     Play,
     Edit,
     Refresh,
     Lock,
-    Sun,
-    Moon,
     Code,
     Network,
     Cloud,
@@ -37,8 +43,16 @@ pub enum Icon {
     ArrowUp,
     ArrowDown,
     Upload,
-    ChevronRight,
-    ChevronDown,
+    Key,
+    Split,
+    LayoutGrid,
+    List,
+    Vault,
+    Palette,
+    Keyboard,
+    Expand,
+    Mcp,
+    Copy,
 }
 
 impl Icon {
@@ -52,19 +66,15 @@ impl Icon {
             Self::Close => "icons/close.svg",
             Self::Search => "icons/search.svg",
             Self::Import => "icons/import.svg",
-            Self::Copy => "icons/copy.svg",
             Self::Duplicate => "icons/duplicate.svg",
             Self::Trash => "icons/trash.svg",
             Self::Folder => "icons/folder.svg",
-            Self::Palette => "icons/palette.svg",
             Self::Globe => "icons/globe.svg",
             Self::Check => "icons/check.svg",
             Self::Play => "icons/play.svg",
             Self::Edit => "icons/edit.svg",
             Self::Refresh => "icons/refresh.svg",
             Self::Lock => "icons/lock.svg",
-            Self::Sun => "icons/sun.svg",
-            Self::Moon => "icons/moon.svg",
             Self::Code => "icons/code.svg",
             Self::Network => "icons/network.svg",
             Self::Cloud => "icons/cloud.svg",
@@ -75,8 +85,16 @@ impl Icon {
             Self::ArrowUp => "icons/arrow_up.svg",
             Self::ArrowDown => "icons/arrow_down.svg",
             Self::Upload => "icons/upload.svg",
-            Self::ChevronRight => "icons/chevron_right.svg",
-            Self::ChevronDown => "icons/chevron_down.svg",
+            Self::Key => "icons/key.svg",
+            Self::Split => "icons/split.svg",
+            Self::LayoutGrid => "icons/layout_grid.svg",
+            Self::List => "icons/list.svg",
+            Self::Vault => "icons/vault.svg",
+            Self::Palette => "icons/palette.svg",
+            Self::Keyboard => "icons/keyboard.svg",
+            Self::Expand => "icons/expand.svg",
+            Self::Mcp => "icons/mcp.svg",
+            Self::Copy => "icons/copy.svg",
         }
     }
 
@@ -86,6 +104,57 @@ impl Icon {
             .size(size)
             .flex_shrink_0()
             .text_color(rgb(color))
+    }
+
+    /// Apple HIG / macOS System Settings squircle tile color for each icon.
+    pub const fn macos_color(self) -> u32 {
+        match self {
+            Self::Vault => 0x5856d6,      // Apple Indigo
+            Self::Server => 0x007aff,     // Apple Blue
+            Self::Key => 0xff9500,        // Apple Orange
+            Self::Network => 0x34c759,    // Apple Green
+            Self::Code => 0xaf52de,       // Apple Purple
+            Self::Folder => 0x32ade6,     // Apple Cyan / Finder Blue
+            Self::Settings => 0x636366,   // Apple System Gray
+            Self::Terminal => 0x2c2c2e,   // Apple Charcoal
+            Self::Cloud => 0x30b0c7,      // Apple Teal
+            Self::Database => 0x5856d6,   // Apple Indigo
+            Self::Cpu => 0xff2d55,        // Apple Pink
+            Self::HardDrive => 0x00c7be,  // Apple Mint
+            Self::Monitor => 0x0a84ff,    // Apple Sky Blue
+            Self::Globe => 0x007aff,      // Apple Blue
+            Self::Shield => 0x30d158,     // Apple Green
+            Self::Lock => 0xff3b30,       // Apple Red
+            Self::Split => 0x32ade6,      // Apple Cyan
+            Self::Play => 0x34c759,       // Apple Green
+            Self::Trash => 0xff3b30,      // Apple Red
+            Self::Search | Self::Import | Self::Upload => 0x007aff,
+            Self::LayoutGrid | Self::List => 0x5856d6,
+            Self::Palette => 0xaf52de,    // Apple Purple
+            Self::Keyboard => 0x636366,   // Apple System Gray
+            Self::Mcp => 0x5856d6,        // Apple Indigo
+            _ => 0x007aff,
+        }
+    }
+
+    /// Renders a macOS System Settings style colorful squircle icon tile with a white symbol.
+    pub fn badge(self, size: Pixels) -> Div {
+        self.badge_with_color(size, self.macos_color())
+    }
+
+    pub fn badge_with_color(self, size: Pixels, bg: u32) -> Div {
+        let raw: f32 = size.into();
+        let radius = px((raw * 0.24).clamp(4.0, 12.0));
+        let glyph = px((raw * 0.56).max(10.0));
+        div()
+            .size(size)
+            .flex_shrink_0()
+            .rounded(radius)
+            .bg(rgb(bg))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(self.render(glyph, 0xffffff))
     }
 
     fn svg_bytes(path: &str) -> Option<&'static [u8]> {
@@ -147,12 +216,6 @@ impl Icon {
             "icons/lock.svg" => Some(
                 br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>"##,
             ),
-            "icons/sun.svg" => Some(
-                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>"##,
-            ),
-            "icons/moon.svg" => Some(
-                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a6.8 6.8 0 0 0 11 11z"/></svg>"##,
-            ),
             "icons/code.svg" => Some(
                 br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>"##,
             ),
@@ -189,6 +252,33 @@ impl Icon {
             "icons/chevron_down.svg" => Some(
                 br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>"##,
             ),
+            "icons/key.svg" => Some(
+                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9"/><path d="m17 6 2 2"/><path d="m14 9 2 2"/></svg>"##,
+            ),
+            "icons/split.svg" => Some(
+                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M12 4v16"/></svg>"##,
+            ),
+            "icons/layout_grid.svg" => Some(
+                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>"##,
+            ),
+            "icons/list.svg" => Some(
+                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>"##,
+            ),
+            "icons/activity.svg" => Some(
+                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 7-6-14-3 7H2"/></svg>"##,
+            ),
+            "icons/expand.svg" => Some(
+                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/></svg>"##,
+            ),
+            "icons/vault.svg" => Some(
+                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>"##,
+            ),
+            "icons/keyboard.svg" => Some(
+                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01"/><path d="M10 10h.01"/><path d="M14 10h.01"/><path d="M18 10h.01"/><path d="M8 14h8"/></svg>"##,
+            ),
+            "icons/mcp.svg" => Some(
+                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4v2h2a3 3 0 0 1 0 6h-2v2a4 4 0 0 1-8 0v-2H6a3 3 0 0 1 0-6h2V6a4 4 0 0 1 4-4z"/><circle cx="12" cy="11" r="1.5"/></svg>"##,
+            ),
             _ => None,
         }
     }
@@ -202,6 +292,9 @@ impl gpui_kit::component::IconNamed for Icon {
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path == APP_LOGO_PATH {
+            return Ok(Some(Cow::Borrowed(APP_LOGO_BYTES)));
+        }
         if let Some(bytes) = Icon::svg_bytes(path).or_else(|| crate::file_icons::svg_bytes(path)) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }

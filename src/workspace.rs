@@ -1,56 +1,95 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use gpui_kit::{
-    AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Window,
+    AppContext as _, ClipboardItem, Context, ElementId, Entity, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Pixels,
+    Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window,
     component::{
-        Placement, Sizable as _,
+        Sizable as _,
         button::{Button, ButtonVariants as _},
+        input::{Input, InputEvent, InputState},
     },
-    div, px, rgb, transparent_black,
+    div, px, rgb, rgba, transparent_black,
 };
 
 use crate::file_drawer::{FileDrawer, FileDrawerEvent};
 use crate::icons::Icon;
-use crate::platform::{apply_window_style, drag_window};
+use crate::mcp::{McpRuntime, McpUiEvent};
+use crate::platform::{apply_window_style, drag_window, hide_traffic_lights};
 use crate::preferences::{
-    HostsEvent, HostsPage, Preferences, SnippetsEvent, SnippetsPage, TunnelsPage,
+    HostsEvent, HostsPage, KeychainPage, Preferences, SnippetsEvent, SnippetsPage, TunnelsPage,
 };
 use crate::quick_connect::{QuickConnectEvent, QuickConnectPalette};
-use crate::settings::{
-    DEFAULT_SIDEBAR_WIDTH, HostProfile, Language, SettingsStore, Snippet, clamp_sidebar_width,
-    group_hosts,
-};
-use crate::sftp_view::SftpView;
+use crate::settings::{HostProfile, HostProtocol, Language, SettingsStore, Snippet};
+use crate::sftp_view::{SftpView, SftpViewEvent};
+use crate::ssh::ServerTelemetry;
 use crate::terminal::TerminalSession;
 use crate::theme::{Colors, Theme};
 use crate::{
     CloseTab, CloseWindow, FindInTerminal, MinimizeWindow, NewTab, NextTab, PreviousTab,
-    SelectTab, ShowHosts, ShowSettings, ShowSnippets, ShowTunnels, ToggleFilesDrawer,
-    ToggleFullscreen, ToggleQuickConnect, ToggleSnippetsDrawer,
+    SelectTab, ShowHosts, ShowSettings, ShowSnippets, ShowTunnels, ShowVault, SplitPane,
+    ToggleFilesDrawer, ToggleFullscreen, ToggleQuickConnect, ToggleSnippetsDrawer,
 };
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VaultSection {
+    Hosts,
+    Keychain,
+    Tunnels,
+    Snippets,
+    Settings,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RightDrawer {
     Files,
     Snippets,
     Tunnels,
+    Docker,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum DockerFilter {
+    #[default]
+    All,
+    Running,
+    Stopped,
+}
+
+struct DockerLogsState {
+    session: Entity<TerminalSession>,
+    host_name: String,
+    container_name: String,
+    container_running: bool,
+    tail: usize,
+    timestamps: bool,
+    loading: bool,
+    error: Option<String>,
+    logs: String,
+    search: Entity<InputState>,
+    _search_sub: Subscription,
+    request_seq: u64,
+    focus: FocusHandle,
+}
+
+struct TerminalPane {
+    terminal: Entity<TerminalSession>,
+    _updates: Subscription,
 }
 
 enum TabKind {
     Terminal {
-        terminal: Entity<TerminalSession>,
-        _updates: Subscription,
+        panes: Vec<TerminalPane>,
+        active_pane: usize,
     },
     Sftp {
         view: Entity<SftpView>,
         host_name: String,
         _updates: Subscription,
+        _events: Subscription,
     },
-    Hosts,
-    Snippets,
-    Tunnels,
-    Settings,
 }
 
 struct Tab {
@@ -60,31 +99,42 @@ struct Tab {
 
 pub struct Workspace {
     focus: FocusHandle,
+    in_vault: bool,
+    vault_section: VaultSection,
+    selected_group: Option<String>,
+    vault_search: Entity<InputState>,
     tabs: Vec<Tab>,
     active: usize,
     next_tab: u64,
     tab_scroll: ScrollHandle,
     settings: Entity<SettingsStore>,
     hosts: Entity<HostsPage>,
+    keychain: Entity<KeychainPage>,
     snippets: Entity<SnippetsPage>,
     tunnels: Entity<TunnelsPage>,
+    mcp_runtime: Arc<McpRuntime>,
     preferences: Entity<Preferences>,
     quick_connect: Entity<QuickConnectPalette>,
     file_drawer: Entity<FileDrawer>,
     quick_connect_open: bool,
+    new_tab_menu_open: bool,
+    new_tab_menu_pos: Option<Point<Pixels>>,
     right_drawer: Option<RightDrawer>,
-    sidebar_width: f32,
-    resizing_sidebar: Option<(f32, f32)>,
+    docker_filter: DockerFilter,
+    docker_logs: Option<DockerLogsState>,
+    telemetry_open: bool,
     theme: Theme,
     font_family: String,
     font_size: u8,
     language: Language,
     opacity: u8,
+    vibrancy: bool,
     _settings_updates: Subscription,
     _hosts_events: Subscription,
     _snippets_events: Subscription,
     _quick_connect_events: Subscription,
     _file_drawer_events: Subscription,
+    _search_events: Subscription,
     _window_bounds: Subscription,
 }
 
@@ -95,27 +145,30 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let saved = &settings.read(cx).current;
-        let (theme, font_family, font_size, language, opacity, sidebar_width) = (
+        let (theme, font_family, font_size, language, opacity, vibrancy) = (
             saved.theme,
             saved.font_family.clone(),
             saved.font_size,
             saved.language,
             saved.opacity,
-            clamp_sidebar_width(saved.sidebar_width),
+            saved.vibrancy,
         );
-        window.defer(cx, move |window, _| apply_window_style(window, opacity));
-        let window_bounds = cx.observe_window_bounds(window, |this, window, _| {
-            apply_window_style(window, this.opacity);
+        window.defer(cx, move |window, _| {
+            apply_window_style(window, opacity, vibrancy)
+        });
+        let window_bounds = cx.observe_window_bounds(window, |_this, window, _| {
+            hide_traffic_lights(window);
         });
         let settings_updates = cx.observe_in(&settings, window, |this, settings, window, cx| {
-            let saved = &settings.read(cx).current;
-            let (theme, font_family, font_size, language, opacity, sidebar_width) = (
+            let saved = settings.read(cx).current.clone();
+            this.mcp_runtime.sync_settings(saved.clone());
+            let (theme, font_family, font_size, language, opacity, vibrancy) = (
                 saved.theme,
                 saved.font_family.clone(),
                 saved.font_size,
                 saved.language,
                 saved.opacity,
-                clamp_sidebar_width(saved.sidebar_width),
+                saved.vibrancy,
             );
             if this.theme != theme
                 || this.language != language
@@ -131,9 +184,11 @@ impl Workspace {
                 let terminals: Vec<_> = this
                     .tabs
                     .iter()
-                    .filter_map(|tab| match &tab.kind {
-                        TabKind::Terminal { terminal, .. } => Some(terminal.clone()),
-                        _ => None,
+                    .flat_map(|tab| match &tab.kind {
+                        TabKind::Terminal { panes, .. } => {
+                            panes.iter().map(|p| p.terminal.clone()).collect::<Vec<_>>()
+                        }
+                        TabKind::Sftp { .. } => Vec::new(),
                     })
                     .collect();
                 for terminal in terminals {
@@ -143,21 +198,22 @@ impl Workspace {
                     });
                 }
             }
-            if this.opacity != opacity {
+            if this.opacity != opacity || this.vibrancy != vibrancy {
                 this.opacity = opacity;
-                apply_window_style(window, opacity);
-            }
-            if this.resizing_sidebar.is_none() {
-                this.sidebar_width = sidebar_width;
+                this.vibrancy = vibrancy;
+                apply_window_style(window, opacity, vibrancy);
             }
             cx.notify();
         });
+
         let hosts = cx.new(|cx| HostsPage::new(settings.clone(), window, cx));
         let hosts_events = cx.subscribe_in(&hosts, window, |this, _, event, window, cx| {
             match event {
                 HostsEvent::Connect(host) => this.connect_host(host.clone(), window, cx),
+                HostsEvent::OpenSftp(host) => this.open_sftp(host.clone(), window, cx),
             }
         });
+        let keychain = cx.new(|cx| KeychainPage::new(settings.clone(), window, cx));
         let snippets = cx.new(|cx| SnippetsPage::new(settings.clone(), window, cx));
         let snippets_events = cx.subscribe_in(&snippets, window, |this, _, event, window, cx| {
             match event {
@@ -165,18 +221,46 @@ impl Workspace {
             }
         });
         let tunnels = cx.new(|cx| TunnelsPage::new(settings.clone(), window, cx));
-        let preferences = cx.new(|cx| Preferences::new(settings.clone(), window, cx));
+        let (mcp_tx, mcp_rx) = async_channel::unbounded::<McpUiEvent>();
+        let mcp_runtime = McpRuntime::new(settings.read(cx).current.clone(), Some(mcp_tx));
+        cx.spawn_in(window, async move |ws, cx| {
+            while let Ok(ev) = mcp_rx.recv().await {
+                let _ = cx.update(|window, cx| {
+                    let _ = ws.update(cx, |this, cx| {
+                        match ev {
+                            McpUiEvent::Changed => {}
+                            McpUiEvent::ApprovalRequested { client, host, cmd } => {
+                                let lang = this.language;
+                                crate::notify::warning(
+                                    format!(
+                                        "{} {client} → {host}: {cmd}",
+                                        lang.text("MCP approval needed:", "MCP 待审批：")
+                                    ),
+                                    window,
+                                    cx,
+                                );
+                            }
+                            McpUiEvent::ServerError(err) => {
+                                crate::notify::error(err, window, cx);
+                            }
+                        }
+                        this.preferences.update(cx, |p, cx| p.notify_mcp(cx));
+                        cx.notify();
+                    });
+                });
+            }
+        })
+        .detach();
+        let preferences = cx.new(|cx| {
+            Preferences::new(settings.clone(), Arc::clone(&mcp_runtime), window, cx)
+        });
         let quick_connect = cx.new(|cx| QuickConnectPalette::new(settings.clone(), window, cx));
         let file_drawer = cx.new(|cx| FileDrawer::new(settings.clone(), window, cx));
         let file_drawer_events =
             cx.subscribe_in(&file_drawer, window, |this, _, event, window, cx| {
                 match event {
                     FileDrawerEvent::InsertPath(path) => {
-                        if let Some(Tab {
-                            kind: TabKind::Terminal { terminal, .. },
-                            ..
-                        }) = this.tabs.get(this.active)
-                        {
+                        if let Some(terminal) = this.active_terminal() {
                             let escaped = shell_words::quote(&path).into_owned();
                             let bytes = format!("{escaped} ").into_bytes();
                             terminal.update(cx, |session, cx| {
@@ -187,6 +271,10 @@ impl Workspace {
                     }
                     FileDrawerEvent::OpenFullSftp(host) => {
                         this.open_sftp(host.clone(), window, cx);
+                    }
+                    FileDrawerEvent::Close => {
+                        this.right_drawer = None;
+                        cx.notify();
                     }
                 }
             });
@@ -207,36 +295,60 @@ impl Workspace {
                 }
                 cx.notify();
             });
-        let mut this = Self {
+
+        let vault_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(language.text(
+                "Search hosts, IP, tags…",
+                "搜索主机、IP、标签…",
+            ))
+        });
+        let search_events = cx.subscribe(&vault_search, |this, input, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                let q = input.read(cx).value().to_string();
+                this.hosts.update(cx, |h, cx| h.set_search_query(q, cx));
+            }
+        });
+
+        let this = Self {
             focus: cx.focus_handle(),
+            in_vault: true,
+            vault_section: VaultSection::Hosts,
+            selected_group: None,
+            vault_search,
             tabs: Vec::new(),
             active: 0,
             next_tab: 1,
             tab_scroll: ScrollHandle::new(),
             settings,
             hosts,
+            keychain,
             snippets,
             tunnels,
+            mcp_runtime,
             preferences,
             quick_connect,
             file_drawer,
             quick_connect_open: false,
+            new_tab_menu_open: false,
+            new_tab_menu_pos: None,
             right_drawer: None,
-            sidebar_width,
-            resizing_sidebar: None,
+            docker_filter: DockerFilter::All,
+            docker_logs: None,
+            telemetry_open: false,
             theme,
             font_family,
             font_size,
             language,
             opacity,
+            vibrancy,
             _settings_updates: settings_updates,
             _hosts_events: hosts_events,
             _snippets_events: snippets_events,
             _quick_connect_events: quick_connect_events,
             _file_drawer_events: file_drawer_events,
+            _search_events: search_events,
             _window_bounds: window_bounds,
         };
-        this.new_tab(window, cx);
         this
     }
 
@@ -246,62 +358,89 @@ impl Workspace {
         id
     }
 
-    fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn active_terminal(&self) -> Option<Entity<TerminalSession>> {
+        match &self.tabs.get(self.active)?.kind {
+            TabKind::Terminal { panes, active_pane } => {
+                panes.get(*active_pane).or_else(|| panes.first()).map(|p| p.terminal.clone())
+            }
+            TabKind::Sftp { .. } => None,
+        }
+    }
+
+    fn spawn_local_tab(&mut self, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
         let colors = self.theme.colors();
         let palette = self.theme.palette();
+        let font_family = self.font_family.clone();
+        let font_size = self.font_size;
+        let language = self.language;
         let shell = self.settings.read(cx).current.shell.clone();
         let terminal = cx.new(|cx| {
-            TerminalSession::local(
-                colors,
-                palette,
-                self.font_family.clone(),
-                self.font_size,
-                self.language,
-                &shell,
-                cx,
-            )
+            TerminalSession::local(colors, palette, font_family, font_size, language, &shell, cx)
         });
         let updates = cx.observe(&terminal, |_, _, cx| cx.notify());
         let id = self.alloc_tab_id();
         self.tabs.push(Tab {
             id,
             kind: TabKind::Terminal {
-                terminal,
-                _updates: updates,
+                panes: vec![TerminalPane {
+                    terminal: terminal.clone(),
+                    _updates: updates,
+                }],
+                active_pane: 0,
             },
         });
-        self.select_tab(self.tabs.len() - 1, window, cx);
+        if activate {
+            self.active = self.tabs.len() - 1;
+            self.in_vault = false;
+            self.telemetry_open = false;
+            terminal.read(cx).focus_handle().focus(window, cx);
+            self.sync_file_drawer(window, cx);
+        }
+        cx.notify();
     }
 
-    pub fn connect_host(&mut self, host: HostProfile, window: &mut Window, cx: &mut Context<Self>) {
-        let host_id = host.id;
-        if host_id != 0 {
+    fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.spawn_local_tab(true, window, cx);
+    }
+
+    fn connect_host(&mut self, host: HostProfile, window: &mut Window, cx: &mut Context<Self>) {
+        let resolved = self.settings.read(cx).current.resolve_host_auth(&host);
+        let all_hosts: Vec<HostProfile> = self
+            .settings
+            .read(cx)
+            .current
+            .hosts
+            .iter()
+            .map(|h| self.settings.read(cx).current.resolve_host_auth(h))
+            .collect();
+        if host.id > 0 {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
-                .ok();
-            if let Some(ts) = now {
-                self.settings.update(cx, |store, cx| {
-                    let _ = store.update(|settings| {
-                        if let Some(saved) = settings.hosts.iter_mut().find(|h| h.id == host_id) {
-                            saved.last_connected = Some(ts);
-                        }
-                    });
-                    cx.notify();
+                .unwrap_or(0);
+            let target_id = host.id;
+            let _ = self.settings.update(cx, |store, cx| {
+                let _ = store.update(|s| {
+                    if let Some(h) = s.hosts.iter_mut().find(|h| h.id == target_id) {
+                        h.last_connected = Some(now);
+                    }
                 });
-            }
+                cx.notify();
+            });
         }
         let colors = self.theme.colors();
         let palette = self.theme.palette();
-        let all_hosts = self.settings.read(cx).current.hosts.clone();
+        let font_family = self.font_family.clone();
+        let font_size = self.font_size;
+        let language = self.language;
         let terminal = cx.new(|cx| {
             TerminalSession::ssh(
                 colors,
                 palette,
-                self.font_family.clone(),
-                self.font_size,
-                self.language,
-                host,
+                font_family,
+                font_size,
+                language,
+                resolved,
                 all_hosts,
                 window,
                 cx,
@@ -312,108 +451,128 @@ impl Workspace {
         self.tabs.push(Tab {
             id,
             kind: TabKind::Terminal {
-                terminal,
-                _updates: updates,
+                panes: vec![TerminalPane {
+                    terminal: terminal.clone(),
+                    _updates: updates,
+                }],
+                active_pane: 0,
             },
         });
-        self.select_tab(self.tabs.len() - 1, window, cx);
-    }
-
-    fn toggle_quick_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.quick_connect_open = !self.quick_connect_open;
-        if self.quick_connect_open {
-            self.quick_connect
-                .update(cx, |palette, cx| palette.focus_input(window, cx));
-        } else {
-            self.restore_active_focus(window, cx);
-        }
+        self.active = self.tabs.len() - 1;
+        self.in_vault = false;
+        self.telemetry_open = false;
+        terminal.read(cx).focus_handle().focus(window, cx);
+        self.sync_file_drawer(window, cx);
         cx.notify();
     }
 
-    fn restore_active_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get(self.active) {
-            match &tab.kind {
-                TabKind::Terminal { terminal, .. } => {
-                    terminal.read(cx).focus_handle().focus(window, cx);
-                }
-                TabKind::Sftp { .. }
-                | TabKind::Hosts
-                | TabKind::Snippets
-                | TabKind::Tunnels
-                | TabKind::Settings => {
-                    self.focus.focus(window, cx);
-                }
-            }
-        }
-    }
-
-    fn toggle_sidebar_group(&mut self, group: String, cx: &mut Context<Self>) {
-        self.settings.update(cx, |store, cx| {
-            let _ = store.update(|settings| {
-                if let Some(pos) = settings
-                    .collapsed_groups
-                    .iter()
-                    .position(|existing| existing == &group)
-                {
-                    settings.collapsed_groups.remove(pos);
-                } else {
-                    settings.collapsed_groups.push(group);
-                }
-            });
-            cx.notify();
-        });
-    }
-
-    fn start_sidebar_resize(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
-        if event.click_count >= 2 {
-            self.resizing_sidebar = None;
-            self.sidebar_width = DEFAULT_SIDEBAR_WIDTH;
-            self.save_sidebar_width(cx);
-            cx.notify();
+    fn toggle_split_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.in_vault {
             return;
         }
-        self.resizing_sidebar = Some((f32::from(event.position.x), self.sidebar_width));
-        cx.notify();
-    }
-
-    fn update_sidebar_resize(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let Some((start_x, start_width)) = self.resizing_sidebar else {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
-        if event.pressed_button != Some(MouseButton::Left) {
-            self.finish_sidebar_resize(cx);
+        let TabKind::Terminal { panes, active_pane } = &mut tab.kind else {
+            return;
+        };
+        if panes.len() >= 2 {
+            let removed = panes.pop();
+            if let Some(pane) = removed {
+                pane.terminal.update(cx, |t, cx| t.shutdown(cx));
+            }
+            *active_pane = 0;
+            if let Some(first) = panes.first() {
+                first.terminal.read(cx).focus_handle().focus(window, cx);
+            }
+            cx.notify();
             return;
         }
-        let next = clamp_sidebar_width(start_width + (f32::from(event.position.x) - start_x));
-        if (next - self.sidebar_width).abs() >= f32::EPSILON {
-            self.sidebar_width = next;
-            cx.notify();
+
+        let host_opt = panes
+            .first()
+            .and_then(|p| p.terminal.read(cx).host_profile().cloned());
+        let colors = self.theme.colors();
+        let palette = self.theme.palette();
+        let font_family = self.font_family.clone();
+        let font_size = self.font_size;
+        let language = self.language;
+
+        let new_term = if let Some(host) = host_opt {
+            let resolved = self.settings.read(cx).current.resolve_host_auth(&host);
+            let all_hosts: Vec<HostProfile> = self
+                .settings
+                .read(cx)
+                .current
+                .hosts
+                .iter()
+                .map(|h| self.settings.read(cx).current.resolve_host_auth(h))
+                .collect();
+            cx.new(|cx| {
+                TerminalSession::ssh(
+                    colors,
+                    palette,
+                    font_family,
+                    font_size,
+                    language,
+                    resolved,
+                    all_hosts,
+                    window,
+                    cx,
+                )
+            })
+        } else {
+            let shell = self.settings.read(cx).current.shell.clone();
+            cx.new(|cx| {
+                TerminalSession::local(
+                    colors,
+                    palette,
+                    font_family,
+                    font_size,
+                    language,
+                    &shell,
+                    cx,
+                )
+            })
+        };
+        let updates = cx.observe(&new_term, |_, _, cx| cx.notify());
+        if let Some(Tab {
+            kind: TabKind::Terminal { panes, active_pane },
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            panes.push(TerminalPane {
+                terminal: new_term.clone(),
+                _updates: updates,
+            });
+            *active_pane = panes.len() - 1;
         }
+        new_term.read(cx).focus_handle().focus(window, cx);
+        cx.notify();
     }
 
-    fn finish_sidebar_resize(&mut self, cx: &mut Context<Self>) {
-        if self.resizing_sidebar.take().is_some() {
-            self.save_sidebar_width(cx);
-            cx.notify();
+    fn open_sftp(&mut self, host: HostProfile, window: &mut Window, cx: &mut Context<Self>) {
+        if host.protocol != HostProtocol::Ssh {
+            let language = self.settings.read(cx).current.language;
+            crate::notify::info(
+                language.text(
+                    "GUI SFTP is only supported for SSH hosts.",
+                    "当前主机协议不支持界面化 SFTP。",
+                ),
+                window,
+                cx,
+            );
+            return;
         }
-    }
-
-    fn save_sidebar_width(&mut self, cx: &mut Context<Self>) {
-        let width = clamp_sidebar_width(self.sidebar_width);
-        self.sidebar_width = width;
-        self.settings.update(cx, |store, cx| {
-            if (store.current.sidebar_width - width).abs() >= f32::EPSILON {
-                let _ = store.update(|settings| settings.sidebar_width = width);
-                cx.notify();
+        let resolved = self.settings.read(cx).current.resolve_host_auth(&host);
+        let host_name = resolved.name.clone();
+        let view = cx.new(|cx| SftpView::new(self.settings.clone(), resolved, window, cx));
+        let updates = cx.observe(&view, |_, _, cx| cx.notify());
+        let events = cx.subscribe_in(&view, window, |this, _, event, window, cx| match event {
+            SftpViewEvent::ReturnToTerminal(host) => {
+                this.return_to_terminal(host.clone(), window, cx);
             }
         });
-    }
-
-    pub fn open_sftp(&mut self, host: HostProfile, window: &mut Window, cx: &mut Context<Self>) {
-        let host_name = host.name.clone();
-        let store = self.settings.clone();
-        let view = cx.new(|cx| SftpView::new(store, host, window, cx));
-        let updates = cx.observe(&view, |_, _, cx| cx.notify());
         let id = self.alloc_tab_id();
         self.tabs.push(Tab {
             id,
@@ -421,146 +580,162 @@ impl Workspace {
                 view,
                 host_name,
                 _updates: updates,
+                _events: events,
             },
         });
-        self.select_tab(self.tabs.len() - 1, window, cx);
+        self.active = self.tabs.len() - 1;
+        self.in_vault = false;
+        self.telemetry_open = false;
+        cx.notify();
     }
 
-    pub fn open_hosts(&mut self, host: Option<u64>, window: &mut Window, cx: &mut Context<Self>) {
-        let index = if let Some(existing) = self
-            .tabs
-            .iter()
-            .position(|tab| matches!(tab.kind, TabKind::Hosts))
-        {
-            existing
+    fn return_to_terminal(
+        &mut self,
+        host: HostProfile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(idx) = self.tabs.iter().position(|tab| match &tab.kind {
+            TabKind::Terminal { panes, .. } => panes.iter().any(|p| {
+                p.terminal
+                    .read(cx)
+                    .host_profile()
+                    .is_some_and(|h| h.id == host.id)
+            }),
+            TabKind::Sftp { .. } => false,
+        }) {
+            self.active = idx;
+            self.in_vault = false;
+            self.restore_active_focus(window, cx);
+            self.sync_file_drawer(window, cx);
+            cx.notify();
         } else {
-            let id = self.alloc_tab_id();
-            self.tabs.push(Tab {
-                id,
-                kind: TabKind::Hosts,
-            });
-            self.tabs.len() - 1
-        };
-        self.select_tab(index, window, cx);
-        if let Some(id) = host {
-            self.hosts
-                .update(cx, |hosts, cx| hosts.edit_host(Some(id), window, cx));
+            self.connect_host(host, window, cx);
         }
     }
 
-    pub fn open_snippets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let index = if let Some(existing) = self
-            .tabs
-            .iter()
-            .position(|tab| matches!(tab.kind, TabKind::Snippets))
-        {
-            existing
-        } else {
-            let id = self.alloc_tab_id();
-            self.tabs.push(Tab {
-                id,
-                kind: TabKind::Snippets,
-            });
-            self.tabs.len() - 1
-        };
-        self.select_tab(index, window, cx);
-    }
-
-    pub fn run_snippet(&mut self, snippet: &Snippet, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_or_new_terminal(window, cx);
-        if let Some(Tab {
-            kind: TabKind::Terminal { terminal, .. },
-            ..
-        }) = self.tabs.get(self.active)
-        {
+    fn run_snippet(&mut self, snippet: &Snippet, window: &mut Window, cx: &mut Context<Self>) {
+        if self.in_vault || self.active_terminal().is_none() {
+            if let Some(idx) = self
+                .tabs
+                .iter()
+                .position(|t| matches!(t.kind, TabKind::Terminal { .. }))
+            {
+                self.active = idx;
+                self.in_vault = false;
+            } else {
+                self.new_tab(window, cx);
+            }
+        }
+        if let Some(terminal) = self.active_terminal() {
             let payload = snippet.payload();
             terminal.update(cx, |session, cx| {
                 session.send_bytes(&payload, cx);
                 session.focus_handle().focus(window, cx);
             });
         }
+        cx.notify();
     }
 
-    pub fn open_tunnels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let index = if let Some(existing) = self
-            .tabs
-            .iter()
-            .position(|tab| matches!(tab.kind, TabKind::Tunnels))
-        {
-            existing
-        } else {
-            let id = self.alloc_tab_id();
-            self.tabs.push(Tab {
-                id,
-                kind: TabKind::Tunnels,
-            });
-            self.tabs.len() - 1
-        };
-        self.select_tab(index, window, cx);
+    fn open_vault(&mut self, section: VaultSection, cx: &mut Context<Self>) {
+        self.in_vault = true;
+        self.vault_section = section;
+        self.telemetry_open = false;
+        cx.notify();
     }
 
-    pub fn export_active_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Tab {
-            kind: TabKind::Terminal { terminal, .. },
-            ..
-        }) = self.tabs.get(self.active)
-        else {
-            return;
-        };
-        let bytes = terminal.read(cx).export_log();
-        let language = self.language;
-        let default_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        let receiver = cx.prompt_for_new_path(&default_dir, Some("bulwark-session.log"));
-        let window_handle = window.window_handle();
-        cx.spawn(async move |_, cx| {
-            if let Ok(Ok(Some(path))) = receiver.await {
-                let res = std::fs::write(&path, bytes);
-                let _ = window_handle.update(cx, |_, window, cx| match res {
-                    Ok(()) => crate::notify::success(
-                        language.text("Session log exported.", "会话日志已导出。"),
-                        window,
-                        cx,
-                    ),
-                    Err(err) => crate::notify::error(err.to_string(), window, cx),
-                });
-            }
-        })
-        .detach();
+    pub fn open_hosts(&mut self, _edit_id: Option<u64>, _window: &mut Window, cx: &mut Context<Self>) {
+        self.open_vault(VaultSection::Hosts, cx);
     }
 
-    pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let index = if let Some(existing) = self
-            .tabs
-            .iter()
-            .position(|tab| matches!(tab.kind, TabKind::Settings))
-        {
-            existing
-        } else {
-            let id = self.alloc_tab_id();
-            self.tabs.push(Tab {
-                id,
-                kind: TabKind::Settings,
-            });
-            self.tabs.len() - 1
-        };
-        self.select_tab(index, window, cx);
+    pub fn open_snippets(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.open_vault(VaultSection::Snippets, cx);
     }
 
-    fn sync_file_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.right_drawer != Some(RightDrawer::Files) {
+    pub fn open_tunnels(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.open_vault(VaultSection::Tunnels, cx);
+    }
+
+    pub fn open_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.open_vault(VaultSection::Settings, cx);
+    }
+
+    fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index < self.tabs.len() {
+            self.active = index;
+            self.in_vault = false;
+            self.telemetry_open = false;
+            self.restore_active_focus(window, cx);
+            self.sync_file_drawer(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn step_tab(&mut self, backward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.is_empty() {
             return;
         }
-        let host = if let Some(Tab {
-            kind: TabKind::Terminal { terminal, .. },
-            ..
-        }) = self.tabs.get(self.active)
-        {
-            terminal.read(cx).host_profile().cloned()
+        let next = if backward {
+            (self.active + self.tabs.len() - 1) % self.tabs.len()
         } else {
-            None
+            (self.active + 1) % self.tabs.len()
         };
-        self.file_drawer
-            .update(cx, |drawer, cx| drawer.sync_target(host.as_ref(), window, cx));
+        self.select_tab(next, window, cx);
+    }
+
+    fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        let removed = self.tabs.remove(index);
+        match removed.kind {
+            TabKind::Terminal { panes, .. } => {
+                for pane in panes {
+                    pane.terminal.update(cx, |t, cx| t.shutdown(cx));
+                }
+            }
+            TabKind::Sftp { .. } => {}
+        }
+        if self.tabs.is_empty() {
+            self.active = 0;
+            self.in_vault = true;
+        } else {
+            self.active = active_after_close(self.active, index, self.tabs.len());
+            if !self.in_vault {
+                self.restore_active_focus(window, cx);
+                self.sync_file_drawer(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn close_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.in_vault && !self.tabs.is_empty() {
+            self.close_tab(self.active, window, cx);
+        }
+    }
+
+    fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tunnels.update(cx, |t, _| t.shutdown_all());
+        for tab in &self.tabs {
+            if let TabKind::Terminal { panes, .. } = &tab.kind {
+                for pane in panes {
+                    pane.terminal.update(cx, |t, cx| t.shutdown(cx));
+                }
+            }
+        }
+        window.remove_window();
+    }
+
+    fn toggle_quick_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.quick_connect_open = !self.quick_connect_open;
+        if self.quick_connect_open {
+            self.quick_connect
+                .update(cx, |qc, cx| qc.focus_input(window, cx));
+        } else {
+            self.restore_active_focus(window, cx);
+        }
+        cx.notify();
     }
 
     fn toggle_right_drawer(
@@ -580,578 +755,710 @@ impl Workspace {
         cx.notify();
     }
 
-    fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if index >= self.tabs.len() {
-            return;
-        }
-        if self.active != index
-            && let Some(Tab {
-                kind: TabKind::Terminal { terminal, .. },
-                ..
-            }) = self.tabs.get(self.active)
-        {
-            terminal.update(cx, TerminalSession::clear_composition);
-        }
-        self.active = index;
-        match &self.tabs[index].kind {
-            TabKind::Terminal { terminal, .. } => {
-                if self.right_drawer == Some(RightDrawer::Tunnels)
-                    && !terminal.read(cx).is_ssh()
-                {
-                    self.right_drawer = None;
-                }
-                terminal.read(cx).focus_handle().focus(window, cx);
-            }
-            TabKind::Sftp { .. }
-            | TabKind::Hosts
-            | TabKind::Snippets
-            | TabKind::Tunnels
-            | TabKind::Settings => {
-                self.focus.focus(window, cx);
-            }
-        }
-        self.tab_scroll.scroll_to_item(index);
-        self.sync_file_drawer(window, cx);
-        cx.notify();
-    }
-
-    fn focus_or_new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(
-            self.tabs.get(self.active).map(|t| &t.kind),
-            Some(TabKind::Terminal { .. })
-        ) {
-            self.select_tab(self.active, window, cx);
-            return;
-        }
-        if let Some(index) = self
-            .tabs
-            .iter()
-            .rposition(|tab| matches!(tab.kind, TabKind::Terminal { .. }))
-        {
-            self.select_tab(index, window, cx);
-        } else {
-            self.new_tab(window, cx);
-        }
-    }
-
-    fn step_tab(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.tabs.len();
-        if count != 0 {
-            let offset = if backwards { count - 1 } else { 1 };
-            self.select_tab((self.active + offset) % count, window, cx);
-        }
-    }
-
-    fn close_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get(self.active) {
-            let id = tab.id;
-            self.close_tab(id, window, cx);
-        } else {
-            self.tunnels.update(cx, |tunnels, _| tunnels.shutdown_all());
-            window.remove_window();
-        }
-    }
-
-    fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for tab in &self.tabs {
-            match &tab.kind {
-                TabKind::Terminal { terminal, .. } => {
-                    terminal.update(cx, |terminal, cx| terminal.shutdown(cx));
-                }
-                TabKind::Sftp { view, .. } => {
-                    view.update(cx, |sftp, _| sftp.shutdown());
-                }
-                _ => {}
-            }
-        }
-        self.tunnels.update(cx, |tunnels, _| tunnels.shutdown_all());
-        self.file_drawer.update(cx, |drawer, _| drawer.shutdown_sftp());
-        window.remove_window();
-    }
-
-    fn close_tab(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+    fn toggle_tunnels_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let host = self
+            .active_terminal()
+            .and_then(|terminal| terminal.read(cx).host_profile().cloned());
+        let Some(host) = host else {
             return;
         };
-        let tab = self.tabs.remove(index);
-        let was_terminal = matches!(tab.kind, TabKind::Terminal { .. });
-        match tab.kind {
-            TabKind::Terminal { terminal, .. } => {
-                terminal.update(cx, |terminal, cx| terminal.shutdown(cx));
-            }
-            TabKind::Sftp { view, .. } => {
-                view.update(cx, |sftp, _| sftp.shutdown());
-            }
-            _ => {}
-        }
-        if self.tabs.is_empty() {
-            self.active = 0;
-            if was_terminal {
-                self.open_hosts(None, window, cx);
-            } else {
-                self.tunnels.update(cx, |tunnels, _| tunnels.shutdown_all());
-        self.file_drawer.update(cx, |drawer, _| drawer.shutdown_sftp());
-        window.remove_window();
-            }
+        if host.protocol != HostProtocol::Ssh {
+            let language = self.language;
+            crate::notify::info(
+                language.text(
+                    "Port forwarding is only supported for SSH hosts.",
+                    "当前主机协议不支持端口转发。",
+                ),
+                window,
+                cx,
+            );
             return;
         }
-        let next_active = active_after_close(self.active, index, self.tabs.len());
-        self.select_tab(next_active, window, cx);
+        self.toggle_right_drawer(RightDrawer::Tunnels, window, cx);
     }
 
-    fn sidebar(&self, colors: Colors, cx: &Context<Self>) -> impl IntoElement {
+    fn sync_file_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.right_drawer != Some(RightDrawer::Files) {
+            return;
+        }
+        let host = self
+            .active_terminal()
+            .and_then(|t| t.read(cx).host_profile().cloned())
+            .filter(|h| h.protocol == HostProtocol::Ssh);
+        self.file_drawer.update(cx, |drawer, cx| {
+            drawer.sync_target(host.as_ref(), window, cx);
+        });
+    }
+
+    fn restore_active_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.in_vault
+            && let Some(term) = self.active_terminal()
+        {
+            term.read(cx).focus_handle().focus(window, cx);
+        } else {
+            self.focus.focus(window, cx);
+        }
+    }
+
+    fn titlebar(&self, colors: Colors, cx: &mut Context<Self>) -> impl IntoElement {
         let language = self.language;
-        let active_kind = self.tabs.get(self.active).map(|tab| &tab.kind);
-        let terminal_active = matches!(active_kind, Some(TabKind::Terminal { .. }));
-        let hosts_active = matches!(active_kind, Some(TabKind::Hosts));
-        let snippets_active = matches!(active_kind, Some(TabKind::Snippets));
-        let tunnels_active = matches!(active_kind, Some(TabKind::Tunnels));
-        let settings_active = matches!(active_kind, Some(TabKind::Settings));
+        let vibrancy = self.vibrancy;
 
-        let terminal_count = self
-            .tabs
-            .iter()
-            .filter(|tab| matches!(tab.kind, TabKind::Terminal { .. }))
-            .count();
+        let traffic_lights = cfg!(target_os = "macos").then(|| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .mr(px(8.))
+                .child(
+                    div()
+                        .id("tl-close")
+                        .size(px(12.))
+                        .rounded_full()
+                        .bg(rgb(0xff5f57))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.close_window(window, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id("tl-min")
+                        .size(px(12.))
+                        .rounded_full()
+                        .bg(rgb(0xfebc2e))
+                        .cursor_pointer()
+                        .on_click(|_, window, _| window.minimize_window()),
+                )
+                .child(
+                    div()
+                        .id("tl-full")
+                        .size(px(12.))
+                        .rounded_full()
+                        .bg(rgb(0x28c840))
+                        .cursor_pointer()
+                        .on_click(|_, window, _| window.toggle_fullscreen()),
+                )
+        });
 
-        let connected_host_ids: Vec<u64> = self
-            .tabs
-            .iter()
-            .filter_map(|tab| match &tab.kind {
-                TabKind::Terminal { terminal, .. } => {
-                    let s = terminal.read(cx);
-                    if s.is_connected() {
-                        s.host_profile().map(|h| h.id)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            })
-            .collect();
-
-        let saved = &self.settings.read(cx).current;
-        let host_count = saved.hosts.len();
-        let snippet_count = saved.snippets.len();
-        let tunnel_count = saved.tunnels.len();
-        let collapsed_groups = &saved.collapsed_groups;
-        let grouped_hosts = group_hosts(saved.hosts.iter());
-
-        let brand = div()
+        let vault_btn = div()
+            .id("tab-vault-home")
+            .h(px(26.))
+            .px(px(10.))
+            .rounded(px(6.))
+            .cursor_pointer()
             .flex()
-            .h(px(44.))
+            .items_center()
+            .gap(px(6.))
+            .border_1()
+            .border_color(if self.in_vault {
+                colors.hairline_strong()
+            } else {
+                transparent_black().into()
+            })
+            .bg(if self.in_vault {
+                colors.surface_active_glass()
+            } else {
+                transparent_black().into()
+            })
+            .hover(|s| s.bg(colors.surface_hover_glass()))
+            .text_size(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(rgb(if self.in_vault {
+                colors.foreground
+            } else {
+                colors.secondary
+            }))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.in_vault = true;
+                this.telemetry_open = false;
+                cx.notify();
+            }))
+            .child(crate::icons::app_logo(px(18.)))
+            .child(language.text("Workspace", "工作台"));
+
+        let tabs_row = div()
+            .id("session-tabs-strip")
+            .flex_1()
+            .min_w_0()
+            .overflow_x_scroll()
+            .track_scroll(&self.tab_scroll)
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .children(self.tabs.iter().enumerate().map(|(idx, tab)| {
+                let is_active = !self.in_vault && idx == self.active;
+                let (dot_color, label) = match &tab.kind {
+                    TabKind::Terminal { panes, active_pane } => {
+                        let term = panes
+                            .get(*active_pane)
+                            .or_else(|| panes.first())
+                            .map(|p| p.terminal.read(cx));
+                        let (is_ssh, connected, title) = match term {
+                            Some(t) => (t.is_ssh(), t.is_connected(), t.title().to_owned()),
+                            None => (false, false, "Terminal".into()),
+                        };
+                        let dot = if is_ssh && connected {
+                            colors.success
+                        } else if is_ssh {
+                            colors.warning()
+                        } else {
+                            colors.muted
+                        };
+                        let split_suffix = if panes.len() > 1 { " · 2" } else { "" };
+                        (dot, format!("{title}{split_suffix}"))
+                    }
+                    TabKind::Sftp { host_name, .. } => (colors.accent, format!("SFTP · {host_name}")),
+                };
+
+                div()
+                    .id(("session-tab", tab.id))
+                    .h(px(26.))
+                    .max_w(px(210.))
+                    .pl(px(10.))
+                    .pr(px(6.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .border_1()
+                    .border_color(if is_active {
+                        colors.hairline()
+                    } else {
+                        transparent_black().into()
+                    })
+                    .bg(if is_active {
+                        colors.surface_active_glass()
+                    } else {
+                        transparent_black().into()
+                    })
+                    .hover(|s| s.bg(colors.surface_hover_glass()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_tab(idx, window, cx);
+                    }))
+                    .child(div().size(px(6.)).flex_shrink_0().rounded_full().bg(rgb(dot_color)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.))
+                            .font_weight(if is_active {
+                                FontWeight::MEDIUM
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .text_color(rgb(if is_active {
+                                colors.foreground
+                            } else {
+                                colors.secondary
+                            }))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .id(("tab-close", tab.id))
+                            .size(px(16.))
+                            .rounded(px(4.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .hover(|s| s.bg(colors.surface_hover_glass()))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.close_tab(idx, window, cx);
+                            }))
+                            .child(Icon::Close.render(px(10.), colors.muted)),
+                    )
+            }))
+            .child(
+                div()
+                    .id("new-tab-dropdown")
+                    .size(px(26.))
+                    .flex_shrink_0()
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .border_color(if self.new_tab_menu_open {
+                        colors.hairline()
+                    } else {
+                        transparent_black().into()
+                    })
+                    .bg(if self.new_tab_menu_open {
+                        colors.surface_active_glass()
+                    } else {
+                        transparent_black().into()
+                    })
+                    .hover(|s| s.bg(colors.surface_hover_glass()))
+                    .on_click(cx.listener(|this, event: &gpui_kit::ClickEvent, _, cx| {
+                        this.new_tab_menu_open = !this.new_tab_menu_open;
+                        this.new_tab_menu_pos = Some(event.position());
+                        cx.notify();
+                    }))
+                    .child(Icon::Plus.render(
+                        px(13.),
+                        if self.new_tab_menu_open {
+                            colors.foreground
+                        } else {
+                            colors.secondary
+                        },
+                    )),
+            );
+
+        let pill_bg = if self.quick_connect_open {
+            colors.surface_active_glass()
+        } else if colors.dark {
+            rgb(0xffffff).alpha(0.055)
+        } else {
+            rgb(0xffffff).alpha(0.62)
+        };
+        let pill_hover_bg = if colors.dark {
+            rgb(0xffffff).alpha(0.09)
+        } else {
+            rgb(0xffffff).alpha(0.84)
+        };
+        let kbd_bg = if colors.dark {
+            rgb(0xffffff).alpha(0.07)
+        } else {
+            rgb(0x000000).alpha(0.045)
+        };
+
+        let cmdk_pill = div()
+            .id("titlebar-cmdk")
+            .h(px(26.))
+            .w(px(196.))
             .flex_shrink_0()
+            .px(px(9.))
+            .rounded(px(7.))
+            .cursor_pointer()
+            .bg(pill_bg)
+            .border_1()
+            .border_color(if self.quick_connect_open {
+                colors.hairline_strong()
+            } else {
+                colors.hairline()
+            })
+            .shadow_xs()
+            .hover(move |s| s.bg(pill_hover_bg).border_color(colors.hairline_strong()))
+            .active(|s| s.bg(colors.surface_active_glass()))
+            .flex()
             .items_center()
             .justify_between()
-            .px(px(12.))
-            .border_b_1()
-            .border_color(colors.hairline())
-            .on_mouse_down(MouseButton::Left, drag_window)
+            .gap(px(8.))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.toggle_quick_connect(window, cx);
+            }))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(px(6.))
+                    .child(Icon::Search.render(px(12.), colors.secondary))
                     .child(
                         div()
-                            .size(px(24.))
-                            .rounded_md()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(colors.accent_soft())
-                            .border_1()
-                            .border_color(colors.accent_border())
-                            .child(Icon::Shield.render(px(13.), colors.accent)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.5))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(colors.foreground))
-                            .child("Bulwark"),
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(colors.secondary))
+                            .child(language.text("Quick Connect", "快速连接")),
                     ),
             )
             .child(
-                Button::new("sidebar-new-tab")
-                    .ghost()
-                    .xsmall()
-                    .size(px(24.))
-                    .rounded_md()
-                    .tooltip(language.text("New Local Tab (⌘T)", "新建本地标签 (⌘T)"))
-                    .icon(Icon::Plus)
-                    .on_click(cx.listener(|this, _, window, cx| this.new_tab(window, cx))),
+                div()
+                    .h(px(16.))
+                    .px(px(5.))
+                    .rounded(px(4.))
+                    .bg(kbd_bg)
+                    .border_1()
+                    .border_color(colors.hairline())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(9.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(colors.secondary))
+                    .child("⌘K"),
             );
 
-        let quick_trigger = div().px(px(10.)).pt(px(10.)).pb(px(4.)).child(
-            Button::new("sidebar-quick-connect")
-                .ghost()
-                .w_full()
-                .h(px(30.))
-                .px(px(9.))
-                .rounded_lg()
-                .bg(rgb(colors.surface))
-                .border_1()
-                .border_color(colors.hairline())
-                .justify_between()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(7.))
-                        .min_w_0()
-                        .child(Icon::Search.render(px(12.5), colors.muted))
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(rgb(colors.muted))
-                                .truncate()
-                                .child(language.text("Quick connect…", "快速连接…")),
-                        ),
-                )
-                .child(
-                    div()
-                        .px(px(5.))
-                        .py(px(1.))
-                        .rounded(px(4.))
-                        .bg(rgb(colors.panel))
-                        .border_1()
-                        .border_color(colors.hairline())
-                        .text_size(px(10.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(rgb(colors.muted))
-                        .child("⌘K"),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.toggle_quick_connect(window, cx);
-                })),
-        );
+        div()
+            .id("unified-titlebar")
+            .h(px(38.))
+            .w_full()
+            .px(px(12.))
+            .bg(colors.titlebar_bg(vibrancy, self.opacity))
+            .border_b_1()
+            .border_color(colors.hairline())
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .on_mouse_down(MouseButton::Left, drag_window)
+            .children(traffic_lights)
+            .child(vault_btn)
+            .child(div().w(px(1.)).h(px(16.)).bg(colors.hairline()))
+            .child(tabs_row)
+            .child(cmdk_pill)
+    }
 
-        let mut sidebar = div()
+    fn render_new_tab_menu(&self, colors: Colors, cx: &mut Context<Self>) -> impl IntoElement {
+        let language = self.language;
+        let hosts = self.settings.read(cx).current.hosts.clone();
+        let left_x = self
+            .new_tab_menu_pos
+            .map(|p| (f32::from(p.x) - 18.0).max(12.0))
+            .unwrap_or(240.0);
+
+        let menu = div()
+            .id("new-tab-host-menu")
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .absolute()
+            .top(px(38.))
+            .left(px(left_x))
+            .w(px(248.))
+            .max_h(px(360.))
+            .rounded(px(9.))
+            .bg(colors.popover_bg())
+            .border_1()
+            .border_color(colors.hairline_strong())
+            .shadow_lg()
+            .p(px(5.))
             .flex()
             .flex_col()
-            .flex_shrink_0()
-            .w(px(self.sidebar_width))
-            .bg(rgb(colors.chrome))
-            .border_r_1()
-            .border_color(colors.hairline())
-            .child(brand)
-            .child(quick_trigger)
+            .gap(px(2.))
             .child(
                 div()
-                    .px(px(10.))
-                    .pt(px(4.))
+                    .id("new-tab-menu-local")
+                    .h(px(30.))
+                    .px(px(8.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(colors.accent_soft()))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.new_tab_menu_open = false;
+                        this.new_tab(window, cx);
+                    }))
+                    .child(Icon::Terminal.render(px(14.), colors.accent))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(colors.foreground))
+                            .child(language.text("Local Terminal", "本地终端")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(rgb(colors.muted))
+                            .child("⌘T"),
+                    ),
+            )
+            .child(div().h(px(1.)).my(px(3.)).bg(colors.hairline()))
+            .child(
+                div()
+                    .id("new-tab-menu-hosts-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .children(if hosts.is_empty() {
+                        vec![
+                            div()
+                                .px(px(8.))
+                                .py(px(8.))
+                                .text_size(px(11.5))
+                                .text_color(rgb(colors.muted))
+                                .child(language.text("No saved hosts", "暂无已保存主机"))
+                                .into_any_element(),
+                        ]
+                    } else {
+                        hosts
+                            .into_iter()
+                            .enumerate()
+                            .map(|(ix, host)| {
+                                let label = host.name.clone();
+                                let endpoint = host.endpoint();
+                                let icon = host.icon.icon();
+                                div()
+                                    .id(("new-tab-menu-host", ix))
+                                    .px(px(8.))
+                                    .py(px(6.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(colors.accent_soft()))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.new_tab_menu_open = false;
+                                        this.connect_host(host.clone(), window, cx);
+                                    }))
+                                    .child(icon.render(px(14.), colors.secondary))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(rgb(colors.foreground))
+                                                    .child(label),
+                                            )
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .text_size(px(10.5))
+                                                    .text_color(rgb(colors.muted))
+                                                    .child(endpoint),
+                                            ),
+                                    )
+                                    .into_any_element()
+                            })
+                            .collect()
+                    }),
+            );
+
+        div()
+            .id("new-tab-menu-backdrop")
+            .absolute()
+            .inset_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.new_tab_menu_open = false;
+                    cx.notify();
+                }),
+            )
+            .child(menu)
+    }
+
+    fn vault_sidebar(&self, colors: Colors, cx: &mut Context<Self>) -> impl IntoElement {
+        let saved = &self.settings.read(cx).current;
+        let language = saved.language;
+        let vibrancy = self.vibrancy;
+        let hosts_count = saved.hosts.len();
+        let kc_count = saved.keychain.len();
+        let tunnels_count = saved.tunnels.len();
+        let snippets_count = saved.snippets.len();
+
+        let mut group_counts: BTreeMap<String, usize> = BTreeMap::new();
+        for h in &saved.hosts {
+            let g = h.group.trim();
+            if !g.is_empty() {
+                *group_counts.entry(g.to_owned()).or_insert(0) += 1;
+            }
+        }
+
+        let dot_palette = [colors.success, colors.accent, colors.warning(), 0xbf5af2];
+
+        div()
+            .w(px(214.))
+            .flex_shrink_0()
+            .h_full()
+            .bg(colors.sidebar_bg(vibrancy, self.opacity))
+            .border_r_1()
+            .border_color(colors.hairline())
+            .p(px(10.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(
+                Input::new(&self.vault_search)
+                    .h(px(30.))
+                    .py(px(1.))
+                    .text_size(px(12.5))
+                    .line_height(px(22.))
+                    .prefix(Icon::Search.render(px(12.5), colors.muted)),
+            )
+            .child(
+                div()
                     .flex()
                     .flex_col()
                     .gap(px(2.))
                     .child(
-                        nav_button(
-                            "nav-terminal",
-                            Icon::Terminal,
-                            language.text("Terminal", "终端"),
-                            (terminal_count > 0).then(|| terminal_count.to_string()),
-                            terminal_active,
-                            colors,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.focus_or_new_terminal(window, cx);
-                        })),
-                    )
-                    .child(
-                        nav_button(
-                            "nav-hosts",
-                            Icon::Server,
-                            language.text("SSH Hosts", "SSH 主机"),
-                            (host_count > 0).then(|| host_count.to_string()),
-                            hosts_active,
-                            colors,
-                        )
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.open_hosts(None, window, cx)),
-                        ),
-                    )
-                    .child(
-                        nav_button(
-                            "nav-snippets",
-                            Icon::Code,
-                            language.text("Snippets", "命令片段"),
-                            (snippet_count > 0).then(|| snippet_count.to_string()),
-                            snippets_active,
-                            colors,
-                        )
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.open_snippets(window, cx)),
-                        ),
-                    )
-                    .child(
-                        nav_button(
-                            "nav-tunnels",
-                            Icon::Network,
-                            language.text("Port Forwarding", "端口转发"),
-                            (tunnel_count > 0).then(|| tunnel_count.to_string()),
-                            tunnels_active,
-                            colors,
-                        )
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.open_tunnels(window, cx)),
-                        ),
-                    ),
-            );
-
-        if host_count > 0 {
-            sidebar = sidebar.child(
-                div()
-                    .mt(px(14.))
-                    .mb(px(4.))
-                    .px(px(16.))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
                         div()
+                            .px(px(8.))
+                            .pb(px(4.))
                             .text_size(px(10.5))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(colors.muted))
-                            .child(language.text("HOSTS", "常用主机")),
+                            .child(language.text("RESOURCES", "资源")),
                     )
                     .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(rgb(colors.muted))
-                            .child(host_count.to_string()),
-                    ),
-            );
-        }
-
-        let mut quick_list = div()
-            .id("quick-hosts")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .px(px(10.))
-            .pb(px(8.))
-            .flex()
-            .flex_col()
-            .gap(px(1.5));
-
-        for (group_ix, (group_name, items)) in grouped_hosts.into_iter().enumerate() {
-            let is_collapsed =
-                !group_name.is_empty() && collapsed_groups.iter().any(|g| g == &group_name);
-            if !group_name.is_empty() {
-                let toggle_name = group_name.clone();
-                let chevron = if is_collapsed {
-                    Icon::ChevronRight
-                } else {
-                    Icon::ChevronDown
-                };
-                quick_list = quick_list.child(
-                    Button::new(("sidebar-group", group_ix))
-                        .ghost()
-                        .w_full()
-                        .h(px(24.))
-                        .px(px(6.))
-                        .mt(px(4.))
-                        .rounded_md()
-                        .justify_start()
-                        .gap(px(5.))
-                        .child(chevron.render(px(11.), colors.muted))
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(colors.muted))
-                                .truncate()
-                                .child(group_name),
+                        vault_nav_item(
+                            "vnav-hosts",
+                            Icon::Server,
+                            language.text("Hosts", "主机"),
+                            Some(hosts_count.to_string()),
+                            self.vault_section == VaultSection::Hosts && self.selected_group.is_none(),
+                            colors,
                         )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.toggle_sidebar_group(toggle_name.clone(), cx);
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.vault_section = VaultSection::Hosts;
+                            this.selected_group = None;
+                            this.hosts.update(cx, |h, cx| h.set_group_filter(None, cx));
+                            cx.notify();
                         })),
-                );
-            }
-            if is_collapsed {
-                continue;
-            }
-            quick_list = quick_list.children(items.into_iter().cloned().map(|host| {
-                let id = host.id;
-                let is_live = connected_host_ids.contains(&id);
-                let name = host.name.clone();
-                let endpoint = host.endpoint();
-                let group = format!("quick-host-group-{id}");
-                let connect_host = host.clone();
-                div()
-                    .group(group.clone())
-                    .relative()
-                    .w_full()
+                    )
                     .child(
-                        Button::new(("quick-host", id))
-                            .ghost()
-                            .w_full()
-                            .h(px(36.))
-                            .rounded_lg()
-                            .justify_start()
-                            .pl(px(8.))
-                            .pr(px(28.))
+                        vault_nav_item(
+                            "vnav-keychain",
+                            Icon::Key,
+                            language.text("Keychain", "密钥库"),
+                            Some(kc_count.to_string()),
+                            self.vault_section == VaultSection::Keychain,
+                            colors,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.vault_section = VaultSection::Keychain;
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        vault_nav_item(
+                            "vnav-tunnels",
+                            Icon::Network,
+                            language.text("Port Forwarding", "端口转发"),
+                            Some(tunnels_count.to_string()),
+                            self.vault_section == VaultSection::Tunnels,
+                            colors,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.vault_section = VaultSection::Tunnels;
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        vault_nav_item(
+                            "vnav-snippets",
+                            Icon::Code,
+                            language.text("Snippets", "命令片段"),
+                            Some(snippets_count.to_string()),
+                            self.vault_section == VaultSection::Snippets,
+                            colors,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.vault_section = VaultSection::Snippets;
+                            cx.notify();
+                        })),
+                    ),
+            )
+            .children((!group_counts.is_empty()).then(|| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .pb(px(4.))
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(colors.muted))
+                            .child(language.text("GROUPS", "分组")),
+                    )
+                    .children(group_counts.into_iter().enumerate().map(|(i, (name, count))| {
+                        let dot = dot_palette[i % dot_palette.len()];
+                        let active = self.vault_section == VaultSection::Hosts
+                            && self.selected_group.as_deref() == Some(name.as_str());
+                        let group_click = name.clone();
+                        div()
+                            .id(("vgroup", i))
+                            .h(px(28.))
+                            .px(px(8.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
                             .gap(px(8.))
-                            .text_color(rgb(colors.secondary))
-                            .child(if is_live {
-                                div()
-                                    .size(px(18.))
-                                    .rounded_md()
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .bg(colors.success_soft())
-                                    .child(
-                                        div()
-                                            .size(px(6.))
-                                            .rounded_full()
-                                            .bg(rgb(colors.success)),
-                                    )
+                            .bg(if active {
+                                colors.accent_soft()
                             } else {
-                                div()
-                                    .size(px(18.))
-                                    .rounded_md()
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .bg(rgb(colors.surface))
-                                    .child(host.icon.icon().render(px(11.), colors.muted))
+                                transparent_black().into()
                             })
+                            .hover(|s| s.bg(colors.surface_hover_glass()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.vault_section = VaultSection::Hosts;
+                                let next = if this.selected_group.as_deref() == Some(&group_click) {
+                                    None
+                                } else {
+                                    Some(group_click.clone())
+                                };
+                                this.selected_group = next.clone();
+                                this.hosts.update(cx, |h, cx| h.set_group_filter(next, cx));
+                                cx.notify();
+                            }))
+                            .child(div().size(px(7.)).rounded_full().bg(rgb(dot)))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(0.5))
-                                    .child(
-                                        div()
-                                            .text_size(px(12.5))
-                                            .font_weight(if is_live {
-                                                FontWeight::MEDIUM
-                                            } else {
-                                                FontWeight::NORMAL
-                                            })
-                                            .text_color(rgb(if is_live {
-                                                colors.foreground
-                                            } else {
-                                                colors.secondary
-                                            }))
-                                            .truncate()
-                                            .child(name),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(10.5))
-                                            .text_color(rgb(colors.muted))
-                                            .truncate()
-                                            .child(endpoint),
-                                    ),
+                                    .truncate()
+                                    .text_size(px(12.5))
+                                    .text_color(rgb(if active {
+                                        colors.accent
+                                    } else {
+                                        colors.secondary
+                                    }))
+                                    .child(name),
                             )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.connect_host(connect_host.clone(), window, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .right(px(5.))
-                            .flex()
-                            .items_center()
                             .child(
-                                Button::new(("quick-host-edit", id))
-                                    .ghost()
-                                    .xsmall()
-                                    .opacity(0.0)
-                                    .group_hover(group, |style| style.opacity(1.0))
-                                    .icon(Icon::Edit)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_hosts(Some(id), window, cx)
-                                    })),
-                            ),
-                    )
-            }));
-        }
-
-        sidebar
-            .child(quick_list)
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(rgb(colors.muted))
+                                    .child(count.to_string()),
+                            )
+                    }))
+            }))
             .child(
                 div()
-                    .p(px(8.))
+                    .mt_auto()
+                    .pt(px(8.))
                     .border_t_1()
                     .border_color(colors.hairline())
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
                     .child(
-                        nav_button(
-                            "nav-settings",
+                        vault_nav_item(
+                            "vnav-settings",
                             Icon::Settings,
                             language.text("Settings", "设置"),
                             None,
-                            settings_active,
+                            self.vault_section == VaultSection::Settings,
                             colors,
                         )
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
-                        ),
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.vault_section = VaultSection::Settings;
+                            cx.notify();
+                        })),
                     ),
             )
     }
 
-    fn sidebar_resize_handle(&self, colors: Colors, cx: &Context<Self>) -> impl IntoElement {
-        let resizing = self.resizing_sidebar.is_some();
-        div()
-            .id("sidebar-resize-handle")
-            .group("sidebar-resize")
-            .w(px(6.))
-            .ml(px(-3.))
-            .mr(px(-3.))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .justify_center()
-            .cursor_col_resize()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    this.start_sidebar_resize(event, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .child(
-                div()
-                    .w(px(2.))
-                    .h_full()
-                    .bg(if resizing {
-                        rgb(colors.accent).into()
-                    } else {
-                        transparent_black()
-                    })
-                    .group_hover("sidebar-resize", move |style| style.bg(rgb(colors.accent))),
-            )
-    }
-
-    fn snippets_drawer(&self, colors: Colors, cx: &Context<Self>) -> impl IntoElement {
+    fn snippets_drawer(&self, colors: Colors, cx: &mut Context<Self>) -> impl IntoElement {
         let language = self.language;
-        let snippets = &self.settings.read(cx).current.snippets;
-        let mut sorted: Vec<_> = snippets.iter().cloned().collect();
-        sorted.sort_by_cached_key(|s| (s.group.to_lowercase(), s.name.to_lowercase()));
+        let snippets = self.settings.read(cx).current.snippets.clone();
 
         div()
-            .w(px(264.))
-            .flex_shrink_0()
-            .h_full()
-            .bg(rgb(colors.panel))
-            .border_l_1()
-            .border_color(colors.hairline())
+            .size_full()
             .flex()
             .flex_col()
             .child(
                 div()
-                    .h(px(44.))
-                    .flex_shrink_0()
+                    .h(px(38.))
                     .px(px(12.))
                     .border_b_1()
                     .border_color(colors.hairline())
@@ -1160,123 +1467,85 @@ impl Workspace {
                     .justify_between()
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(Icon::Code.render(px(13.5), colors.accent))
-                            .child(
-                                div()
-                                    .text_size(px(12.5))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(colors.foreground))
-                                    .child(language.text("Snippets", "命令片段")),
-                            ),
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(colors.foreground))
+                            .child(language.text("Snippets", "命令片段")),
                     )
                     .child(
-                        Button::new("drawer-manage-snippets")
-                            .outline()
+                        Button::new("close-snip-drawer")
+                            .ghost()
                             .xsmall()
-                            .label(language.text("Manage", "管理"))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_snippets(window, cx)),
-                            ),
+                            .icon(Icon::Close)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.right_drawer = None;
+                                cx.notify();
+                            })),
                     ),
             )
             .child(
                 div()
-                    .id("snippets-drawer-list")
+                    .id("snip-drawer-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .p(px(8.))
+                    .p(px(10.))
                     .flex()
                     .flex_col()
-                    .gap(px(5.))
-                    .children(if sorted.is_empty() {
-                        vec![
-                            div()
-                                .p(px(20.))
-                                .text_center()
-                                .text_size(px(12.))
-                                .text_color(rgb(colors.muted))
-                                .child(language.text(
-                                    "No snippets yet. Click Manage to create one.",
-                                    "暂无片段，点击上方「管理」创建。",
-                                ))
-                                .into_any_element(),
-                        ]
-                    } else {
-                        sorted
-                            .into_iter()
-                            .map(|snippet| {
-                                let preview = snippet
-                                    .command
-                                    .lines()
-                                    .next()
-                                    .unwrap_or("")
-                                    .trim()
-                                    .to_owned();
-                                let run_item = snippet.clone();
-                                Button::new(("drawer-snippet", snippet.id))
-                                    .ghost()
-                                    .w_full()
-                                    .px(px(10.))
-                                    .py(px(8.))
-                                    .rounded_lg()
-                                    .bg(rgb(colors.background))
-                                    .border_1()
-                                    .border_color(colors.hairline())
-                                    .flex()
-                                    .flex_col()
-                                    .items_start()
-                                    .gap(px(4.))
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .gap(px(6.))
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .truncate()
-                                                    .text_size(px(12.))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(rgb(colors.foreground))
-                                                    .child(snippet.name),
-                                            )
-                                            .child(
-                                                div()
-                                                    .size(px(20.))
-                                                    .rounded_md()
-                                                    .bg(colors.accent_soft())
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .child(Icon::Play.render(px(10.), colors.accent)),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .px(px(6.))
-                                            .py(px(3.))
-                                            .rounded(px(4.))
-                                            .bg(rgb(colors.surface))
-                                            .truncate()
-                                            .text_size(px(11.))
-                                            .text_color(rgb(colors.secondary))
-                                            .child(preview),
-                                    )
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.run_snippet(&run_item, window, cx);
-                                    }))
-                                    .into_any_element()
+                    .gap(px(6.))
+                    .children(snippets.into_iter().map(|s| {
+                        let id = s.id;
+                        let snippet_run = s.clone();
+                        div()
+                            .id(("sd-item", id))
+                            .p(px(9.))
+                            .rounded(px(7.))
+                            .cursor_pointer()
+                            .bg(colors.surface_glass())
+                            .border_1()
+                            .border_color(colors.hairline())
+                            .hover(|st| {
+                                st.bg(colors.surface_hover_glass())
+                                    .border_color(colors.accent_border())
                             })
-                            .collect()
-                    }),
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.run_snippet(&snippet_run, window, cx);
+                            }))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(rgb(colors.foreground))
+                                            .truncate()
+                                            .child(s.name),
+                                    )
+                                    .children((!s.group.is_empty()).then(|| {
+                                        div()
+                                            .px(px(5.))
+                                            .py(px(1.))
+                                            .rounded(px(4.))
+                                            .bg(colors.surface_active_glass())
+                                            .text_size(px(9.5))
+                                            .text_color(rgb(colors.secondary))
+                                            .child(s.group)
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(rgb(colors.secondary))
+                                    .truncate()
+                                    .child(s.command),
+                            )
+                    })),
             )
     }
 
@@ -1288,83 +1557,55 @@ impl Workspace {
     ) -> impl IntoElement {
         let language = self.language;
         let host_id = host.id;
-        let host_name = host.name.clone();
-        let body = self
-            .tunnels
-            .update(cx, |tunnels, cx| tunnels.render_host_drawer_body(host, colors, language, cx));
+        let body = self.tunnels.update(cx, |tunnels, cx| {
+            tunnels.render_host_drawer_body(host, colors, language, cx)
+        });
 
         div()
-            .w(px(280.))
-            .flex_shrink_0()
-            .h_full()
-            .bg(rgb(colors.panel))
-            .border_l_1()
-            .border_color(colors.hairline())
+            .size_full()
             .flex()
             .flex_col()
             .child(
                 div()
-                    .h(px(44.))
-                    .flex_shrink_0()
+                    .h(px(38.))
                     .px(px(12.))
                     .border_b_1()
                     .border_color(colors.hairline())
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap(px(6.))
                     .child(
                         div()
-                            .min_w_0()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(12.5))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(colors.foreground))
-                                    .truncate()
-                                    .child(language.text("Port Forwarding", "端口转发")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(rgb(colors.muted))
-                                    .truncate()
-                                    .child(host_name),
-                            ),
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(colors.foreground))
+                            .child(language.text("Port Forwarding", "端口转发")),
                     )
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(4.))
-                            .child(
-                                Button::new("drawer-new-tunnel")
+                            .children((host.protocol == HostProtocol::Ssh).then(|| {
+                                Button::new("add-tunnel-drawer-btn")
+                                    .ghost()
                                     .xsmall()
-                                    .h(px(24.))
-                                    .px(px(8.))
-                                    .rounded_md()
-                                    .bg(colors.accent_soft())
-                                    .border_1()
-                                    .border_color(colors.accent_border())
-                                    .text_color(rgb(colors.accent))
-                                    .cursor_pointer()
-                                    .child(language.text("New", "新建"))
+                                    .icon(Icon::Plus)
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.tunnels.update(cx, |tunnels, cx| {
-                                            tunnels.edit_rule_for_host(None, host_id, window, cx)
+                                        this.tunnels.update(cx, |t, cx| {
+                                            t.edit_rule_for_host(None, host_id, window, cx);
                                         });
-                                    })),
-                            )
+                                        cx.notify();
+                                    }))
+                            }))
                             .child(
-                                Button::new("drawer-manage-tunnels")
-                                    .outline()
+                                Button::new("close-tun-drawer")
+                                    .ghost()
                                     .xsmall()
-                                    .label(language.text("Manage", "管理"))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_tunnels(window, cx)
+                                    .icon(Icon::Close)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.right_drawer = None;
+                                        cx.notify();
                                     })),
                             ),
                     ),
@@ -1372,580 +1613,1170 @@ impl Workspace {
             .child(body)
     }
 
-    fn right_rail(
+    fn docker_drawer(
         &self,
-        host: Option<&HostProfile>,
+        host_name: &str,
+        telemetry: Option<&ServerTelemetry>,
         colors: Colors,
-        cx: &Context<Self>,
+        language: Language,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let language = self.language;
-        let is_ssh = host.is_some();
-        let files_active = self.right_drawer == Some(RightDrawer::Files);
-        let snippets_active = self.right_drawer == Some(RightDrawer::Snippets);
-        let tunnels_active = self.right_drawer == Some(RightDrawer::Tunnels);
-        let active_tunnels = host
-            .map(|h| self.tunnels.read(cx).active_count_for_host(h.id, cx))
-            .unwrap_or(0);
+        let containers = telemetry.map(|t| t.containers.as_slice()).unwrap_or(&[]);
+        let running_count = containers.iter().filter(|c| c.running).count();
+        let stopped_count = containers.len().saturating_sub(running_count);
+        let filtered: Vec<_> = containers
+            .iter()
+            .filter(|c| match self.docker_filter {
+                DockerFilter::All => true,
+                DockerFilter::Running => c.running,
+                DockerFilter::Stopped => !c.running,
+            })
+            .collect();
 
-        let make_rail_item = |active: bool, btn: Button| {
+        let filter_btn = |id: &'static str, kind: DockerFilter, label: String| {
+            let active = self.docker_filter == kind;
             div()
-                .relative()
-                .w_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .children(active.then(|| {
-                    div()
-                        .absolute()
-                        .right_0()
-                        .top(px(7.))
-                        .bottom(px(7.))
-                        .w(px(2.5))
-                        .rounded_l_full()
-                        .bg(rgb(colors.accent))
-                }))
-                .child(btn)
-        };
-
-        let build_btn = |id: &'static str,
-                         icon: Icon,
-                         tooltip: &'static str,
-                         active: bool,
-                         badge: Option<usize>| {
-            let fg = if active {
-                colors.accent
-            } else {
-                colors.muted
-            };
-            Button::new(id)
-                .ghost()
-                .relative()
-                .size(px(32.))
-                .rounded_lg()
-                .flex()
-                .items_center()
-                .justify_center()
+                .id(id)
+                .flex_1()
+                .py(px(4.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .text_center()
+                .text_size(px(11.))
+                .font_weight(if active {
+                    FontWeight::MEDIUM
+                } else {
+                    FontWeight::NORMAL
+                })
                 .bg(if active {
-                    colors.accent_subtle()
+                    colors.surface_active_glass()
                 } else {
                     transparent_black().into()
                 })
-                .text_color(rgb(fg))
-                .tooltip(tooltip)
-                .tooltip_placement(Placement::Left)
-                .child(icon.render(px(15.), fg))
-                .children(badge.filter(|&n| n > 0).map(|n| {
-                    div()
-                        .absolute()
-                        .top(px(2.))
-                        .right(px(2.))
-                        .px(px(4.))
-                        .rounded_full()
-                        .bg(rgb(colors.success))
-                        .text_size(px(9.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(colors.background))
-                        .child(n.to_string())
+                .text_color(rgb(if active {
+                    colors.foreground
+                } else {
+                    colors.secondary
                 }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.docker_filter = kind;
+                    cx.notify();
+                }))
+                .child(label)
         };
 
-        let mut rail = div()
-            .w(px(42.))
-            .flex_shrink_0()
-            .h_full()
-            .bg(rgb(colors.chrome))
-            .border_l_1()
-            .border_color(colors.hairline())
-            .py(px(8.))
+        div()
+            .size_full()
             .flex()
             .flex_col()
-            .items_center()
-            .gap(px(4.))
-            .child(make_rail_item(
-                files_active,
-                build_btn(
-                    "rail-files-drawer",
-                    Icon::Folder,
-                    if is_ssh {
-                        language.text("SFTP File Browser (⌘⇧E)", "SFTP 文件传输 (⌘⇧E)")
-                    } else {
-                        language.text("Files Drawer (⌘⇧E)", "文件目录抽屉 (⌘⇧E)")
-                    },
-                    files_active,
-                    None,
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.toggle_right_drawer(RightDrawer::Files, window, cx);
-                })),
-            ))
-            .child(make_rail_item(
-                snippets_active,
-                build_btn(
-                    "rail-snippets-drawer",
-                    Icon::Code,
-                    language.text("Snippets Drawer (⌘⇧S)", "命令片段抽屉 (⌘⇧S)"),
-                    snippets_active,
-                    None,
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.toggle_right_drawer(RightDrawer::Snippets, window, cx);
-                })),
-            ));
-
-        if is_ssh {
-            rail = rail.child(make_rail_item(
-                tunnels_active,
-                build_btn(
-                    "rail-tunnels-drawer",
-                    Icon::Network,
-                    language.text("Port Forwarding", "端口转发"),
-                    tunnels_active,
-                    Some(active_tunnels),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.toggle_right_drawer(RightDrawer::Tunnels, window, cx);
-                })),
-            ));
-        }
-
-        rail.child(
-            div()
-                .w(px(20.))
-                .h(px(1.))
-                .my(px(4.))
-                .bg(colors.hairline()),
-        )
-        .child(make_rail_item(
-            false,
-            build_btn(
-                "rail-export-log",
-                Icon::Import,
-                language.text("Download Session Log", "导出会话日志"),
-                false,
-                None,
-            )
-            .on_click(cx.listener(|this, _, window, cx| this.export_active_log(window, cx))),
-        ))
-    }
-
-    fn tab_bar(&self, colors: Colors, cx: &Context<Self>) -> impl IntoElement {
-        let language = self.language;
-        let is_terminal = matches!(
-            self.tabs.get(self.active).map(|t| &t.kind),
-            Some(TabKind::Terminal { .. })
-        );
-        let drag = div()
-            .flex_1()
-            .min_w(px(24.))
-            .h_full()
-            .on_mouse_down(MouseButton::Left, drag_window);
-
-        div()
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .px(px(10.))
-            .h(px(44.))
-            .flex_shrink_0()
-            .bg(rgb(colors.chrome))
-            .border_b_1()
-            .border_color(colors.hairline())
             .child(
                 div()
-                    .id("workspace-tabs")
+                    .h(px(38.))
+                    .px(px(12.))
+                    .border_b_1()
+                    .border_color(colors.hairline())
                     .flex()
                     .items_center()
-                    .max_w_full()
-                    .min_w_0()
-                    .h(px(30.))
-                    .overflow_x_scroll()
-                    .track_scroll(&self.tab_scroll)
-                    .gap(px(4.))
-                    .children(
-                        self.tabs
-                            .iter()
-                            .enumerate()
-                            .map(|(index, tab)| self.tab_item(index, tab, colors, cx)),
-                    ),
-            )
-            .child(
-                Button::new("new-tab")
-                    .ghost()
-                    .xsmall()
-                    .size(px(26.))
-                    .rounded_md()
-                    .flex_shrink_0()
-                    .tooltip(language.text("New Local Tab (⌘T)", "新建本地标签 (⌘T)"))
-                    .icon(Icon::Plus)
-                    .on_click(cx.listener(|this, _, window, cx| this.new_tab(window, cx))),
-            )
-            .child(drag)
-            .children(is_terminal.then(|| {
-                Button::new("tabbar-find")
-                    .ghost()
-                    .xsmall()
-                    .size(px(26.))
-                    .rounded_md()
-                    .flex_shrink_0()
-                    .tooltip(language.text("Find in Terminal (⌘F)", "终端内搜索 (⌘F)"))
-                    .icon(Icon::Search)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if let Some(Tab {
-                            kind: TabKind::Terminal { terminal, .. },
-                            ..
-                        }) = this.tabs.get(this.active)
-                        {
-                            terminal.update(cx, |terminal, cx| terminal.toggle_search(window, cx));
-                        }
-                    }))
-            }))
-    }
-
-    fn tab_item(
-        &self,
-        index: usize,
-        tab: &Tab,
-        colors: Colors,
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
-        let id = tab.id;
-        let active = index == self.active;
-        let (icon, icon_color, status_dot, title): (Icon, u32, Option<u32>, String) = match &tab.kind {
-            TabKind::Terminal { terminal, .. } => {
-                let session = terminal.read(cx);
-                let raw = session.title();
-                let title = if raw.is_empty() {
-                    self.language.text("Local", "本地")
-                } else {
-                    raw
-                };
-                if session.is_ssh() {
-                    let dot = if session.is_connected() {
-                        Some(colors.success)
-                    } else {
-                        Some(colors.accent)
-                    };
-                    let icon = session
-                        .host_profile()
-                        .map(|h| h.icon.icon())
-                        .unwrap_or(Icon::Server);
-                    let color = if active {
-                        colors.foreground
-                    } else {
-                        colors.muted
-                    };
-                    (icon, color, dot, title.to_owned())
-                } else {
-                    (
-                        Icon::Terminal,
-                        if active { colors.accent } else { colors.muted },
-                        None,
-                        title.to_owned(),
-                    )
-                }
-            }
-            TabKind::Sftp { host_name, .. } => (
-                Icon::Folder,
-                if active { colors.accent } else { colors.muted },
-                None,
-                format!("SFTP · {host_name}"),
-            ),
-            TabKind::Hosts => (
-                Icon::Server,
-                if active { colors.accent } else { colors.muted },
-                None,
-                self.language.text("SSH Hosts", "SSH 主机").to_owned(),
-            ),
-            TabKind::Snippets => (
-                Icon::Code,
-                if active { colors.accent } else { colors.muted },
-                None,
-                self.language.text("Snippets", "命令片段").to_owned(),
-            ),
-            TabKind::Tunnels => (
-                Icon::Network,
-                if active { colors.accent } else { colors.muted },
-                None,
-                self.language.text("Port Forwarding", "端口转发").to_owned(),
-            ),
-            TabKind::Settings => (
-                Icon::Settings,
-                if active { colors.accent } else { colors.muted },
-                None,
-                self.language.text("Settings", "设置").to_owned(),
-            ),
-        };
-        let fg_color = if active {
-            colors.foreground
-        } else {
-            colors.muted
-        };
-        let group = format!("workspace-tab-{id}");
-        let tab_width = match &tab.kind {
-            TabKind::Terminal { .. } | TabKind::Sftp { .. } => px(168.),
-            TabKind::Hosts | TabKind::Snippets | TabKind::Tunnels | TabKind::Settings => px(136.),
-        };
-
-        div()
-            .group(group.clone())
-            .relative()
-            .flex_shrink_0()
-            .w(tab_width)
-            .h_full()
-            .on_mouse_down(
-                MouseButton::Middle,
-                cx.listener(move |this, _, window, cx| this.close_tab(id, window, cx)),
-            )
-            .child(
-                Button::new(("tab", id))
-                    .ghost()
-                    .size_full()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(if active {
-                        colors.hairline_strong()
-                    } else {
-                        transparent_black().into()
-                    })
-                    .bg(if active {
-                        rgb(colors.background).into()
-                    } else {
-                        transparent_black()
-                    })
-                    .text_color(rgb(fg_color))
-                    .font_weight(if active {
-                        FontWeight::MEDIUM
-                    } else {
-                        FontWeight::NORMAL
-                    })
+                    .justify_between()
                     .child(
                         div()
-                            .w_full()
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .pl(px(9.))
-                            .pr(px(26.))
-                            .children(status_dot.map(|dot| {
-                                div()
-                                    .size(px(6.))
-                                    .rounded_full()
-                                    .flex_shrink_0()
-                                    .bg(rgb(dot))
-                            }))
-                            .child(icon.render(px(12.5), icon_color))
+                            .child(crate::file_icons::FileIconKind::Docker.render(px(14.)))
                             .child(
                                 div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .truncate()
-                                    .text_size(px(12.))
-                                    .child(title.clone()),
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(colors.foreground))
+                                    .child(format!("Docker · {host_name}")),
                             ),
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if let Some(index) = this.tabs.iter().position(|tab| tab.id == id) {
-                            this.select_tab(index, window, cx);
-                        }
-                    })),
-            )
-            .children(active.then(|| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .left(px(14.))
-                    .right(px(14.))
-                    .h(px(2.))
-                    .rounded_b_full()
-                    .bg(rgb(colors.accent))
-            }))
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .right(px(4.))
-                    .flex()
-                    .items_center()
                     .child(
-                        Button::new(("close-tab", id))
+                        Button::new("close-docker-drawer")
                             .ghost()
                             .xsmall()
-                            .opacity(if active { 0.7 } else { 0.0 })
-                            .group_hover(group, |style| style.opacity(1.0))
                             .icon(Icon::Close)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.close_tab(id, window, cx)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.right_drawer = None;
+                                cx.notify();
                             })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("docker-drawer-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p(px(10.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .py(px(6.))
+                            .rounded(px(7.))
+                            .bg(colors.surface_glass())
+                            .border_1()
+                            .border_color(colors.hairline())
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .text_size(px(11.))
+                            .text_color(rgb(colors.secondary))
+                            .child(format!(
+                                "{} {} · {} {} · {} {}",
+                                language.text("Total", "共"),
+                                containers.len(),
+                                running_count,
+                                language.text("running", "运行中"),
+                                stopped_count,
+                                language.text("stopped", "已停止")
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(colors.muted))
+                                    .child(language.text("Read-only", "只读监控")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .p(px(2.))
+                            .rounded(px(7.))
+                            .bg(colors.surface_glass())
+                            .border_1()
+                            .border_color(colors.hairline())
+                            .flex()
+                            .gap(px(2.))
+                            .child(filter_btn(
+                                "dk-all",
+                                DockerFilter::All,
+                                format!("{} ({})", language.text("All", "全部"), containers.len()),
+                            ))
+                            .child(filter_btn(
+                                "dk-run",
+                                DockerFilter::Running,
+                                format!("{} ({running_count})", language.text("Running", "运行中")),
+                            ))
+                            .child(filter_btn(
+                                "dk-stop",
+                                DockerFilter::Stopped,
+                                format!("{} ({stopped_count})", language.text("Stopped", "已停止")),
+                            )),
+                    )
+                    .children(filtered.is_empty().then(|| {
+                        div()
+                            .py(px(28.))
+                            .text_center()
+                            .text_size(px(12.))
+                            .text_color(rgb(colors.muted))
+                            .child(if telemetry.is_none() {
+                                language.text("Collecting container telemetry…", "正在采集容器状态…")
+                            } else {
+                                language.text("No Docker containers found", "未检测到 Docker 容器")
+                            })
+                    }))
+                    .children(filtered.into_iter().enumerate().map(|(idx, c)| {
+                        let dot_color = if c.running { colors.success } else { colors.muted };
+                        let meta_line = if c.ports.is_empty() {
+                            c.image.clone()
+                        } else {
+                            format!("{} · {}", c.image, c.ports)
+                        };
+                        let cpu_text = if c.running {
+                            format!("{:.1}%", c.cpu_pct)
+                        } else {
+                            "—".into()
+                        };
+                        let mem_text = if c.running {
+                            c.mem_used.clone()
+                        } else {
+                            "—".into()
+                        };
+                        let cpu_bar_w = if c.running {
+                            (c.cpu_pct * 2.0).clamp(2.0, 100.0)
+                        } else {
+                            0.0
+                        };
+                        let mem_bar_w = if c.running {
+                            c.mem_pct.clamp(2.0, 100.0)
+                        } else {
+                            0.0
+                        };
+                        let log_host = host_name.to_owned();
+                        let log_name = c.name.clone();
+                        let log_running = c.running;
+
+                        div()
+                            .p(px(9.))
+                            .rounded(px(8.))
+                            .bg(colors.surface_glass())
+                            .border_1()
+                            .border_color(colors.hairline())
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.))
+                                            .child(
+                                                div()
+                                                    .size(px(6.5))
+                                                    .rounded_full()
+                                                    .flex_shrink_0()
+                                                    .bg(rgb(dot_color)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(rgb(colors.foreground))
+                                                    .truncate()
+                                                    .child(c.name.clone()),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .flex_shrink_0()
+                                            .child(
+                                                div()
+                                                    .text_size(px(10.5))
+                                                    .text_color(rgb(colors.muted))
+                                                    .child(c.status.clone()),
+                                            )
+                                            .child(
+                                                Button::new(("dk-logs", idx))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(Icon::List)
+                                                    .label(language.text("Logs", "日志"))
+                                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                                        this.open_docker_logs(
+                                                            log_host.clone(),
+                                                            log_name.clone(),
+                                                            log_running,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    })),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(rgb(colors.secondary))
+                                    .truncate()
+                                    .child(meta_line),
+                            )
+                            .child(
+                                div()
+                                    .pt(px(5.))
+                                    .border_t_1()
+                                    .border_color(colors.hairline())
+                                    .flex()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(3.))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .justify_between()
+                                                    .text_size(px(10.5))
+                                                    .child(div().text_color(rgb(colors.secondary)).child("CPU"))
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(rgb(colors.foreground))
+                                                            .child(cpu_text),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .h(px(4.))
+                                                    .w_full()
+                                                    .rounded_full()
+                                                    .bg(colors.surface_active_glass())
+                                                    .overflow_hidden()
+                                                    .child(
+                                                        div()
+                                                            .h_full()
+                                                            .rounded_full()
+                                                            .bg(rgb(colors.accent))
+                                                            .w(gpui_kit::relative(cpu_bar_w / 100.0)),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(3.))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .justify_between()
+                                                    .text_size(px(10.5))
+                                                    .child(div().text_color(rgb(colors.secondary)).child("MEM"))
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(rgb(colors.foreground))
+                                                            .child(mem_text),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .h(px(4.))
+                                                    .w_full()
+                                                    .rounded_full()
+                                                    .bg(colors.surface_active_glass())
+                                                    .overflow_hidden()
+                                                    .child(
+                                                        div()
+                                                            .h_full()
+                                                            .rounded_full()
+                                                            .bg(rgb(colors.success))
+                                                            .w(gpui_kit::relative(mem_bar_w / 100.0)),
+                                                    ),
+                                            ),
+                                    ),
+                            )
+                    })),
+            )
+    }
+
+    fn open_docker_logs(
+        &mut self,
+        host_name: String,
+        container_name: String,
+        container_running: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.active_terminal() else {
+            return;
+        };
+        let placeholder = self.language.text("Filter logs…", "过滤日志…");
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        let _search_sub = cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+
+        self.docker_logs = Some(DockerLogsState {
+            session,
+            host_name,
+            container_name,
+            container_running,
+            tail: 500,
+            timestamps: false,
+            loading: true,
+            error: None,
+            logs: String::new(),
+            search,
+            _search_sub,
+            request_seq: 0,
+            focus,
+        });
+        self.refresh_docker_logs(window, cx);
+    }
+
+    fn refresh_docker_logs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.docker_logs.as_mut() else {
+            return;
+        };
+        state.request_seq = state.request_seq.wrapping_add(1);
+        let seq = state.request_seq;
+        state.loading = true;
+        state.error = None;
+        let container = state.container_name.clone();
+        let tail = state.tail;
+        let timestamps = state.timestamps;
+        let rx = state
+            .session
+            .read(cx)
+            .fetch_docker_logs(container, tail, timestamps);
+
+        let Some(rx) = rx else {
+            state.loading = false;
+            state.error = Some(
+                self.language
+                    .text(
+                        "Docker logs are only available on active SSH sessions.",
+                        "仅在活跃的 SSH 会话中支持查看容器日志。",
+                    )
+                    .into(),
+            );
+            cx.notify();
+            return;
+        };
+
+        cx.spawn_in(window, async move |ws, cx| {
+            let result = match tokio::time::timeout(std::time::Duration::from_secs(20), rx).await {
+                Ok(Ok(res)) => res,
+                Ok(Err(_)) => Err("SSH session closed while fetching logs.".to_owned()),
+                Err(_) => Err("Timed out fetching Docker logs.".to_owned()),
+            };
+            let _ = ws.update(cx, |this, cx| {
+                let Some(state) = this.docker_logs.as_mut() else {
+                    return;
+                };
+                if state.request_seq != seq {
+                    return;
+                }
+                state.loading = false;
+                match result {
+                    Ok(logs) => {
+                        state.logs = logs;
+                        state.error = None;
+                    }
+                    Err(err) => {
+                        state.error = Some(err);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn close_docker_logs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.docker_logs = None;
+        if let Some(term) = self.active_terminal() {
+            let handle = term.read(cx).focus_handle();
+            handle.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn render_docker_logs_modal(
+        &self,
+        colors: Colors,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let state = self.docker_logs.as_ref()?;
+        let language = self.language;
+        let dot_color = if state.container_running {
+            colors.success
+        } else {
+            colors.muted
+        };
+        let query = state.search.read(cx).value().trim().to_lowercase();
+        let all_lines: Vec<&str> = if state.logs.is_empty() {
+            Vec::new()
+        } else {
+            state.logs.lines().collect()
+        };
+        let total_lines = all_lines.len();
+        let filtered_lines: Vec<(usize, String)> = all_lines
+            .into_iter()
+            .enumerate()
+            .filter(|(_, line)| query.is_empty() || line.to_lowercase().contains(&query))
+            .map(|(idx, line)| (idx + 1, line.to_owned()))
+            .collect();
+        let shown_lines = filtered_lines.len();
+        let copy_text = state.logs.clone();
+
+        let tail_btn = |tail: usize| {
+            let active = state.tail == tail;
+            div()
+                .id(("dk-log-tail", tail))
+                .px(px(7.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .text_size(px(11.))
+                .font_weight(if active {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::NORMAL
+                })
+                .bg(if active {
+                    colors.surface_active_glass()
+                } else {
+                    transparent_black().into()
+                })
+                .text_color(rgb(if active {
+                    colors.foreground
+                } else {
+                    colors.secondary
+                }))
+                .hover(|s| s.bg(colors.surface_hover_glass()))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if let Some(st) = this.docker_logs.as_mut()
+                        && st.tail != tail
+                    {
+                        st.tail = tail;
+                        this.refresh_docker_logs(window, cx);
+                    }
+                }))
+                .child(format!("{tail}"))
+        };
+
+        let ts_active = state.timestamps;
+        let modal = div()
+            .id("docker-logs-modal")
+            .track_focus(&state.focus)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    this.close_docker_logs(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .w(px(860.))
+            .max_w(gpui_kit::relative(0.88))
+            .h(px(580.))
+            .max_h(gpui_kit::relative(0.84))
+            .rounded(px(12.))
+            .bg(colors.popover_bg())
+            .border_1()
+            .border_color(colors.hairline_strong())
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(
+                div()
+                    .h(px(42.))
+                    .px(px(14.))
+                    .border_b_1()
+                    .border_color(colors.hairline())
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(crate::file_icons::FileIconKind::Docker.render(px(15.)))
+                            .child(
+                                div()
+                                    .size(px(7.))
+                                    .rounded_full()
+                                    .flex_shrink_0()
+                                    .bg(rgb(dot_color)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(colors.foreground))
+                                    .truncate()
+                                    .child(state.container_name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .text_color(rgb(colors.muted))
+                                    .truncate()
+                                    .child(format!("· {}", state.host_name)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .flex_shrink_0()
+                            .child(
+                                div()
+                                    .p(px(2.))
+                                    .rounded(px(6.))
+                                    .bg(colors.surface_glass())
+                                    .border_1()
+                                    .border_color(colors.hairline())
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(2.))
+                                    .child(tail_btn(100))
+                                    .child(tail_btn(500))
+                                    .child(tail_btn(2000)),
+                            )
+                            .child(
+                                div()
+                                    .id("dk-log-timestamps")
+                                    .px(px(8.))
+                                    .py(px(4.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .border_1()
+                                    .border_color(if ts_active {
+                                        colors.accent_soft()
+                                    } else {
+                                        colors.hairline()
+                                    })
+                                    .bg(if ts_active {
+                                        colors.accent_soft()
+                                    } else {
+                                        colors.surface_glass()
+                                    })
+                                    .text_size(px(11.))
+                                    .text_color(rgb(if ts_active {
+                                        colors.accent
+                                    } else {
+                                        colors.secondary
+                                    }))
+                                    .hover(|s| s.bg(colors.surface_hover_glass()))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if let Some(st) = this.docker_logs.as_mut() {
+                                            st.timestamps = !st.timestamps;
+                                            this.refresh_docker_logs(window, cx);
+                                        }
+                                    }))
+                                    .child(language.text("Timestamps", "时间戳")),
+                            )
+                            .child(
+                                Button::new("dk-log-refresh")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::Refresh)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.refresh_docker_logs(window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("dk-log-copy")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::Copy)
+                                    .on_click(cx.listener(move |_, _, window, cx| {
+                                        if !copy_text.is_empty() {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                copy_text.clone(),
+                                            ));
+                                            crate::notify::success(
+                                                language.text(
+                                                    "Copied container logs",
+                                                    "已复制容器日志",
+                                                ),
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("dk-log-close")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::Close)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_docker_logs(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(14.))
+                    .py(px(8.))
+                    .border_b_1()
+                    .border_color(colors.hairline())
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&state.search).xsmall()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(rgb(colors.muted))
+                            .flex_shrink_0()
+                            .child(if state.loading {
+                                language.text("Loading…", "加载中…").to_owned()
+                            } else if query.is_empty() {
+                                format!("{total_lines} {}", language.text("lines", "行"))
+                            } else {
+                                format!(
+                                    "{shown_lines} / {total_lines} {}",
+                                    language.text("lines", "行")
+                                )
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .id("docker-logs-body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p(px(12.))
+                    .font_family(self.font_family.clone())
+                    .text_size(px(12.))
+                    .line_height(px(18.))
+                    .children(state.loading.then(|| {
+                        div()
+                            .py(px(40.))
+                            .text_center()
+                            .text_size(px(12.))
+                            .text_color(rgb(colors.muted))
+                            .child(language.text("Fetching container logs…", "正在获取容器日志…"))
+                    }))
+                    .children((!state.loading && state.error.is_some()).then(|| {
+                        let err = state.error.clone().unwrap_or_default();
+                        div()
+                            .py(px(36.))
+                            .px(px(20.))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(rgb(colors.danger))
+                                    .child(err),
+                            )
+                            .child(
+                                Button::new("dk-log-retry")
+                                    .secondary()
+                                    .small()
+                                    .icon(Icon::Refresh)
+                                    .label(language.text("Retry", "重试"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.refresh_docker_logs(window, cx);
+                                    })),
+                            )
+                    }))
+                    .children(
+                        (!state.loading && state.error.is_none() && filtered_lines.is_empty()).then(
+                            || {
+                                div()
+                                    .py(px(40.))
+                                    .text_center()
+                                    .text_size(px(12.))
+                                    .text_color(rgb(colors.muted))
+                                    .child(if total_lines == 0 {
+                                        language.text("No log output", "暂无日志输出")
+                                    } else {
+                                        language.text("No matching log lines", "没有匹配的日志行")
+                                    })
+                            },
+                        ),
+                    )
+                    .children(
+                        (!state.loading && state.error.is_none()).then(|| {
+                            div().flex().flex_col().children(filtered_lines.into_iter().map(
+                                |(line_no, line)| {
+                                    let lower = line.to_lowercase();
+                                    let line_color = if lower.contains("error")
+                                        || lower.contains("fatal")
+                                        || lower.contains("panic")
+                                    {
+                                        colors.danger
+                                    } else if lower.contains("warn") {
+                                        colors.warning()
+                                    } else {
+                                        colors.foreground
+                                    };
+                                    div()
+                                        .flex()
+                                        .items_start()
+                                        .gap(px(10.))
+                                        .px(px(4.))
+                                        .py(px(1.))
+                                        .rounded(px(3.))
+                                        .hover(|s| s.bg(colors.surface_hover_glass()))
+                                        .child(
+                                            div()
+                                                .w(px(38.))
+                                                .flex_shrink_0()
+                                                .text_right()
+                                                .text_size(px(10.5))
+                                                .text_color(rgb(colors.muted))
+                                                .child(format!("{line_no}")),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .text_color(rgb(line_color))
+                                                .child(line),
+                                        )
+                                },
+                            ))
+                        }),
+                    ),
+            );
+
+        Some(
+            div()
+                .id("docker-logs-backdrop")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000078))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                    this.close_docker_logs(window, cx);
+                }))
+                .child(modal),
+        )
+    }
+
+    fn telemetry_popover(
+        &self,
+        host_name: &str,
+        tele: &ServerTelemetry,
+        colors: Colors,
+    ) -> impl IntoElement {
+        let mem_pct = if tele.mem_total_mb > 0 {
+            ((tele.mem_used_mb * 100) / tele.mem_total_mb).min(100) as f32
+        } else {
+            0.0
+        };
+        let mem_label = format!(
+            "{:.1} / {:.1} GB",
+            tele.mem_used_mb as f64 / 1024.0,
+            tele.mem_total_mb as f64 / 1024.0
+        );
+        let sub_text = {
+            let uptime = compact_uptime(&tele.uptime);
+            if uptime.is_empty() {
+                format!("{}ms", tele.latency_ms)
+            } else {
+                format!("up {uptime} · {}ms", tele.latency_ms)
+            }
+        };
+
+        div()
+            .id("telemetry-popover")
+            .absolute()
+            .bottom(px(34.))
+            .left(px(120.))
+            .w(px(300.))
+            .p(px(14.))
+            .rounded(px(11.))
+            .bg(colors.popover_bg())
+            .border_1()
+            .border_color(colors.hairline_strong())
+            .shadow_lg()
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(colors.foreground))
+                            .child(format!("{host_name} 实时概览")),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .max_w(px(165.))
+                            .truncate()
+                            .text_size(px(10.5))
+                            .text_color(rgb(colors.muted))
+                            .child(sub_text),
+                    ),
+            )
+            .child(tele_bar("CPU", &format!("{}%", tele.cpu_pct), f32::from(tele.cpu_pct), colors.accent, colors))
+            .child(tele_bar("Memory", &mem_label, mem_pct, colors.success, colors))
+            .child(tele_bar(
+                "Disk /",
+                &format!("{}% ({})", tele.disk_pct, tele.disk_used),
+                f32::from(tele.disk_pct),
+                colors.warning(),
+                colors,
+            ))
+            .child(
+                div()
+                    .pt(px(6.))
+                    .border_t_1()
+                    .border_color(colors.hairline())
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .text_size(px(11.))
+                    .child(div().text_color(rgb(colors.muted)).child("Load Average"))
+                    .child(
+                        div()
+                            .text_color(rgb(colors.foreground))
+                            .child(if tele.load_avg.is_empty() {
+                                "—".to_owned()
+                            } else {
+                                tele.load_avg.clone()
+                            }),
                     ),
             )
     }
 
-    fn status_bar(&self, colors: Colors, cx: &Context<Self>) -> impl IntoElement {
+    fn session_status_bar(&self, colors: Colors, cx: &mut Context<Self>) -> impl IntoElement {
         let language = self.language;
-        let (dot_color, primary_label, secondary_label, host_id) =
-            match self.tabs.get(self.active).map(|t| &t.kind) {
-                Some(TabKind::Terminal { terminal, .. }) => {
-                    let s = terminal.read(cx);
-                    if let Some(host) = s.host_profile() {
-                        let dot = if s.is_connected() {
-                            colors.success
-                        } else {
-                            colors.accent
-                        };
-                        let status_word = if s.is_connected() {
-                            language.text("Connected", "已连接")
-                        } else {
-                            language.text("Connecting", "连接中")
-                        };
-                        (
-                            dot,
-                            format!("{} · {}", status_word, host.endpoint()),
-                            s.title().to_owned(),
-                            Some(host.id),
-                        )
-                    } else {
-                        (
-                            colors.accent,
-                            language.text("Local Shell", "本地终端").to_owned(),
-                            s.title().to_owned(),
-                            None,
-                        )
-                    }
-                }
-                Some(TabKind::Sftp { host_name, .. }) => (
-                    colors.accent,
-                    format!("SFTP · {host_name}"),
-                    String::new(),
-                    None,
-                ),
-                Some(TabKind::Hosts) => (
-                    colors.muted,
-                    language.text("SSH Hosts", "SSH 主机管理").to_owned(),
-                    String::new(),
-                    None,
-                ),
-                Some(TabKind::Snippets) => (
-                    colors.muted,
-                    language.text("Snippets", "命令片段管理").to_owned(),
-                    String::new(),
-                    None,
-                ),
-                Some(TabKind::Tunnels) => (
-                    colors.muted,
-                    language.text("Port Forwarding", "端口转发管理").to_owned(),
-                    String::new(),
-                    None,
-                ),
-                Some(TabKind::Settings) => (
-                    colors.muted,
-                    language.text("Settings", "偏好设置").to_owned(),
-                    String::new(),
-                    None,
-                ),
-                None => (colors.muted, "Bulwark".to_owned(), String::new(), None),
-            };
-
-        let active_tunnels = host_id
-            .map(|id| self.tunnels.read(cx).active_count_for_host(id, cx))
-            .unwrap_or(0);
-        let font_display = if self.font_family.trim().is_empty() {
-            format!("Mono · {}px", self.font_size)
-        } else {
-            format!("{} · {}px", self.font_family, self.font_size)
+        let vibrancy = self.vibrancy;
+        let active_term = self.active_terminal();
+        let (is_ssh, connected, host_label, telemetry, is_split, tunnel_count, has_host) =
+            match active_term {
+            Some(ref term_entity) => {
+                let t = term_entity.read(cx);
+                let is_ssh = t.is_ssh();
+                let connected = t.is_connected();
+                let host_opt = t.host_profile();
+                let label = match host_opt {
+                    Some(h) => format!("{} · {}", h.protocol.label(), h.name),
+                    None => language.text("Local · Shell", "本地终端").to_owned(),
+                };
+                let t_count = host_opt
+                    .map(|h| self.tunnels.read(cx).active_count_for_host(h.id, cx))
+                    .unwrap_or(0);
+                let split = match self.tabs.get(self.active) {
+                    Some(Tab {
+                        kind: TabKind::Terminal { panes, .. },
+                        ..
+                    }) => panes.len() > 1,
+                    _ => false,
+                };
+                (
+                    is_ssh,
+                    connected,
+                    label,
+                    t.telemetry().cloned(),
+                    split,
+                    t_count,
+                    host_opt.is_some(),
+                )
+            }
+            None => (false, false, "SFTP".into(), None, false, 0, false),
         };
-        let theme_name = self.theme.label(language);
+
+        let dot_color = if is_ssh && connected {
+            colors.success
+        } else if is_ssh {
+            colors.warning()
+        } else {
+            colors.muted
+        };
+
+        let tele_pill = if let Some(tele) = telemetry.as_ref() {
+            let mem_str = if tele.mem_total_mb > 0 {
+                format!(
+                    "{:.1}/{:.0}G",
+                    tele.mem_used_mb as f64 / 1024.0,
+                    tele.mem_total_mb as f64 / 1024.0
+                )
+            } else {
+                "—".into()
+            };
+            Some(
+                div()
+                    .id("status-tele-pill")
+                    .px(px(7.))
+                    .py(px(1.5))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .bg(if self.telemetry_open {
+                        colors.accent_soft()
+                    } else {
+                        transparent_black().into()
+                    })
+                    .hover(|s| s.bg(colors.surface_hover_glass()))
+                    .text_size(px(11.))
+                    .text_color(rgb(if self.telemetry_open {
+                        colors.accent
+                    } else {
+                        colors.secondary
+                    }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.telemetry_open = !this.telemetry_open;
+                        cx.notify();
+                    }))
+                    .child(Icon::Cpu.render(px(11.5), colors.accent))
+                    .child(format!(
+                        "{}ms · CPU {}% · MEM {} · DISK {}%",
+                        tele.latency_ms, tele.cpu_pct, mem_str, tele.disk_pct
+                    )),
+            )
+        } else if is_ssh && connected {
+            Some(
+                div()
+                    .id("status-tele-pill")
+                    .px(px(7.))
+                    .py(px(1.5))
+                    .rounded(px(5.))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .text_size(px(11.))
+                    .text_color(rgb(colors.muted))
+                    .child(Icon::Cpu.render(px(11.5), colors.muted))
+                    .child(language.text("Monitoring…", "采集监控中…")),
+            )
+        } else {
+            None
+        };
+
+        let docker_count = telemetry
+            .as_ref()
+            .map(|t| t.containers.iter().filter(|c| c.running).count())
+            .unwrap_or(0);
+        let docker_label = if docker_count > 0 {
+            format!("Docker ({docker_count})")
+        } else {
+            "Docker".into()
+        };
+
+        let tunnels_title = language.text("Tunnels", "端口转发");
+        let tunnels_label = if tunnel_count > 0 {
+            format!("{tunnels_title} ({tunnel_count})")
+        } else {
+            tunnels_title.to_owned()
+        };
 
         div()
             .h(px(26.))
-            .flex_shrink_0()
+            .w_full()
             .px(px(12.))
-            .bg(rgb(colors.chrome))
+            .bg(colors.titlebar_bg(vibrancy, self.opacity))
             .border_t_1()
             .border_color(colors.hairline())
             .flex()
             .items_center()
             .justify_between()
-            .gap(px(12.))
             .text_size(px(11.))
-            .text_color(rgb(colors.muted))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .min_w_0()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(
-                                div()
-                                    .size(px(6.))
-                                    .rounded_full()
-                                    .bg(rgb(dot_color)),
-                            )
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(rgb(colors.secondary))
-                                    .child(primary_label),
-                            ),
-                    )
-                    .children((!secondary_label.is_empty()).then(|| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .min_w_0()
-                            .child(div().w(px(1.)).h(px(10.)).bg(colors.hairline_strong()))
-                            .child(div().truncate().child(secondary_label))
-                    })),
-            )
+            .text_color(rgb(colors.secondary))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .flex_shrink_0()
-                    .children((active_tunnels > 0).then(|| {
-                        Button::new("status-tunnels")
-                            .ghost()
-                            .xsmall()
-                            .h(px(18.))
-                            .px(px(6.))
-                            .rounded_full()
-                            .bg(colors.success_soft())
-                            .text_color(rgb(colors.success))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(div().size(px(6.)).rounded_full().bg(rgb(dot_color)))
                             .child(
                                 div()
-                                    .text_size(px(10.5))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .child(format!(
-                                        "{active_tunnels} {}",
-                                        language.text("tunnels", "条转发")
-                                    )),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_right_drawer(RightDrawer::Tunnels, window, cx);
-                            }))
-                    }))
-                    .child(div().text_size(px(10.5)).child(font_display))
-                    .child(div().w(px(1.)).h(px(10.)).bg(colors.hairline_strong()))
+                                    .text_color(rgb(colors.foreground))
+                                    .child(host_label),
+                            ),
+                    )
+                    .children(tele_pill),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
                     .child(
-                        Button::new("status-theme")
-                            .ghost()
-                            .xsmall()
-                            .h(px(18.))
-                            .px(px(5.))
-                            .rounded(px(4.))
-                            .text_color(rgb(colors.muted))
-                            .child(div().text_size(px(10.5)).child(theme_name))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_settings(window, cx);
-                            })),
-                    ),
+                        status_pill_btn(
+                            "sb-split",
+                            Some(Icon::Split),
+                            None,
+                            language.text("Split", "分屏"),
+                            is_split,
+                            colors,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_split_pane(window, cx);
+                        })),
+                    )
+                    .children(is_ssh.then(|| {
+                        let active = self.right_drawer == Some(RightDrawer::Docker);
+                        status_pill_btn_with(
+                            "sb-docker",
+                            Some(
+                                crate::file_icons::FileIconKind::Docker
+                                    .render(px(12.))
+                                    .into_any_element(),
+                            ),
+                            docker_label,
+                            active,
+                            colors,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_right_drawer(RightDrawer::Docker, window, cx);
+                        }))
+                    }))
+                    .child(
+                        status_pill_btn(
+                            "sb-sftp",
+                            Some(Icon::Folder),
+                            Some(0x32ade6),
+                            language.text("SFTP", "文件传输"),
+                            self.right_drawer == Some(RightDrawer::Files),
+                            colors,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_right_drawer(RightDrawer::Files, window, cx);
+                        })),
+                    )
+                    .child(
+                        status_pill_btn(
+                            "sb-snippets",
+                            Some(Icon::Code),
+                            Some(0xaf52de),
+                            language.text("Snippets", "命令片段"),
+                            self.right_drawer == Some(RightDrawer::Snippets),
+                            colors,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_right_drawer(RightDrawer::Snippets, window, cx);
+                        })),
+                    )
+                    .children(has_host.then(|| {
+                        status_pill_btn(
+                            "sb-tunnels",
+                            Some(Icon::Network),
+                            Some(0x34c759),
+                            tunnels_label,
+                            self.right_drawer == Some(RightDrawer::Tunnels),
+                            colors,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_tunnels_drawer(window, cx);
+                        }))
+                    })),
             )
     }
 }
@@ -1953,97 +2784,185 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.theme.colors();
-        let mut workspace = div()
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .bg(rgb(colors.background))
-            .child(self.tab_bar(colors, cx));
+        let vibrancy = self.vibrancy;
 
-        if let Some(tab) = self.tabs.get(self.active) {
+        let body = if self.in_vault {
+            let main_view = match self.vault_section {
+                VaultSection::Hosts => self.hosts.clone().into_any_element(),
+                VaultSection::Keychain => self.keychain.clone().into_any_element(),
+                VaultSection::Tunnels => self.tunnels.clone().into_any_element(),
+                VaultSection::Snippets => self.snippets.clone().into_any_element(),
+                VaultSection::Settings => self.preferences.clone().into_any_element(),
+            };
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .overflow_hidden()
+                .child(self.vault_sidebar(colors, cx))
+                .child(div().flex_1().min_w_0().min_h_0().overflow_hidden().child(main_view))
+                .into_any_element()
+        } else if let Some(tab) = self.tabs.get(self.active) {
             match &tab.kind {
-                TabKind::Terminal { terminal, .. } => {
-                    let host_profile = terminal.read(cx).host_profile().cloned();
-                    let mut row = div()
+                TabKind::Terminal { panes, active_pane } => {
+                    let active_term = panes
+                        .get(*active_pane)
+                        .or_else(|| panes.first())
+                        .map(|p| p.terminal.clone());
+                    let host_profile = active_term
+                        .as_ref()
+                        .and_then(|t| t.read(cx).host_profile().cloned());
+                    let telemetry = active_term
+                        .as_ref()
+                        .and_then(|t| t.read(cx).telemetry().cloned());
+                    let is_split = panes.len() > 1;
+                    let active_idx = *active_pane;
+
+                    let panes_row = div()
                         .flex_1()
+                        .min_w_0()
                         .min_h_0()
+                        .bg(colors.term_bg_for(
+                            self.theme.palette().background,
+                            vibrancy,
+                            self.opacity,
+                        ))
                         .flex()
                         .overflow_hidden()
-                        .child(
-                            div()
+                        .children(panes.iter().enumerate().map(|(pidx, pane)| {
+                            let is_focused = pidx == active_idx;
+                            let term = pane.terminal.clone();
+                            let mut pane_div = div()
+                                .id(("term-pane", pidx))
                                 .flex_1()
                                 .min_w_0()
                                 .min_h_0()
                                 .overflow_hidden()
-                                .child(terminal.clone()),
-                        );
-                    match self.right_drawer {
-                        Some(RightDrawer::Snippets) => {
-                            row = row.child(self.snippets_drawer(colors, cx));
-                        }
-                        Some(RightDrawer::Files) => {
-                            row = row.child(self.file_drawer.clone());
-                        }
-                        Some(RightDrawer::Tunnels) => {
-                            if let Some(host) = host_profile.as_ref() {
-                                row = row.child(self.tunnels_drawer(host, colors, cx));
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, window, cx| {
+                                        if let Some(Tab {
+                                            kind: TabKind::Terminal { panes, active_pane },
+                                            ..
+                                        }) = this.tabs.get_mut(this.active)
+                                        {
+                                            *active_pane = pidx;
+                                            if let Some(p) = panes.get(pidx) {
+                                                p.terminal
+                                                    .read(cx)
+                                                    .focus_handle()
+                                                    .focus(window, cx);
+                                            }
+                                            cx.notify();
+                                        }
+                                    }),
+                                )
+                                .child(term);
+                            if pidx > 0 {
+                                pane_div = pane_div.border_l_1().border_color(colors.hairline());
                             }
+                            if is_split && !is_focused {
+                                pane_div = pane_div.opacity(0.82);
+                            }
+                            pane_div
+                        }));
+
+                    let mut main_row = div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .overflow_hidden()
+                        .child(panes_row);
+
+                    let drawer_content = match self.right_drawer {
+                        Some(RightDrawer::Files) => Some(self.file_drawer.clone().into_any_element()),
+                        Some(RightDrawer::Snippets) => {
+                            Some(self.snippets_drawer(colors, cx).into_any_element())
                         }
-                        None => {}
+                        Some(RightDrawer::Tunnels) => host_profile
+                            .as_ref()
+                            .map(|host| self.tunnels_drawer(host, colors, cx).into_any_element()),
+                        Some(RightDrawer::Docker) => {
+                            let host_name = host_profile
+                                .as_ref()
+                                .map(|h| h.name.as_str())
+                                .unwrap_or("Host");
+                            Some(
+                                self.docker_drawer(
+                                    host_name,
+                                    telemetry.as_ref(),
+                                    colors,
+                                    self.language,
+                                    cx,
+                                )
+                                .into_any_element(),
+                            )
+                        }
+                        None => None,
+                    };
+
+                    if let Some(drawer_el) = drawer_content {
+                        main_row = main_row.child(
+                            div()
+                                .id("right-drawer-overlay")
+                                .occlude()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right_0()
+                                .w(px(306.))
+                                .bg(colors.popover_bg())
+                                .border_l_1()
+                                .border_color(colors.hairline_strong())
+                                .shadow_lg()
+                                .flex()
+                                .flex_col()
+                                .overflow_hidden()
+                                .child(drawer_el),
+                        );
                     }
-                    row = row.child(self.right_rail(host_profile.as_ref(), colors, cx));
-                    workspace = workspace.child(row);
+
+                    let tele_pop = self
+                        .telemetry_open
+                        .then(|| {
+                            telemetry.as_ref().map(|tele| {
+                                let name = host_profile
+                                    .as_ref()
+                                    .map(|h| h.name.as_str())
+                                    .unwrap_or("Host");
+                                self.telemetry_popover(name, tele, colors)
+                            })
+                        })
+                        .flatten();
+
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .child(main_row)
+                        .children(tele_pop)
+                        .children(
+                            host_profile
+                                .is_some()
+                                .then(|| self.session_status_bar(colors, cx)),
+                        )
+                        .into_any_element()
                 }
-                TabKind::Sftp { view, .. } => {
-                    workspace = workspace.child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_hidden()
-                            .child(view.clone()),
-                    );
-                }
-                TabKind::Hosts => {
-                    workspace = workspace.child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_hidden()
-                            .child(self.hosts.clone()),
-                    );
-                }
-                TabKind::Snippets => {
-                    workspace = workspace.child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_hidden()
-                            .child(self.snippets.clone()),
-                    );
-                }
-                TabKind::Tunnels => {
-                    workspace = workspace.child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_hidden()
-                            .child(self.tunnels.clone()),
-                    );
-                }
-                TabKind::Settings => {
-                    workspace = workspace.child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_hidden()
-                            .child(self.preferences.clone()),
-                    );
-                }
+                TabKind::Sftp { view, .. } => div()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(view.clone())
+                    .into_any_element(),
             }
-        }
-        workspace = workspace.child(self.status_bar(colors, cx));
+        } else {
+            div().flex_1().into_any_element()
+        };
 
         let mut root = div()
             .track_focus(&self.focus)
@@ -2057,6 +2976,14 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(|this, action: &SelectTab, window, cx| {
                 this.select_tab(action.index, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowVault, _, cx| {
+                this.open_vault(VaultSection::Hosts, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &SplitPane, window, cx| {
+                this.toggle_split_pane(window, cx);
+                cx.stop_propagation();
             }))
             .on_action(cx.listener(|this, _: &ShowHosts, window, cx| {
                 this.open_hosts(None, window, cx);
@@ -2087,11 +3014,7 @@ impl Render for Workspace {
                 cx.stop_propagation();
             }))
             .on_action(cx.listener(|this, _: &FindInTerminal, window, cx| {
-                if let Some(Tab {
-                    kind: TabKind::Terminal { terminal, .. },
-                    ..
-                }) = this.tabs.get(this.active)
-                {
+                if let Some(terminal) = this.active_terminal() {
                     terminal.update(cx, |terminal, cx| terminal.toggle_search(window, cx));
                     cx.stop_propagation();
                 }
@@ -2101,129 +3024,205 @@ impl Render for Workspace {
             )
             .on_action(|_: &MinimizeWindow, window, _| window.minimize_window())
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                this.update_sidebar_resize(event, cx);
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    this.finish_sidebar_resize(cx);
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    this.finish_sidebar_resize(cx);
-                }),
-            )
+            .relative()
             .size_full()
             .flex()
+            .flex_col()
             .text_size(px(13.))
-            .bg(rgb(colors.background))
+            .bg(colors.window_bg(vibrancy, self.opacity))
             .text_color(rgb(colors.foreground))
-            .child(self.sidebar(colors, cx))
-            .child(self.sidebar_resize_handle(colors, cx))
-            .child(workspace);
-        if self.resizing_sidebar.is_some() {
-            root = root.cursor_col_resize();
+            .child(self.titlebar(colors, cx))
+            .child(body);
+
+        if self.new_tab_menu_open {
+            root = root.child(self.render_new_tab_menu(colors, cx));
         }
         if self.quick_connect_open {
             root = root.child(self.quick_connect.clone());
         }
-        if !cfg!(target_os = "macos") {
-            root = root.opacity(f32::from(self.opacity) / 100.);
+        if let Some(logs_modal) = self.render_docker_logs_modal(colors, cx) {
+            root = root.child(logs_modal);
         }
         root
     }
 }
 
-fn nav_button(
-    id: impl Into<gpui_kit::ElementId>,
+fn vault_nav_item(
+    id: impl Into<ElementId>,
     icon: Icon,
-    name: impl Into<SharedString>,
+    label: impl Into<SharedString>,
     badge: Option<String>,
-    selected: bool,
+    active: bool,
     colors: Colors,
-) -> Button {
-    let name = name.into();
-    let icon_color = if selected {
-        colors.accent
-    } else {
-        colors.muted
-    };
-    let text_color = if selected {
-        colors.foreground
-    } else {
-        colors.secondary
-    };
-    let mut btn = Button::new(id)
-        .relative()
-        .w_full()
-        .h(px(32.))
-        .rounded_lg()
-        .justify_start()
-        .px(px(9.))
-        .ghost()
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let label = label.into();
+    let mut row = div()
+        .id(id)
+        .h(px(28.))
+        .px(px(8.))
+        .rounded(px(6.))
+        .cursor_pointer()
+        .flex()
+        .items_center()
         .gap(px(8.))
-        .bg(if selected {
-            colors.accent_subtle()
+        .bg(if active {
+            colors.accent_soft()
         } else {
             transparent_black().into()
         })
-        .border_1()
-        .border_color(if selected {
-            colors.hairline()
-        } else {
-            transparent_black().into()
-        })
-        .text_color(rgb(text_color))
-        .font_weight(if selected {
-            FontWeight::MEDIUM
-        } else {
-            FontWeight::NORMAL
-        })
-        .children(selected.then(|| {
-            div()
-                .absolute()
-                .left_0()
-                .top(px(6.))
-                .bottom(px(6.))
-                .w(px(2.5))
-                .rounded_r_full()
-                .bg(rgb(colors.accent))
-        }))
-        .child(icon.render(px(14.5), icon_color))
+        .hover(|s| s.bg(colors.surface_hover_glass()))
+        .child(icon.badge(px(20.)))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .truncate()
                 .text_size(px(12.5))
-                .child(name),
-        );
-
-    if let Some(badge) = badge {
-        btn = btn.child(
-            div()
-                .px(px(6.))
-                .py(px(1.))
-                .rounded_full()
-                .text_size(px(10.5))
-                .font_weight(FontWeight::MEDIUM)
-                .bg(if selected {
-                    colors.accent_soft()
+                .font_weight(if active {
+                    FontWeight::MEDIUM
                 } else {
-                    rgb(colors.surface)
+                    FontWeight::NORMAL
                 })
-                .text_color(rgb(if selected {
+                .text_color(rgb(if active {
                     colors.accent
                 } else {
-                    colors.muted
+                    colors.secondary
                 }))
-                .child(badge),
+                .child(label),
+        );
+
+    if let Some(count) = badge {
+        row = row.child(
+            div()
+                .text_size(px(11.))
+                .text_color(rgb(if active { colors.accent } else { colors.muted }))
+                .child(count),
         );
     }
-    btn
+    row
+}
+
+fn status_pill_btn(
+    id: impl Into<ElementId>,
+    icon: Option<Icon>,
+    icon_color: Option<u32>,
+    label: impl Into<SharedString>,
+    active: bool,
+    colors: Colors,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let resolved_icon_color = if active {
+        colors.accent
+    } else {
+        icon_color.unwrap_or(colors.secondary)
+    };
+    let icon_el = icon.map(|ic| ic.render(px(11.5), resolved_icon_color).into_any_element());
+    status_pill_btn_with(id, icon_el, label, active, colors)
+}
+
+fn status_pill_btn_with(
+    id: impl Into<ElementId>,
+    icon: Option<gpui_kit::AnyElement>,
+    label: impl Into<SharedString>,
+    active: bool,
+    colors: Colors,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let label = label.into();
+    div()
+        .id(id)
+        .px(px(7.))
+        .py(px(1.5))
+        .rounded(px(5.))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .bg(if active {
+            colors.accent_soft()
+        } else {
+            transparent_black().into()
+        })
+        .hover(|s| s.bg(colors.surface_hover_glass()))
+        .text_size(px(11.))
+        .font_weight(if active {
+            FontWeight::MEDIUM
+        } else {
+            FontWeight::NORMAL
+        })
+        .text_color(rgb(if active {
+            colors.accent
+        } else {
+            colors.secondary
+        }))
+        .children(icon)
+        .child(label)
+}
+
+fn compact_uptime(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = trimmed
+        .split(',')
+        .filter_map(|seg| {
+            let mut it = seg.split_whitespace();
+            let num = it.next()?;
+            let unit = it.next()?;
+            let short = match unit.trim_end_matches('s') {
+                "year" => "y",
+                "week" => "w",
+                "day" => "d",
+                "hour" => "h",
+                "minute" => "m",
+                "second" => "s",
+                _ => return None,
+            };
+            Some(format!("{num}{short}"))
+        })
+        .take(3)
+        .collect();
+    if parts.is_empty() {
+        trimmed.to_owned()
+    } else {
+        parts.join(" ")
+    }
+}
+
+fn tele_bar(
+    label: &str,
+    value: &str,
+    pct: f32,
+    bar_color: u32,
+    colors: Colors,
+) -> impl IntoElement {
+    let fill_w = (pct.clamp(0.0, 100.0) / 100.0) * 270.0;
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .text_size(px(11.))
+                .child(div().text_color(rgb(colors.secondary)).child(label.to_owned()))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(rgb(colors.foreground))
+                        .child(value.to_owned()),
+                ),
+        )
+        .child(
+            div()
+                .w(px(270.))
+                .h(px(5.))
+                .rounded_full()
+                .bg(colors.surface_active_glass())
+                .overflow_hidden()
+                .child(div().h_full().w(px(fill_w)).rounded_full().bg(rgb(bar_color))),
+        )
 }
 
 fn active_after_close(active: usize, removed: usize, remaining: usize) -> usize {

@@ -1,6 +1,7 @@
 mod file_drawer;
 mod file_icons;
 mod icons;
+mod mcp;
 mod notify;
 mod platform;
 mod preferences;
@@ -25,7 +26,7 @@ use settings::{Language, SettingsStore};
 use workspace::Workspace;
 
 actions!(
-    bulwark,
+    portus,
     [
         NewTab,
         CloseTab,
@@ -35,6 +36,8 @@ actions!(
         ShowSnippets,
         ShowTunnels,
         ShowSettings,
+        ShowVault,
+        SplitPane,
         ToggleQuickConnect,
         ToggleSnippetsDrawer,
         ToggleFilesDrawer,
@@ -47,14 +50,19 @@ actions!(
 );
 
 #[derive(Action, Clone, Debug, PartialEq, Eq)]
-#[action(namespace = bulwark, no_json)]
+#[action(namespace = portus, no_json)]
 struct SelectTab {
     index: usize,
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--mcp-stdio") {
+        mcp::run_stdio_server();
+        return;
+    }
     application().with_assets(icons::Assets).run(|cx: &mut App| {
         gpui_kit::init(cx);
+        platform::set_app_icon();
         let settings = cx.new(|_| SettingsStore::open());
         let saved = &settings.read(cx).current;
         let mut language = saved.language;
@@ -83,6 +91,8 @@ fn main() {
             KeyBinding::new("secondary-shift-]", NextTab, None),
             KeyBinding::new("secondary-shift-[", PreviousTab, None),
             KeyBinding::new("secondary-k", ToggleQuickConnect, None),
+            KeyBinding::new("secondary-d", SplitPane, None),
+            KeyBinding::new("secondary-0", ShowVault, None),
             KeyBinding::new("secondary-shift-s", ToggleSnippetsDrawer, None),
             KeyBinding::new("secondary-shift-e", ToggleFilesDrawer, None),
             KeyBinding::new("secondary-f", FindInTerminal, None),
@@ -99,12 +109,18 @@ fn main() {
             )
         }));
 
-        let bounds = Bounds::centered(None, size(px(1060.), px(680.)), cx);
+        let initial_bg = {
+            let saved = &settings.read(cx).current;
+            platform::window_background_appearance(saved.opacity, saved.vibrancy)
+        };
+        let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
         let result = gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_background: initial_bg,
+                app_id: Some(env!("CARGO_PKG_NAME").into()),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Bulwark".into()),
+                    title: Some("Portus".into()),
                     appears_transparent: cfg!(target_os = "macos"),
                     ..Default::default()
                 }),
@@ -161,7 +177,7 @@ fn main() {
                 cx.activate(true);
             }
             Err(error) => {
-                eprintln!("Could not open Bulwark. {error:#}");
+                eprintln!("Could not open Portus. {error:#}");
                 cx.quit();
             }
         }
@@ -172,11 +188,11 @@ fn set_menus(language: Language, cx: &mut App) {
     let text = |english, chinese| language.text(english, chinese);
     cx.set_menus(vec![
         Menu {
-            name: "Bulwark".into(),
+            name: "Portus".into(),
             disabled: false,
             items: vec![
                 MenuItem::action(text("Settings…", "设置…"), ShowSettings),
-                MenuItem::action(text("Quit Bulwark", "退出 Bulwark"), Quit),
+                MenuItem::action(text("Quit Portus", "退出 Portus"), Quit),
             ],
         },
         Menu {

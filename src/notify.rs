@@ -21,20 +21,21 @@ use crate::settings::Language;
 use crate::ssh::{SshPrompt, SshPromptKind};
 
 struct SshPromptNotification;
+struct TransientToast;
 
 static NEXT_PROMPT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub fn info(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
-    window.push_notification(Notification::info(message), cx);
+    window.push_notification(Notification::info(message).id::<TransientToast>(), cx);
 }
 
 pub fn success(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
-    window.push_notification(Notification::success(message), cx);
+    window.push_notification(Notification::success(message).id::<TransientToast>(), cx);
 }
 
 #[allow(dead_code)]
 pub fn warning(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
-    window.push_notification(Notification::warning(message), cx);
+    window.push_notification(Notification::warning(message).id::<TransientToast>(), cx);
 }
 
 pub fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {

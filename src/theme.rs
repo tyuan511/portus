@@ -1,5 +1,5 @@
 use gpui_kit::{
-    App, Rgba,
+    Anchor, App, Rgba,
     component::{Theme as ComponentTheme, ThemeMode as ComponentThemeMode},
     px, rgb,
 };
@@ -102,31 +102,6 @@ impl Theme {
         }
     }
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Graphite => "Graphite",
-            Self::Midnight => "Midnight",
-            Self::Nord => "Nord",
-            Self::Dracula => "Dracula",
-            Self::Catppuccin => "Catppuccin",
-            Self::Everforest => "Everforest",
-            Self::OneDark => "OneDark",
-            Self::GruvboxDark => "GruvboxDark",
-            Self::RosePine => "RosePine",
-            Self::SolarizedDark => "SolarizedDark",
-            Self::Paper => "Paper",
-            Self::Latte => "Latte",
-            Self::GithubLight => "GithubLight",
-            Self::TokyoLight => "TokyoLight",
-            Self::NordLight => "NordLight",
-            Self::OneLight => "OneLight",
-            Self::GruvboxLight => "GruvboxLight",
-            Self::RosePineDawn => "RosePineDawn",
-            Self::EverforestLight => "EverforestLight",
-            Self::SolarizedLight => "SolarizedLight",
-        }
-    }
-
     pub fn label(self, language: Language) -> &'static str {
         match self {
             Self::Graphite => language.text("Graphite", "石墨"),
@@ -156,20 +131,20 @@ impl Theme {
         match self {
             // --- Dark Themes ---
             Self::Graphite => Colors {
-                background: 0x111319,
-                panel: 0x161922,
-                chrome: 0x0d0f14,
-                surface: 0x1d212d,
-                surface_hover: 0x252a38,
-                line: 0x232836,
-                line_subtle: 0x1a1e29,
-                foreground: 0xeef1f7,
-                secondary: 0x9aa4b6,
-                muted: 0x646e82,
-                accent: 0x5e9eff,
+                background: 0x151619,
+                panel: 0x1c1d21,
+                chrome: 0x1e1f23,
+                surface: 0x24262b,
+                surface_hover: 0x2c2e35,
+                line: 0x2e3037,
+                line_subtle: 0x23252a,
+                foreground: 0xebebef,
+                secondary: 0x9c9ea6,
+                muted: 0x676972,
+                accent: 0x0a84ff,
                 accent_fg: 0xffffff,
-                success: 0x34d399,
-                danger: 0xf87171,
+                success: 0x30d158,
+                danger: 0xff453a,
                 dark: true,
             },
             Self::Midnight => Colors {
@@ -328,20 +303,20 @@ impl Theme {
 
             // --- Light Themes ---
             Self::Paper => Colors {
-                background: 0xfaf8f5,
-                panel: 0xf3f0ea,
-                chrome: 0xedeae3,
-                surface: 0xe7e3da,
-                surface_hover: 0xddd8cd,
-                line: 0xdcd7cc,
-                line_subtle: 0xe7e3da,
-                foreground: 0x1f2228,
-                secondary: 0x525763,
-                muted: 0x828792,
-                accent: 0x2563eb,
+                background: 0xffffff,
+                panel: 0xeeeff3,
+                chrome: 0xf4f5f7,
+                surface: 0xf1f2f6,
+                surface_hover: 0xe7e8ee,
+                line: 0xdcdde4,
+                line_subtle: 0xeaeaef,
+                foreground: 0x1d1f24,
+                secondary: 0x5a5e69,
+                muted: 0x8b909c,
+                accent: 0x007aff,
                 accent_fg: 0xffffff,
-                success: 0x059669,
-                danger: 0xdc2626,
+                success: 0x248a3d,
+                danger: 0xd70015,
                 dark: false,
             },
             Self::Latte => Colors {
@@ -785,6 +760,110 @@ impl Colors {
         rgb(0x000000).alpha(if self.dark { 0.56 } else { 0.28 })
     }
 
+    /// Root window backdrop: fully transparent whenever vibrancy or window
+    /// translucency is active so child regions (titlebar, sidebar, content,
+    /// terminal) each paint a single clean alpha layer without double-stacking.
+    pub fn window_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
+        if vibrancy || opacity < 100 {
+            rgb(0x000000).alpha(0.0)
+        } else {
+            rgb(self.chrome)
+        }
+    }
+
+    fn surface_alpha(self, vibrancy: bool, opacity: u8, vib_dark: f32, vib_light: f32, floor: f32) -> f32 {
+        let scale = f32::from(opacity.clamp(50, 100)) / 100.0;
+        if vibrancy {
+            let base = if self.dark { vib_dark } else { vib_light };
+            (base * scale).max(floor)
+        } else if opacity < 100 {
+            scale
+        } else {
+            1.0
+        }
+    }
+
+    pub fn sidebar_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
+        let a = if vibrancy {
+            self.surface_alpha(true, opacity, 0.54, 0.62, 0.24)
+        } else if opacity < 100 {
+            (f32::from(opacity.clamp(50, 100)) / 100.0 * 0.94).max(0.42)
+        } else {
+            1.0
+        };
+        rgb(self.panel).alpha(a)
+    }
+
+    pub fn panel_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
+        let a = self.surface_alpha(vibrancy, opacity, 0.68, 0.74, 0.32);
+        rgb(self.panel).alpha(a)
+    }
+
+    pub fn titlebar_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
+        let a = if vibrancy {
+            self.surface_alpha(true, opacity, 0.62, 0.70, 0.28)
+        } else if opacity < 100 {
+            (f32::from(opacity.clamp(50, 100)) / 100.0 * 0.96).max(0.44)
+        } else {
+            1.0
+        };
+        rgb(self.chrome).alpha(a)
+    }
+
+    pub fn content_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
+        let a = self.surface_alpha(vibrancy, opacity, 0.78, 0.84, 0.38);
+        rgb(self.background).alpha(a)
+    }
+
+    pub fn term_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
+        self.term_bg_for(self.background, vibrancy, opacity)
+    }
+
+    pub fn term_bg_for(self, bg_hex: u32, vibrancy: bool, opacity: u8) -> Rgba {
+        let a = self.surface_alpha(vibrancy, opacity, 0.80, 0.86, 0.38);
+        rgb(bg_hex).alpha(a)
+    }
+
+    pub fn popover_bg(self) -> Rgba {
+        rgb(self.panel).alpha(if self.dark { 0.94 } else { 0.96 })
+    }
+
+    pub fn surface_glass(self) -> Rgba {
+        if self.dark {
+            rgb(0xffffff).alpha(0.045)
+        } else {
+            rgb(0x000000).alpha(0.032)
+        }
+    }
+
+    pub fn surface_hover_glass(self) -> Rgba {
+        if self.dark {
+            rgb(0xffffff).alpha(0.08)
+        } else {
+            rgb(0x000000).alpha(0.058)
+        }
+    }
+
+    pub fn surface_active_glass(self) -> Rgba {
+        if self.dark {
+            rgb(0xffffff).alpha(0.11)
+        } else {
+            rgb(0x000000).alpha(0.085)
+        }
+    }
+
+    pub fn warning(self) -> u32 {
+        if self.dark { 0xff9f0a } else { 0xb25000 }
+    }
+
+    pub fn warning_soft(self) -> Rgba {
+        rgb(self.warning()).alpha(if self.dark { 0.16 } else { 0.12 })
+    }
+
+    pub fn warning_border(self) -> Rgba {
+        rgb(self.warning()).alpha(if self.dark { 0.36 } else { 0.30 })
+    }
+
     pub fn apply(self, cx: &mut App) {
         let mode = if self.dark {
             ComponentThemeMode::Dark
@@ -799,6 +878,13 @@ impl Colors {
             theme.font_size = px(16.);
             theme.mono_font_size = px(13.);
             theme.focus_ring = false;
+            theme.notification.placement = Anchor::BottomRight;
+            theme.notification.width = px(300.);
+            theme.notification.max_items = 2;
+            theme.notification.margins.top = px(46.);
+            theme.notification.margins.right = px(14.);
+            theme.notification.margins.bottom = px(36.);
+            theme.notification.margins.left = px(14.);
             let c = &mut theme.colors;
             c.background = rgb(self.background).into();
             c.foreground = rgb(self.foreground).into();

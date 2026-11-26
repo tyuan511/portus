@@ -62,8 +62,16 @@ impl Transport for TelnetTransport {
     }
 }
 
+#[allow(dead_code)]
 pub fn parse_telnet_stream(input: &[u8], replies: &mut Vec<u8>) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len());
+    parse_telnet_stream_into(input, replies, &mut out);
+    out
+}
+
+fn parse_telnet_stream_into(input: &[u8], replies: &mut Vec<u8>, out: &mut Vec<u8>) {
+    out.clear();
+    replies.clear();
     let mut i = 0;
     while i < input.len() {
         if input[i] != IAC {
@@ -106,7 +114,6 @@ pub fn parse_telnet_stream(input: &[u8], replies: &mut Vec<u8>) -> Vec<u8> {
             _ => i += 2,
         }
     }
-    out
 }
 
 fn naws_packet(size: GridSize) -> [u8; 9] {
@@ -131,6 +138,8 @@ async fn run_telnet(
     };
 
     let mut buf = [0u8; 4096];
+    let mut replies = Vec::with_capacity(32);
+    let mut clean = Vec::with_capacity(buf.len());
     loop {
         tokio::select! {
             cmd = rx.recv() => {
@@ -154,8 +163,7 @@ async fn run_telnet(
                 match read {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        let mut replies = Vec::new();
-                        let clean = parse_telnet_stream(&buf[..n], &mut replies);
+                        parse_telnet_stream_into(&buf[..n], &mut replies, &mut clean);
                         if !replies.is_empty() {
                             let _ = stream.write_all(&replies).await;
                         }
@@ -194,7 +202,7 @@ impl SerialTransport {
         let stop = Arc::clone(&closed);
 
         std::thread::Builder::new()
-            .name("bulwark-serial".into())
+            .name("portus-serial".into())
             .spawn(move || {
                 let mut buf = [0u8; 1024];
                 while !stop.load(Ordering::Relaxed) {

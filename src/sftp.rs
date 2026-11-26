@@ -14,6 +14,7 @@ pub struct RemoteEntry {
     pub path: String,
     pub is_dir: bool,
     pub size: u64,
+    pub permissions: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -94,11 +95,13 @@ async fn read_remote_dir(sftp: &SftpSession, path: &str) -> Result<Vec<RemoteEnt
             let meta = entry.metadata();
             let is_dir = meta.is_dir();
             let size = meta.size.unwrap_or(0);
+            let permissions = meta.permissions;
             Some(RemoteEntry {
                 path: join_remote_path(path, &name),
                 name,
                 is_dir,
                 size,
+                permissions,
             })
         })
         .collect();
@@ -130,7 +133,7 @@ async fn run_sftp(
                 SshUiEvent::Error(err) => {
                     let _ = bridge_events.send(SftpEvent::Error(err)).await;
                 }
-                SshUiEvent::Connected => {}
+                SshUiEvent::Connected | SshUiEvent::Telemetry(_) => {}
             }
         }
     });
