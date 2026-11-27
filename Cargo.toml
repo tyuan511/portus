@@ -1,6 +1,6 @@
 [package]
 name = "portus"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.98"
 publish = false
@@ -33,3 +33,11 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSButton", "NSColor", "NSColorSpace", "NSControl", "NSImage", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSData"] }
 raw-window-handle = "0.6"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[patch.crates-io]
+block = { path = "vendor/block" }

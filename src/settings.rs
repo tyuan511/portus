@@ -18,6 +18,7 @@ pub const MIN_SIDEBAR_WIDTH: f32 = 160.0;
 pub const MAX_SIDEBAR_WIDTH: f32 = 420.0;
 
 const SETTINGS_FILE: &str = "settings.json";
+const SESSION_FILE: &str = "session.json";
 pub const LOCAL_KEY_FILE: &str = ".host_key";
 
 pub fn config_dir() -> io::Result<PathBuf> {
@@ -82,6 +83,16 @@ pub enum CursorStyle {
     Underline,
 }
 
+impl CursorStyle {
+    pub fn to_terminal(self) -> gpui_terminal::TerminalCursorStyle {
+        match self {
+            Self::Block => gpui_terminal::TerminalCursorStyle::Block,
+            Self::Bar => gpui_terminal::TerminalCursorStyle::Bar,
+            Self::Underline => gpui_terminal::TerminalCursorStyle::Underline,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BellMode {
@@ -99,6 +110,18 @@ pub enum ScrollbackLimit {
     Lines10000,
     Lines50000,
     Unlimited,
+}
+
+impl ScrollbackLimit {
+    pub fn lines(self) -> usize {
+        match self {
+            Self::Lines5000 => 5_000,
+            Self::Lines10000 => 10_000,
+            Self::Lines50000 => 50_000,
+            // Dynamically allocated by alacritty_terminal; capped safely below i32::MAX.
+            Self::Unlimited => 1_000_000,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -383,6 +406,11 @@ impl HostProfile {
             format!("{}@{address}:{}", self.username, self.port)
         }
     }
+
+    pub fn references_keychain(&self, keychain_id: u64) -> bool {
+        self.keychain_id == Some(keychain_id)
+            || self.jump_relay_keychain_id == Some(keychain_id)
+    }
 }
 
 pub fn group_hosts<'a>(hosts: impl IntoIterator<Item = &'a HostProfile>) -> Vec<(String, Vec<&'a HostProfile>)> {
@@ -644,7 +672,6 @@ impl McpSettings {
 pub struct Settings {
     pub theme: Theme,
     pub opacity: u8,
-    pub vibrancy: bool,
     pub font_family: String,
     pub font_size: u8,
     pub line_height: LineHeightPreset,
@@ -688,7 +715,6 @@ impl Default for Settings {
         Self {
             theme: Theme::default(),
             opacity: 100,
-            vibrancy: true,
             font_family: String::new(),
             font_size: DEFAULT_FONT_SIZE,
             line_height: LineHeightPreset::default(),
@@ -898,6 +924,79 @@ impl SettingsStore {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum SavedHostRef {
+    Saved { id: u64 },
+    AdHoc { host: HostProfile },
+}
+
+impl SavedHostRef {
+    pub fn from_host(host: &HostProfile) -> Self {
+        if host.id > 0 {
+            Self::Saved { id: host.id }
+        } else {
+            let mut sanitized = host.clone();
+            sanitized.password.clear();
+            sanitized.jump_relay_password.clear();
+            Self::AdHoc { host: sanitized }
+        }
+    }
+
+    pub fn resolve(&self, hosts: &[HostProfile]) -> Option<HostProfile> {
+        match self {
+            Self::Saved { id } => hosts.iter().find(|h| h.id == *id).cloned(),
+            Self::AdHoc { host } => Some(host.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SavedPane {
+    Local,
+    Host { host: SavedHostRef },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SavedTab {
+    Terminal {
+        panes: Vec<SavedPane>,
+        #[serde(default)]
+        active_pane: usize,
+    },
+    Sftp {
+        host: SavedHostRef,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedSession {
+    pub tabs: Vec<SavedTab>,
+    pub active: usize,
+    pub in_vault: bool,
+}
+
+impl SavedSession {
+    pub fn load_from_dir(dir: &Path) -> Option<Self> {
+        let file = File::open(dir.join(SESSION_FILE)).ok()?;
+        serde_json::from_reader(file).ok()
+    }
+
+    pub fn save_to_dir(&self, dir: &Path) -> io::Result<()> {
+        fs::create_dir_all(dir)?;
+        let path = dir.join(SESSION_FILE);
+        let mut file = tempfile::NamedTempFile::new_in(dir)?;
+        serde_json::to_writer_pretty(file.as_file_mut(), self)?;
+        file.write_all(b"\n")?;
+        file.as_file().sync_all()?;
+        file.persist(path)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1097,5 +1196,87 @@ mod tests {
             MAX_SIDEBAR_WIDTH
         );
         assert_eq!(clamp_sidebar_width(f32::NAN), DEFAULT_SIDEBAR_WIDTH);
+    }
+
+    #[test]
+    fn saved_session_roundtrips_and_sanitizes_adhoc_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved_host = HostProfile {
+            id: 42,
+            name: "prod".into(),
+            protocol: HostProtocol::Ssh,
+            icon: HostIcon::Server,
+            address: "10.0.0.1".into(),
+            username: "root".into(),
+            port: 22,
+            baud_rate: 115200,
+            keychain_id: None,
+            identity_file: "~/.ssh/id_ed25519".into(),
+            password: "enc:secret".into(),
+            jump_host: String::new(),
+            jump_host_id: None,
+            jump_relay_command: String::new(),
+            jump_relay_keychain_id: None,
+            jump_relay_password: String::new(),
+            group: String::new(),
+            tags: Vec::new(),
+            last_connected: None,
+        };
+        let adhoc_host = HostProfile {
+            id: 0,
+            name: "quick".into(),
+            password: "should-not-be-saved".into(),
+            jump_relay_password: "also-not-saved".into(),
+            ..saved_host.clone()
+        };
+
+        let session = SavedSession {
+            tabs: vec![
+                SavedTab::Terminal {
+                    panes: vec![
+                        SavedPane::Local,
+                        SavedPane::Host {
+                            host: SavedHostRef::from_host(&saved_host),
+                        },
+                    ],
+                    active_pane: 1,
+                },
+                SavedTab::Terminal {
+                    panes: vec![SavedPane::Host {
+                        host: SavedHostRef::from_host(&adhoc_host),
+                    }],
+                    active_pane: 0,
+                },
+                SavedTab::Sftp {
+                    host: SavedHostRef::from_host(&saved_host),
+                },
+            ],
+            active: 2,
+            in_vault: false,
+        };
+
+        session.save_to_dir(dir.path()).unwrap();
+        let loaded = SavedSession::load_from_dir(dir.path()).unwrap();
+        assert_eq!(loaded.tabs.len(), 3);
+        assert_eq!(loaded.active, 2);
+        assert!(!loaded.in_vault);
+
+        // Saved host resolves from current settings; deleted host returns None.
+        assert_eq!(
+            SavedHostRef::Saved { id: 42 }.resolve(&[saved_host.clone()]),
+            Some(saved_host)
+        );
+        assert_eq!(SavedHostRef::Saved { id: 999 }.resolve(&[]), None);
+
+        // Ad-hoc host must not persist passwords in session.json.
+        let SavedTab::Terminal { panes, .. } = &loaded.tabs[1] else {
+            panic!("expected terminal tab");
+        };
+        let SavedPane::Host { host } = &panes[0] else {
+            panic!("expected host pane");
+        };
+        let resolved_adhoc = host.resolve(&[]).unwrap();
+        assert!(resolved_adhoc.password.is_empty());
+        assert!(resolved_adhoc.jump_relay_password.is_empty());
     }
 }

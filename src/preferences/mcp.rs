@@ -527,7 +527,7 @@ impl McpPage {
 impl Render for McpPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = self.store.read(cx).current.clone();
-        let colors = settings.theme.colors();
+        let colors = settings.theme.colors_for(settings.opacity);
         let language = settings.language;
         let snap = self.runtime.snapshot();
         let pending_count = snap.pending_approvals.len();
@@ -679,7 +679,7 @@ impl Render for McpPage {
                                                     .px(px(7.))
                                                     .py(px(2.))
                                                     .rounded(px(5.))
-                                                    .bg(colors.content_bg(false, 100))
+                                                    .bg(colors.content_bg(100))
                                                     .border_1()
                                                     .border_color(colors.hairline())
                                                     .text_size(px(11.))
@@ -981,7 +981,7 @@ impl McpPage {
                                 div()
                                     .p(px(11.))
                                     .rounded(px(8.))
-                                    .bg(colors.term_bg(false, 100))
+                                    .bg(colors.term_bg(100))
                                     .border_1()
                                     .border_color(colors.hairline())
                                     .text_size(px(11.5))
@@ -1149,7 +1149,7 @@ impl McpPage {
                                 div()
                                     .p(px(11.))
                                     .rounded(px(8.))
-                                    .bg(colors.term_bg(false, 100))
+                                    .bg(colors.term_bg(100))
                                     .border_1()
                                     .border_color(colors.hairline())
                                     .text_size(px(12.))
@@ -1171,6 +1171,90 @@ impl McpPage {
                             ),
                     ),
             )
+            .child(self.section_title(
+                language.text(
+                    "Agent CLI Hooks (Claude Code / Codex / Shell)",
+                    "AI Agent CLI Hooks 集成（Claude Code / Codex / Shell）",
+                ),
+                colors,
+            ))
+            .child({
+                let hooks_json = crate::agent_bus::build_claude_hooks_snippet();
+                let hooks_copy = hooks_json.clone();
+                self.card(colors)
+                    .child(
+                        div()
+                            .px(px(14.))
+                            .py(px(11.))
+                            .border_b_1()
+                            .border_color(colors.hairline())
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(colors.foreground))
+                                    .child(language.text(
+                                        "Portus Agent Control Bus (`Portus ctl`)",
+                                        "Portus Agent 控制总线（`Portus ctl`）",
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .text_color(rgb(colors.secondary))
+                                    .child(language.text(
+                                        "Every local terminal exports $PORTUS_SESSION_ID & $PORTUS_SOCKET. Add these hooks to ~/.claude/settings.json for instant Notification Rings & status updates.",
+                                        "每个本地终端都会自动注入 $PORTUS_SESSION_ID 与 $PORTUS_SOCKET。将下方 Hooks 添加到 ~/.claude/settings.json 即可联动通知光环与状态徽标。",
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(14.))
+                            .py(px(12.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .p(px(11.))
+                                    .rounded(px(8.))
+                                    .bg(colors.term_bg(100))
+                                    .border_1()
+                                    .border_color(colors.hairline())
+                                    .text_size(px(11.5))
+                                    .text_color(rgb(colors.foreground))
+                                    .child(hooks_json),
+                            )
+                            .child(
+                                div().flex().justify_end().child(
+                                    primary_button(
+                                        "mcp-copy-hooks",
+                                        Some(Icon::Duplicate),
+                                        language.text("Copy Claude Hooks", "复制 Claude Hooks"),
+                                        colors,
+                                    )
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        let lang = this.store.read(cx).current.language;
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            hooks_copy.clone(),
+                                        ));
+                                        crate::notify::success(
+                                            lang.text(
+                                                "Copied Claude Code hooks snippet.",
+                                                "已复制 Claude Code Hooks 配置。",
+                                            ),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                                ),
+                            ),
+                    )
+            })
             .child(self.section_title(
                 format!(
                     "{} ({enabled_count}/{})",
@@ -1274,7 +1358,7 @@ impl McpPage {
                         div()
                             .px(px(14.))
                             .py(px(8.))
-                            .bg(colors.content_bg(false, 100))
+                            .bg(colors.content_bg(100))
                             .border_b_1()
                             .border_color(colors.hairline())
                             .flex()
@@ -1699,7 +1783,7 @@ impl McpPage {
                             .px(px(10.))
                             .py(px(8.))
                             .rounded(px(7.))
-                            .bg(colors.term_bg(false, 100))
+                            .bg(colors.term_bg(100))
                             .border_1()
                             .border_color(colors.hairline())
                             .text_size(px(12.))
@@ -2172,7 +2256,7 @@ impl McpPage {
                                 div()
                                     .p(px(9.))
                                     .rounded(px(7.))
-                                    .bg(colors.term_bg(false, 100))
+                                    .bg(colors.term_bg(100))
                                     .border_1()
                                     .border_color(colors.hairline())
                                     .text_size(px(11.))

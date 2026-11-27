@@ -20,6 +20,7 @@ static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 pub(crate) fn runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .thread_name("portus-ssh")
             .build()
@@ -192,8 +193,22 @@ pub struct DockerLogRequest {
     pub reply: oneshot::Sender<Result<String, String>>,
 }
 
+pub struct ExecCommandRequest {
+    pub command: String,
+    pub reply: oneshot::Sender<Result<String, String>>,
+}
+
+pub struct UploadBytesRequest {
+    pub remote_path: String,
+    pub data: Vec<u8>,
+    pub reply: oneshot::Sender<Result<String, String>>,
+}
+
 pub enum SshControlRequest {
     DockerLogs(DockerLogRequest),
+    ExecCommand(ExecCommandRequest),
+    UploadBytes(UploadBytesRequest),
+    SetTelemetryActive(bool),
 }
 
 #[derive(Clone)]
@@ -205,6 +220,10 @@ impl SshControl {
     pub fn channel() -> (Self, mpsc::UnboundedReceiver<SshControlRequest>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (Self { tx }, rx)
+    }
+
+    pub fn set_telemetry_active(&self, active: bool) {
+        let _ = self.tx.send(SshControlRequest::SetTelemetryActive(active));
     }
 
     pub fn fetch_docker_logs(
@@ -220,8 +239,39 @@ impl SshControl {
             timestamps,
             reply,
         };
-        if let Err(err) = self.tx.send(SshControlRequest::DockerLogs(req)) {
-            let SshControlRequest::DockerLogs(req) = err.0;
+        if let Err(err) = self.tx.send(SshControlRequest::DockerLogs(req))
+            && let SshControlRequest::DockerLogs(req) = err.0
+        {
+            let _ = req.reply.send(Err("SSH session is closed".to_owned()));
+        }
+        rx
+    }
+
+    pub fn exec_command(&self, command: String) -> oneshot::Receiver<Result<String, String>> {
+        let (reply, rx) = oneshot::channel();
+        let req = ExecCommandRequest { command, reply };
+        if let Err(err) = self.tx.send(SshControlRequest::ExecCommand(req))
+            && let SshControlRequest::ExecCommand(req) = err.0
+        {
+            let _ = req.reply.send(Err("SSH session is closed".to_owned()));
+        }
+        rx
+    }
+
+    pub fn upload_bytes(
+        &self,
+        remote_path: String,
+        data: Vec<u8>,
+    ) -> oneshot::Receiver<Result<String, String>> {
+        let (reply, rx) = oneshot::channel();
+        let req = UploadBytesRequest {
+            remote_path,
+            data,
+            reply,
+        };
+        if let Err(err) = self.tx.send(SshControlRequest::UploadBytes(req))
+            && let SshControlRequest::UploadBytes(req) = err.0
+        {
             let _ = req.reply.send(Err("SSH session is closed".to_owned()));
         }
         rx
@@ -1579,6 +1629,8 @@ async fn run_ssh_session(
     let session = Arc::new(session);
     let mut control_task = None;
     let telemetry_task = if !use_relay {
+        let telemetry_active = Arc::new(AtomicBool::new(true));
+        let ctrl_telemetry_active = Arc::clone(&telemetry_active);
         let ctrl_session = Arc::clone(&session);
         control_task = Some(tokio::spawn(async move {
             while let Some(req) = control_rx.recv().await {
@@ -1596,13 +1648,30 @@ async fn run_ssh_session(
                             let _ = log_req.reply.send(res);
                         });
                     }
+                    SshControlRequest::ExecCommand(exec_req) => {
+                        let s = Arc::clone(&ctrl_session);
+                        tokio::spawn(async move {
+                            let res = exec_remote_command(&s, &exec_req.command).await;
+                            let _ = exec_req.reply.send(res);
+                        });
+                    }
+                    SshControlRequest::UploadBytes(up_req) => {
+                        let s = Arc::clone(&ctrl_session);
+                        tokio::spawn(async move {
+                            let res = upload_remote_bytes(&s, &up_req.remote_path, &up_req.data).await;
+                            let _ = up_req.reply.send(res);
+                        });
+                    }
+                    SshControlRequest::SetTelemetryActive(active) => {
+                        ctrl_telemetry_active.store(active, Ordering::Relaxed);
+                    }
                 }
             }
         }));
         let tele_session = Arc::clone(&session);
         let tele_events = events.clone();
         Some(tokio::spawn(async move {
-            poll_telemetry_loop(tele_session, tele_events).await;
+            poll_telemetry_loop(tele_session, tele_events, telemetry_active).await;
         }))
     } else if relay_ok && !relay_target_cmd.is_empty() {
         let tele_session = Arc::clone(&session);
@@ -1628,6 +1697,18 @@ async fn run_ssh_session(
                             "Docker logs are unavailable on this relay session.".to_owned(),
                         ));
                     }
+                    SshControlRequest::ExecCommand(exec_req) => {
+                        let _ = exec_req.reply.send(Err(
+                            "Remote command execution is unavailable on this relay session."
+                                .to_owned(),
+                        ));
+                    }
+                    SshControlRequest::UploadBytes(up_req) => {
+                        let _ = up_req.reply.send(Err(
+                            "Remote file upload is unavailable on this relay session.".to_owned(),
+                        ));
+                    }
+                    SshControlRequest::SetTelemetryActive(_) => {}
                 }
             }
         }));
@@ -1793,9 +1874,114 @@ async fn exec_docker_logs(
     Ok(strip_ansi(&out).into_owned())
 }
 
+async fn exec_remote_command(
+    session: &client::Handle<ClientHandler>,
+    command: &str,
+) -> Result<String, String> {
+    const MAX_EXEC_OUTPUT_BYTES: usize = 512 * 1024;
+    let mut ch = session
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("Failed to open SSH channel: {e}"))?;
+    ch.exec(true, command)
+        .await
+        .map_err(|e| format!("Failed to execute remote command: {e}"))?;
+
+    let mut out = Vec::with_capacity(16384);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err("Timed out running remote command.".to_owned());
+            }
+            msg = ch.wait() => {
+                match msg {
+                    Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                        if out.len() < MAX_EXEC_OUTPUT_BYTES {
+                            let remaining = MAX_EXEC_OUTPUT_BYTES - out.len();
+                            out.extend_from_slice(&data[..data.len().min(remaining)]);
+                        }
+                    }
+                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+async fn upload_remote_bytes(
+    session: &client::Handle<ClientHandler>,
+    remote_path: &str,
+    data: &[u8],
+) -> Result<String, String> {
+    let mut ch = session
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("Failed to open SSH channel for upload: {e}"))?;
+    let parent = remote_path
+        .rsplit_once('/')
+        .map(|(dir, _)| if dir.is_empty() { "/" } else { dir })
+        .unwrap_or("/tmp");
+    let cmd = format!(
+        "mkdir -p -- {} && cat > {}",
+        shell_words::quote(parent),
+        shell_words::quote(remote_path),
+    );
+    ch.exec(true, cmd)
+        .await
+        .map_err(|e| format!("Failed to start remote upload: {e}"))?;
+
+    for chunk in data.chunks(32 * 1024) {
+        ch.data(chunk)
+            .await
+            .map_err(|e| format!("Failed writing upload payload: {e}"))?;
+    }
+    ch.eof()
+        .await
+        .map_err(|e| format!("Failed finalizing upload: {e}"))?;
+
+    let mut exit_status: Option<u32> = None;
+    let mut err_buf = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err("Timed out uploading file over SSH.".to_owned());
+            }
+            msg = ch.wait() => {
+                match msg {
+                    Some(ChannelMsg::ExitStatus { exit_status: code }) => {
+                        exit_status = Some(code);
+                    }
+                    Some(ChannelMsg::ExtendedData { data, .. }) => {
+                        if err_buf.len() < 4096 {
+                            err_buf.extend_from_slice(&data);
+                        }
+                    }
+                    Some(ChannelMsg::Close) | None => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if exit_status.unwrap_or(0) != 0 {
+        let msg = String::from_utf8_lossy(&err_buf).trim().to_owned();
+        return Err(if msg.is_empty() {
+            format!("Remote upload failed with exit code {}", exit_status.unwrap_or(1))
+        } else {
+            msg
+        });
+    }
+    Ok(remote_path.to_owned())
+}
+
 async fn poll_telemetry_loop(
     session: Arc<client::Handle<ClientHandler>>,
     events: Sender<SshUiEvent>,
+    telemetry_active: Arc<AtomicBool>,
 ) {
     const MAX_PROBE_BYTES: usize = 16384;
     let cadence = Duration::from_secs(6);
@@ -1805,8 +1991,13 @@ async fn poll_telemetry_loop(
     );
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut out = Vec::with_capacity(MAX_PROBE_BYTES);
+    let mut probed_once = false;
     loop {
         interval.tick().await;
+        if probed_once && !telemetry_active.load(Ordering::Relaxed) {
+            continue;
+        }
+        probed_once = true;
         let started = Instant::now();
         let Ok(mut ch) = session.channel_open_session().await else {
             break;
@@ -2000,10 +2191,16 @@ async fn poll_relay_telemetry_loop(
 
     let mut interval = tokio::time::interval(Duration::from_secs(6));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut telemetry_active = true;
+    let mut probed_once = false;
 
     loop {
         tokio::select! {
             _ = interval.tick() => {
+                if probed_once && !telemetry_active {
+                    continue;
+                }
+                probed_once = true;
                 let started = Instant::now();
                 match run_framed_relay_cmd(
                     &mut ch,
@@ -2052,6 +2249,19 @@ async fn poll_relay_telemetry_loop(
                             .await;
                             let _ = log_req.reply.send(result);
                         });
+                    }
+                    SshControlRequest::ExecCommand(exec_req) => {
+                        let _ = exec_req.reply.send(Err(
+                            "Remote command execution is unavailable on relay sessions.".to_owned(),
+                        ));
+                    }
+                    SshControlRequest::UploadBytes(up_req) => {
+                        let _ = up_req.reply.send(Err(
+                            "Remote file upload is unavailable on relay sessions.".to_owned(),
+                        ));
+                    }
+                    SshControlRequest::SetTelemetryActive(active) => {
+                        telemetry_active = active;
                     }
                 }
             }
@@ -2164,6 +2374,7 @@ fn extract_framed_block<'a>(raw: &'a str, begin_marker: &str, end_marker: &str) 
     None
 }
 
+#[cfg(test)]
 fn extract_framed_telemetry(raw: &str) -> Option<&str> {
     extract_framed_block(raw, TELEMETRY_FRAME_BEGIN, TELEMETRY_FRAME_END)
 }

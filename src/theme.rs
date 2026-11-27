@@ -682,6 +682,72 @@ impl Theme {
             },
         }
     }
+
+    pub fn colors_for(self, opacity: u8) -> Colors {
+        self.colors().for_opacity(opacity)
+    }
+
+    pub fn palette_for_opacity(self, opacity: u8) -> TerminalPalette {
+        let mut pal = self.palette();
+        if !self.colors().dark || opacity >= 100 {
+            return pal;
+        }
+        let t = translucency_factor(opacity);
+        pal.foreground = lift_dark_text(pal.foreground, t, 0.76);
+        pal.ansi[8] = lift_dark_text(pal.ansi[8], t, 0.36);
+        for color in &mut pal.ansi[1..=7] {
+            if relative_luminance(*color) < 0.16 {
+                *color = lift_dark_text(*color, t, 0.24);
+            }
+        }
+        pal
+    }
+}
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.03928 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn relative_luminance(hex: u32) -> f32 {
+    let r = srgb_to_linear(((hex >> 16) & 0xff) as f32 / 255.0);
+    let g = srgb_to_linear(((hex >> 8) & 0xff) as f32 / 255.0);
+    let b = srgb_to_linear((hex & 0xff) as f32 / 255.0);
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+fn mix_rgb(base: u32, target: u32, t: f32) -> u32 {
+    let t = t.clamp(0.0, 1.0);
+    let blend = |shift: u32| -> u32 {
+        let a = ((base >> shift) & 0xff) as f32;
+        let b = ((target >> shift) & 0xff) as f32;
+        (a + (b - a) * t).round().clamp(0.0, 255.0) as u32
+    };
+    (blend(16) << 16) | (blend(8) << 8) | blend(0)
+}
+
+fn translucency_factor(opacity: u8) -> f32 {
+    f32::from(100u8.saturating_sub(opacity.clamp(50, 100))) / 50.0
+}
+
+fn lift_dark_text(hex: u32, translucency: f32, target_luminance: f32) -> u32 {
+    if translucency <= 0.0 {
+        return hex;
+    }
+    const CRISP_WHITE: u32 = 0xf8fafc;
+    let cur = relative_luminance(hex);
+    let amount = if cur >= target_luminance {
+        0.10 * translucency
+    } else {
+        let needed = ((target_luminance - cur) / (0.94 - cur).max(0.01)).clamp(0.0, 1.0);
+        (needed.powf(0.75) * translucency)
+            .max(0.14 * translucency)
+            .min(0.72)
+    };
+    mix_rgb(hex, CRISP_WHITE, amount)
 }
 
 #[derive(Clone, Copy)]
@@ -760,68 +826,73 @@ impl Colors {
         rgb(0x000000).alpha(if self.dark { 0.56 } else { 0.28 })
     }
 
-    /// Root window backdrop: fully transparent whenever vibrancy or window
-    /// translucency is active so child regions (titlebar, sidebar, content,
-    /// terminal) each paint a single clean alpha layer without double-stacking.
-    pub fn window_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
-        if vibrancy || opacity < 100 {
+    /// Adjusts text tokens when dark themes are rendered over translucent
+    /// blurred backdrops so primary, secondary, and muted labels remain crisp
+    /// even over bright windows behind Portus. Unchanged at 100% or in light mode.
+    pub fn for_opacity(mut self, opacity: u8) -> Self {
+        if !self.dark || opacity >= 100 {
+            return self;
+        }
+        let t = translucency_factor(opacity);
+        self.foreground = lift_dark_text(self.foreground, t, 0.80);
+        self.secondary = lift_dark_text(self.secondary, t, 0.56);
+        self.muted = lift_dark_text(self.muted, t, 0.38);
+        self
+    }
+
+    /// Root window backdrop: transparent when window opacity < 100% so child
+    /// regions each paint a single clean alpha layer over the native Gaussian
+    /// blur without double-stacking.
+    pub fn window_bg(self, opacity: u8) -> Rgba {
+        if opacity < 100 {
             rgb(0x000000).alpha(0.0)
         } else {
             rgb(self.chrome)
         }
     }
 
-    fn surface_alpha(self, vibrancy: bool, opacity: u8, vib_dark: f32, vib_light: f32, floor: f32) -> f32 {
-        let scale = f32::from(opacity.clamp(50, 100)) / 100.0;
-        if vibrancy {
-            let base = if self.dark { vib_dark } else { vib_light };
-            (base * scale).max(floor)
-        } else if opacity < 100 {
-            scale
+    fn surface_alpha(self, opacity: u8, factor: f32, floor: f32) -> f32 {
+        if opacity >= 100 {
+            return 1.0;
+        }
+        let clamped = opacity.clamp(50, 100);
+        if self.dark {
+            // Because sRGB luminance is gamma-encoded, mixing a low-alpha dark
+            // surface over a bright backdrop washes out contrast far faster than
+            // in light mode. Map 50%..100% smoothly onto a dark-safe alpha band
+            // that preserves frosted translucency without sacrificing legibility.
+            let t = f32::from(clamped - 50) / 50.0;
+            let dark_floor = (floor + 0.22).min(0.95);
+            let dark_ceil = (0.94 + 0.05 * factor).min(0.99);
+            dark_floor + t * (dark_ceil - dark_floor)
         } else {
-            1.0
+            let scale = f32::from(clamped) / 100.0;
+            (scale * factor).max(floor)
         }
     }
 
-    pub fn sidebar_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
-        let a = if vibrancy {
-            self.surface_alpha(true, opacity, 0.54, 0.62, 0.24)
-        } else if opacity < 100 {
-            (f32::from(opacity.clamp(50, 100)) / 100.0 * 0.94).max(0.42)
-        } else {
-            1.0
-        };
-        rgb(self.panel).alpha(a)
+    pub fn sidebar_bg(self, opacity: u8) -> Rgba {
+        rgb(self.panel).alpha(self.surface_alpha(opacity, 0.92, 0.44))
     }
 
-    pub fn panel_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
-        let a = self.surface_alpha(vibrancy, opacity, 0.68, 0.74, 0.32);
-        rgb(self.panel).alpha(a)
+    pub fn panel_bg(self, opacity: u8) -> Rgba {
+        rgb(self.panel).alpha(self.surface_alpha(opacity, 0.96, 0.48))
     }
 
-    pub fn titlebar_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
-        let a = if vibrancy {
-            self.surface_alpha(true, opacity, 0.62, 0.70, 0.28)
-        } else if opacity < 100 {
-            (f32::from(opacity.clamp(50, 100)) / 100.0 * 0.96).max(0.44)
-        } else {
-            1.0
-        };
-        rgb(self.chrome).alpha(a)
+    pub fn titlebar_bg(self, opacity: u8) -> Rgba {
+        rgb(self.chrome).alpha(self.surface_alpha(opacity, 0.95, 0.46))
     }
 
-    pub fn content_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
-        let a = self.surface_alpha(vibrancy, opacity, 0.78, 0.84, 0.38);
-        rgb(self.background).alpha(a)
+    pub fn content_bg(self, opacity: u8) -> Rgba {
+        rgb(self.background).alpha(self.surface_alpha(opacity, 1.0, 0.50))
     }
 
-    pub fn term_bg(self, vibrancy: bool, opacity: u8) -> Rgba {
-        self.term_bg_for(self.background, vibrancy, opacity)
+    pub fn term_bg(self, opacity: u8) -> Rgba {
+        self.term_bg_for(self.background, opacity)
     }
 
-    pub fn term_bg_for(self, bg_hex: u32, vibrancy: bool, opacity: u8) -> Rgba {
-        let a = self.surface_alpha(vibrancy, opacity, 0.80, 0.86, 0.38);
-        rgb(bg_hex).alpha(a)
+    pub fn term_bg_for(self, bg_hex: u32, opacity: u8) -> Rgba {
+        rgb(bg_hex).alpha(self.surface_alpha(opacity, 1.0, 0.50))
     }
 
     pub fn popover_bg(self) -> Rgba {
@@ -929,5 +1000,88 @@ impl Colors {
             c.caret = rgb(self.accent).into();
             c.selection = self.accent_soft().into();
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contrast_ratio(a: u32, b: u32) -> f32 {
+        let la = relative_luminance(a);
+        let lb = relative_luminance(b);
+        let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn opaque_and_light_themes_preserve_exact_colors() {
+        for &theme in Theme::DARK.iter().chain(Theme::LIGHT.iter()) {
+            let base = theme.colors();
+            let at_100 = theme.colors_for(100);
+            assert_eq!(base.foreground, at_100.foreground);
+            assert_eq!(base.secondary, at_100.secondary);
+            assert_eq!(base.muted, at_100.muted);
+
+            let base_pal = theme.palette();
+            let pal_100 = theme.palette_for_opacity(100);
+            assert_eq!(base_pal.foreground, pal_100.foreground);
+            assert_eq!(base_pal.ansi, pal_100.ansi);
+        }
+
+        for &theme in &Theme::LIGHT {
+            let base = theme.colors();
+            let at_50 = theme.colors_for(50);
+            assert_eq!(base.foreground, at_50.foreground);
+            assert_eq!(base.secondary, at_50.secondary);
+            assert_eq!(base.muted, at_50.muted);
+        }
+    }
+
+    #[test]
+    fn dark_themes_remain_legible_at_minimum_opacity_over_bright_backdrop() {
+        // DarkAqua HUDWindow (40% #282828 tint) over pure white #ffffff -> #a9a9a9.
+        let bright_hud_backdrop = mix_rgb(0xffffff, 0x282828, 0.40);
+
+        for &theme in &Theme::DARK {
+            let colors = theme.colors_for(50);
+            let content_alpha = colors.content_bg(50).a;
+            let sidebar_alpha = colors.sidebar_bg(50).a;
+            assert!(content_alpha > 0.68 && content_alpha < 0.85);
+            assert!(sidebar_alpha < content_alpha);
+            assert!(colors.content_bg(75).a > content_alpha);
+            assert!((colors.content_bg(100).a - 1.0).abs() < f32::EPSILON);
+
+            let eff_content = mix_rgb(bright_hud_backdrop, colors.background, content_alpha);
+            let eff_sidebar = mix_rgb(bright_hud_backdrop, colors.panel, sidebar_alpha);
+
+            assert!(
+                contrast_ratio(colors.foreground, eff_content) >= 6.0,
+                "{theme:?} foreground contrast too low"
+            );
+            assert!(
+                contrast_ratio(colors.secondary, eff_content) >= 4.5,
+                "{theme:?} secondary contrast too low"
+            );
+            assert!(
+                contrast_ratio(colors.muted, eff_content) >= 3.0,
+                "{theme:?} muted contrast too low"
+            );
+            assert!(
+                contrast_ratio(colors.secondary, eff_sidebar) >= 4.0,
+                "{theme:?} sidebar secondary contrast too low"
+            );
+
+            let pal = theme.palette_for_opacity(50);
+            let eff_term = mix_rgb(
+                bright_hud_backdrop,
+                pal.background,
+                colors.term_bg_for(pal.background, 50).a,
+            );
+            assert!(
+                contrast_ratio(pal.foreground, eff_term) >= 6.0,
+                "{theme:?} terminal foreground contrast too low"
+            );
+        }
     }
 }

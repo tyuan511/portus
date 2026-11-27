@@ -875,7 +875,7 @@ impl Preferences {
 impl Render for Preferences {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = self.store.read(cx).current.clone();
-        let colors = saved.theme.colors();
+        let colors = saved.theme.colors_for(saved.opacity);
         let language = saved.language;
 
         let header = div()
@@ -1023,7 +1023,7 @@ impl Render for Preferences {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .size_full()
-            .bg(colors.content_bg(saved.vibrancy, saved.opacity))
+            .bg(colors.content_bg(saved.opacity))
             .text_color(rgb(colors.foreground))
             .flex()
             .flex_col()
@@ -1223,45 +1223,25 @@ impl Preferences {
             )
             .child(inset_col_row(true, colors).child(theme_grid));
 
-        let material_card = inset_card(colors)
-            .child(
-                inset_row(false, colors)
-                    .child(row_text(
-                        language.text("macOS Native Vibrancy", "macOS 原生毛玻璃通透感"),
-                        language.text(
-                            "Enable system NSVisualEffectView blur behind sidebar and titlebar",
-                            "在侧边栏与标题栏后方启用系统级 NSVisualEffectView 模糊质感",
-                        ),
-                        colors,
-                    ))
-                    .child(
-                        toggle_switch("pref-vibrancy", saved.vibrancy, colors).on_click(
-                            cx.listener(|this, checked: &bool, window, cx| {
-                                let enabled = *checked;
-                                this.save(|s| s.vibrancy = enabled, window, cx);
-                            }),
-                        ),
-                    ),
-            )
-            .child(
-                inset_col_row(true, colors)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(12.))
-                            .child(row_text(
-                                language.text("Window Opacity", "窗口不透明度"),
-                                language.text(
-                                    "Adjust main window and terminal background translucency (50%–100%)",
-                                    "调整 Portus 主窗口与终端背景的透明程度（50%–100%）",
-                                ),
-                                colors,
-                            ))
-                            .child(value_pill(format!("{}%", saved.opacity), colors)),
-                    )
-                    .child(
+        let material_card = inset_card(colors).child(
+            inset_col_row(false, colors)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(12.))
+                        .child(row_text(
+                            language.text("Window Opacity", "窗口不透明度"),
+                            language.text(
+                                "Adjust main window and terminal opacity; values below 100% enable Gaussian blur (50%–100%)",
+                                "调整主窗口与终端背景不透明度，低于 100% 时自动启用高斯模糊（50%–100%）",
+                            ),
+                            colors,
+                        ))
+                        .child(value_pill(format!("{}%", saved.opacity), colors)),
+                )
+                .child(
                         div()
                             .flex()
                             .items_center()
@@ -2202,7 +2182,7 @@ impl Preferences {
                             .bg(if rec {
                                 colors.accent_soft()
                             } else {
-                                colors.content_bg(false, 100)
+                                colors.content_bg(100)
                             })
                             .hover(|s| s.border_color(colors.accent_border()))
                             .flex()
@@ -2983,7 +2963,7 @@ fn language_option_row(
         .bg(if selected {
             colors.accent_soft()
         } else {
-            colors.content_bg(false, 100)
+            colors.content_bg(100)
         })
         .hover(|s| {
             if selected {

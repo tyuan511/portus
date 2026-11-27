@@ -53,5 +53,20 @@ fn indexed(index: u8, palette: &TerminalPalette) -> u32 {
     }
 }
 
+/// Resolves a terminal color index (as passed in `Event::ColorRequest`) into
+/// an RGB triplet for OSC 10/11/12/4 queries.
+pub(crate) fn rgb_for_index(index: usize, palette: &TerminalPalette) -> Rgb {
+    let hex = match index {
+        0..=255 => indexed(index as u8, palette),
+        256 => palette.foreground,
+        257 => palette.background,
+        258 => palette.cursor.unwrap_or(palette.foreground),
+        _ => palette.foreground,
+    };
+    Rgb { r: ((hex >> 16) & 0xff) as u8,
+          g: ((hex >> 8) & 0xff) as u8,
+          b: (hex & 0xff) as u8, }
+}
+
 #[cfg(test)]
 mod tests;

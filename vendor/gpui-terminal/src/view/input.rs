@@ -2,13 +2,14 @@
 //! transport input or a grid change, and does nothing else.
 
 use gpui_kit::{
-    ClipboardItem, Context, Keystroke, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollDelta, ScrollWheelEvent, Window,
+    ClipboardItem, Context, ExternalPaths, Keystroke, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, ScrollDelta, ScrollWheelEvent, Window,
 };
 
 use super::TerminalView;
 use crate::{
-    KeyInput, MouseButton, MouseInput, Transport, key_to_bytes, mouse_to_bytes, paste_payload,
+    KeyInput, MouseButton, MouseInput, TerminalEvent, Transport, key_to_bytes_with_modes,
+    mouse_to_bytes, paste_payload,
 };
 
 impl<T: Transport> TerminalView<T> {
@@ -24,35 +25,35 @@ impl<T: Transport> TerminalView<T> {
                        .map(str::trim_end)
                        .collect::<Vec<_>>()
                        .join("\n");
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        if !text.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
     }
 
     /// Writes the system clipboard's text to the terminal, bracketed when the
-    /// program asked for bracketed paste. See [`paste_payload`].
+    /// program asked for bracketed paste. If the clipboard holds no text (for
+    /// example, a screenshot), emits [`TerminalEvent::ImagePasteRequested`] so
+    /// the host can paste a local or SFTP-uploaded image path.
     pub fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         if self.exited() {
             return;
         }
-        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+        let text = cx.read_from_clipboard().and_then(|item| item.text());
+        let Some(text) = text.filter(|t| !t.is_empty())
         else {
+            cx.emit(TerminalEvent::ImagePasteRequested);
             return;
         };
         let bracketed = self.terminal.with_grid(|grid| grid.bracketed_paste_mode());
         if let Some(payload) = paste_payload(&text, bracketed) {
             self.return_to_live_screen(cx);
+            self.reset_cursor_blink(cx);
             let written = self.terminal.write(payload.as_bytes());
             self.report(written, cx);
         }
     }
 
-    /// Handles a keystroke typed while the view has focus. Whether it was the
-    /// view's: the copy and paste chords (see [`clipboard_chord`]), and every
-    /// key the program can be sent. Every other platform chord belongs to the
-    /// app, and once the program has exited, so does every key.
-    ///
-    /// Runs ahead of the app's key bindings (see `TerminalView::new`), so a
-    /// binding on the focus path - a framework's Tab, a host's Ctrl-C copy -
-    /// can't take a key the program should get.
+    /// Handles a keystroke typed while the view has focus.
     pub(super) fn handle_key(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) -> bool {
         match clipboard_chord(keystroke, cfg!(target_os = "macos")) {
             Some(Clipboard::Copy) => {
@@ -68,16 +69,19 @@ impl<T: Transport> TerminalView<T> {
         if keystroke.modifiers.platform || self.exited() {
             return false;
         }
-        let input = KeyInput { key:      &keystroke.key,
-                               key_char: keystroke.key_char.as_deref(),
-                               control:  keystroke.modifiers.control,
-                               alt:      keystroke.modifiers.alt,
-                               shift:    keystroke.modifiers.shift, };
-        let Some(bytes) = key_to_bytes(input)
+        let input = KeyInput { key:            &keystroke.key,
+                               key_char:       keystroke.key_char.as_deref(),
+                               control:        keystroke.modifiers.control,
+                               alt:            keystroke.modifiers.alt,
+                               shift:          keystroke.modifiers.shift,
+                               option_as_meta: self.style.option_as_meta, };
+        let modes = self.terminal.with_grid(|grid| grid.key_modes());
+        let Some(bytes) = key_to_bytes_with_modes(input, modes)
         else {
             return false;
         };
         self.return_to_live_screen(cx);
+        self.reset_cursor_blink(cx);
         let written = self.terminal.write(&bytes);
         self.report(written, cx);
         true
@@ -94,16 +98,51 @@ impl<T: Transport> TerminalView<T> {
     pub(super) fn on_left_down(&mut self, event: &MouseDownEvent, window: &mut Window,
                                cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
-        self.mouse_button(event.position, MouseButton::Left, true, cx);
+        self.reset_cursor_blink(cx);
+        let Some((column, row)) = self.cell_at(event.position)
+        else {
+            return;
+        };
+        // Cmd+Click opens OSC 8 hyperlinks or detected URLs.
+        if event.modifiers.platform
+           && let Some(uri) = self.terminal.with_grid(|grid| grid.url_at(column, row))
+        {
+            cx.emit(TerminalEvent::OpenUrl(uri));
+            return;
+        }
+        // Holding Shift bypasses SGR mouse reporting so users can always select
+        // and copy text inside full-screen mouse-aware AI TUIs / tmux.
+        let bypass_mouse = event.modifiers.shift;
+        if !bypass_mouse && self.mouse_reporting() {
+            self.mouse_button(event.position, MouseButton::Left, true, cx);
+            return;
+        }
+        self.terminal.with_grid_mut(|grid| match event.click_count {
+                         2 => grid.start_word_selection(column, row),
+                         count if count >= 3 => grid.start_line_selection(column, row),
+                         _ => grid.start_selection(column, row),
+                     });
+        self.selection_dragged = event.click_count >= 2;
+        cx.notify();
     }
 
     pub(super) fn on_left_up(&mut self, event: &MouseUpEvent, _window: &mut Window,
                              cx: &mut Context<Self>) {
-        self.mouse_button(event.position, MouseButton::Left, false, cx);
+        let bypass_mouse = event.modifiers.shift;
+        if !bypass_mouse && self.mouse_reporting() && !self.selection_dragged {
+            self.mouse_button(event.position, MouseButton::Left, false, cx);
+            return;
+        }
+        if self.selection_dragged {
+            self.selection_dragged = false;
+            if self.style.copy_on_select {
+                self.copy_selection(cx);
+            }
+        }
     }
 
     /// Extends the selection while the left button is held, when no
-    /// mouse-aware program has claimed the mouse.
+    /// mouse-aware program has claimed the mouse (or Shift bypasses it).
     pub(super) fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window,
                                 cx: &mut Context<Self>) {
         if !event.dragging() {
@@ -113,21 +152,33 @@ impl<T: Transport> TerminalView<T> {
         else {
             return;
         };
+        let bypass_mouse = event.modifiers.shift;
         let selected = self.terminal.with_grid_mut(|grid| {
-                                        let selecting = !grid.sgr_mouse_mode();
+                                        let selecting = bypass_mouse || !grid.sgr_mouse_mode();
                                         if selecting {
                                             grid.update_selection(column, row);
                                         }
                                         selecting
                                     });
         if selected {
+            self.selection_dragged = true;
             cx.notify();
         }
     }
 
+    /// Handles files dragged from Finder onto the terminal surface.
+    pub(super) fn on_drop_paths(&mut self, paths: &ExternalPaths, _window: &mut Window,
+                                cx: &mut Context<Self>) {
+        let files = paths.paths().to_vec();
+        if !files.is_empty() {
+            cx.emit(TerminalEvent::FilesDropped(files));
+        }
+    }
+
     /// A mouse-aware program gets one wheel report per scroll event, in the
-    /// direction scrolled. Otherwise the wheel scrolls the view through the
-    /// scrollback, by the lines scrolled - see [`Self::whole_lines`].
+    /// direction scrolled. On the alternate screen with ALTERNATE_SCROLL enabled
+    /// and mouse reporting off, wheel ticks translate into Up/Down arrow keys.
+    /// Otherwise the wheel scrolls the view through the scrollback.
     pub(super) fn on_scroll(&mut self, event: &ScrollWheelEvent, _window: &mut Window,
                             cx: &mut Context<Self>) {
         let Some(metrics) = self.metrics
@@ -141,31 +192,54 @@ impl<T: Transport> TerminalView<T> {
         if lines == 0. {
             return;
         }
-        if !self.mouse_reporting() {
-            // Up the wheel is back into the scrollback.
-            let rows = self.whole_lines(lines);
-            if rows != 0
-               && self.terminal
-                      .with_grid_mut(|grid| grid.scroll_display(rows))
-            {
-                cx.notify();
+        if self.mouse_reporting() {
+            let button = if lines > 0. {
+                MouseButton::WheelUp
             }
+            else {
+                MouseButton::WheelDown
+            };
+            self.mouse_button(event.position, button, true, cx);
             return;
         }
-        let button = if lines > 0. {
-            MouseButton::WheelUp
+
+        let rows = self.whole_lines(lines);
+        if rows == 0 {
+            return;
         }
-        else {
-            MouseButton::WheelDown
-        };
-        self.mouse_button(event.position, button, true, cx);
+
+        let (alt_screen, alt_scroll, app_cursor) = self.terminal.with_grid(|grid| {
+                                                       (grid.alt_screen(),
+                                                        grid.alternate_scroll(),
+                                                        grid.key_modes().app_cursor)
+                                                   });
+        if alt_screen && alt_scroll && !self.exited() {
+            let seq: &[u8] = if rows > 0 {
+                if app_cursor { b"\x1bOA" } else { b"\x1b[A" }
+            }
+            else if app_cursor {
+                b"\x1bOB"
+            }
+            else {
+                b"\x1b[B"
+            };
+            let count = rows.unsigned_abs().min(8) as usize;
+            let mut payload = Vec::with_capacity(seq.len() * count);
+            for _ in 0..count {
+                payload.extend_from_slice(seq);
+            }
+            let written = self.terminal.write(&payload);
+            self.report(written, cx);
+            return;
+        }
+
+        if self.terminal
+               .with_grid_mut(|grid| grid.scroll_display(rows))
+        {
+            cx.notify();
+        }
     }
 
-    /// The whole lines `lines` more of scrolling adds up to, keeping the
-    /// fraction for the next event. A trackpad reports a few pixels at a
-    /// time - a fraction of a line each - so rounding each event up to a line
-    /// would scroll many times too fast. Turning back starts afresh, so a
-    /// fraction left going one way doesn't eat into the other.
     fn whole_lines(&mut self, lines: f32) -> i32 {
         if self.scroll_remainder != 0. && self.scroll_remainder.signum() != lines.signum() {
             self.scroll_remainder = 0.;
@@ -176,8 +250,6 @@ impl<T: Transport> TerminalView<T> {
         whole as i32
     }
 
-    /// Sends a button to a program that turned on SGR mouse reporting.
-    /// Without one listening, a left press starts a selection instead.
     fn mouse_button(&mut self, position: Point<Pixels>, button: MouseButton, pressed: bool,
                     cx: &mut Context<Self>) {
         let Some((column, row)) = self.cell_at(position)
@@ -203,22 +275,14 @@ impl<T: Transport> TerminalView<T> {
         }
     }
 
-    /// Whether mouse input goes to the program: it turned on SGR mouse
-    /// reporting and is still running. A program that exits with reporting
-    /// on leaves the mouse to the view - the wheel scrolls the scrollback
-    /// and a press selects - rather than to no one.
     fn mouse_reporting(&self) -> bool {
         self.terminal.with_grid(|grid| grid.sgr_mouse_mode()) && !self.exited()
     }
 
-    /// Whether the program has exited: input has nowhere to go, though the
-    /// screen stays to read, select and copy.
     fn exited(&self) -> bool {
         self.terminal.exit_report().is_some()
     }
 
-    /// The cell under a window position, or `None` before the first frame
-    /// has measured one.
     fn cell_at(&self, position: Point<Pixels>) -> Option<(usize, usize)> {
         let metrics = self.metrics?;
         Some(metrics.cell_at(position - self.origin, self.terminal.size()))
@@ -232,10 +296,6 @@ pub(super) enum Clipboard {
     Paste,
 }
 
-/// Whether `keystroke` is the platform's copy or paste chord: the platform
-/// modifier with `c` or `v` (Cmd on macOS, Super elsewhere), and - off macOS,
-/// where Ctrl-C belongs to the program - Ctrl-Shift-C and Ctrl-Shift-V, as
-/// Linux terminals use.
 pub(super) fn clipboard_chord(keystroke: &Keystroke, macos: bool) -> Option<Clipboard> {
     let modifiers = &keystroke.modifiers;
     let chord =

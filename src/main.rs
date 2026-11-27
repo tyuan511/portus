@@ -1,3 +1,4 @@
+mod agent_bus;
 mod file_drawer;
 mod file_icons;
 mod icons;
@@ -30,9 +31,13 @@ actions!(
     portus,
     [
         NewTab,
+        NewGitWorktree,
         CloseTab,
         NextTab,
         PreviousTab,
+        JumpNextAttention,
+        JumpPrevPrompt,
+        JumpNextPrompt,
         ShowHosts,
         ShowSnippets,
         ShowTunnels,
@@ -58,9 +63,14 @@ struct SelectTab {
 }
 
 fn main() {
-    if std::env::args().any(|arg| arg == "--mcp-stdio") {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--mcp-stdio") {
         mcp::run_stdio_server();
         return;
+    }
+    if let Some(pos) = args.iter().position(|arg| arg == "ctl" || arg == "--ctl") {
+        let code = agent_bus::run_cli_subcommand(&args[pos + 1..]);
+        std::process::exit(code);
     }
     application().with_assets(icons::Assets).run(|cx: &mut App| {
         gpui_kit::init(cx);
@@ -69,18 +79,21 @@ fn main() {
         let saved = &settings.read(cx).current;
         let mut language = saved.language;
         let mut active_theme = saved.theme;
-        active_theme.colors().apply(cx);
+        let mut active_opacity = saved.opacity;
+        active_theme.colors_for(active_opacity).apply(cx);
         set_menus(language, cx);
         cx.observe(&settings, move |settings, cx| {
             let saved = &settings.read(cx).current;
-            let (next_language, next_theme) = (saved.language, saved.theme);
+            let (next_language, next_theme, next_opacity) =
+                (saved.language, saved.theme, saved.opacity);
             if language != next_language {
                 language = next_language;
                 set_menus(language, cx);
             }
-            if active_theme != next_theme {
+            if active_theme != next_theme || active_opacity != next_opacity {
                 active_theme = next_theme;
-                active_theme.colors().apply(cx);
+                active_opacity = next_opacity;
+                active_theme.colors_for(active_opacity).apply(cx);
             }
         })
         .detach();
@@ -88,10 +101,14 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("secondary-t", NewTab, None),
+            KeyBinding::new("secondary-shift-g", NewGitWorktree, None),
             KeyBinding::new("secondary-w", CloseTab, None),
             KeyBinding::new("secondary-shift-w", CloseWindow, None),
             KeyBinding::new("secondary-shift-]", NextTab, None),
             KeyBinding::new("secondary-shift-[", PreviousTab, None),
+            KeyBinding::new("secondary-shift-u", JumpNextAttention, None),
+            KeyBinding::new("secondary-up", JumpPrevPrompt, None),
+            KeyBinding::new("secondary-down", JumpNextPrompt, None),
             KeyBinding::new("secondary-k", ToggleQuickConnect, None),
             KeyBinding::new("secondary-d", SplitPane, None),
             KeyBinding::new("secondary-0", ShowVault, None),
@@ -111,10 +128,11 @@ fn main() {
             )
         }));
 
-        let initial_bg = {
+        let (initial_opacity, initial_dark) = {
             let saved = &settings.read(cx).current;
-            platform::window_background_appearance(saved.opacity, saved.vibrancy)
+            (saved.opacity, saved.theme.colors().dark)
         };
+        let initial_bg = platform::window_background_appearance(initial_opacity);
         let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
         let result = gpui_kit::open_window(
             WindowOptions {
@@ -134,6 +152,9 @@ fn main() {
         );
         match result {
             Ok((main_window, workspace)) => {
+                let _ = main_window.update(cx, |_, window, cx| {
+                    platform::apply_window_style(window, initial_opacity, initial_dark, cx);
+                });
                 cx.on_action({
                     let workspace = workspace.clone();
                     move |_: &ShowSettings, cx| {
@@ -212,7 +233,9 @@ fn set_menus(language: Language, cx: &mut App) {
             disabled: false,
             items: vec![
                 MenuItem::action(text("New Local Tab", "新建本地标签"), NewTab),
+                MenuItem::action(text("New Git Worktree Tab…", "新建 Git Worktree 标签…"), NewGitWorktree),
                 MenuItem::action(text("Quick Connect…", "快速连接…"), ToggleQuickConnect),
+                MenuItem::action(text("Next Agent Attention", "跳转待处理 Agent"), JumpNextAttention),
                 MenuItem::action(text("Find in Terminal…", "终端内搜索…"), FindInTerminal),
                 MenuItem::action(text("SSH Hosts", "SSH 主机"), ShowHosts),
                 MenuItem::action(text("Snippets", "命令片段"), ShowSnippets),

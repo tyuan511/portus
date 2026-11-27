@@ -317,3 +317,91 @@ fn an_unfocused_terminal_leaves_keys_to_the_app(cx: &mut TestAppContext) {
     assert!(harness.log.lock().written.is_empty());
     assert_eq!(*hijacked.lock(), 1);
 }
+
+#[gpui_kit::test]
+fn copy_on_select_copies_dragged_selection_only_when_enabled(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, MouseButton, point};
+    let (harness, mut cx) = harness(cx);
+    harness.sink.output(b"hello world");
+    cx.run_until_parked();
+    let cell = harness.view
+                      .read_with(&cx, |view, _| view.metrics.expect("measured"));
+    let start = point(px(cell.width * 0.5), px(cell.height * 0.5));
+    let end = point(px(cell.width * 4.5), px(cell.height * 0.5));
+
+    // Disabled by default: drag-selecting does not touch the clipboard.
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::none());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(cx.read_from_clipboard().and_then(|item| item.text()), None);
+
+    // Enable copy_on_select: dragging now writes selection to clipboard on release.
+    harness.view.update(&mut cx, |view, cx| {
+                    let style = view.style().clone().copy_on_select(true);
+                    view.set_style(style, cx);
+                });
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::none());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(cx.read_from_clipboard().and_then(|item| item.text()).as_deref(),
+               Some("hello"));
+}
+
+#[gpui_kit::test]
+fn option_as_meta_controls_alt_key_encoding(cx: &mut TestAppContext) {
+    use gpui_kit::{KeyDownEvent, Keystroke, Modifiers};
+    let (harness, mut cx) = harness(cx);
+    cx.update(|window, cx| harness.view.focus_handle(cx).focus(window, cx));
+    cx.run_until_parked();
+
+    let option_b = KeyDownEvent { keystroke:              Keystroke { modifiers: Modifiers { alt: true,
+                                                                                             ..Default::default() },
+                                                                      key:       "b".into(),
+                                                                      key_char:  Some("∫".into()), },
+                                  is_held:                false,
+                                  prefer_character_input: false, };
+
+    // Default option_as_meta = true -> sends ESC + base key 'b'.
+    cx.simulate_event(option_b.clone());
+    assert_eq!(harness.log.lock().written, b"\x1bb");
+
+    // Disable option_as_meta -> sends composed character '∫'.
+    harness.log.lock().written.clear();
+    harness.view.update(&mut cx, |view, cx| {
+                    let style = view.style().clone().option_as_meta(false);
+                    view.set_style(style, cx);
+                });
+    cx.simulate_event(option_b);
+    assert_eq!(harness.log.lock().written, "∫".as_bytes());
+}
+
+#[gpui_kit::test]
+fn cursor_style_and_blink_update_live(cx: &mut TestAppContext) {
+    let (harness, mut cx) = harness(cx);
+    cx.update(|window, cx| harness.view.focus_handle(cx).focus(window, cx));
+    cx.run_until_parked();
+
+    for shape in [TerminalCursorStyle::Bar,
+                  TerminalCursorStyle::Underline,
+                  TerminalCursorStyle::Block]
+    {
+        harness.view.update(&mut cx, |view, cx| {
+                        let style = view.style().clone().cursor_style(shape).cursor_blink(true);
+                        view.set_style(style, cx);
+                    });
+        cx.run_until_parked();
+        assert_eq!(harness.view.read_with(&cx, |view, _| view.style().cursor_style),
+                   shape);
+        assert!(harness.view.read_with(&cx, |view, _| view.style().cursor_blink));
+    }
+
+    // Disabling blink stops the blink task and keeps cursor visible.
+    harness.view.update(&mut cx, |view, cx| {
+                    let style = view.style().clone().cursor_blink(false);
+                    view.set_style(style, cx);
+                });
+    cx.run_until_parked();
+    assert!(harness.view.read_with(&cx, |view, _| view.cursor_blink_on));
+}

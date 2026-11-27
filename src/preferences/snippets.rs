@@ -411,14 +411,13 @@ impl SnippetsPage {
         }
 
         let saved = &self.store.read(cx).current;
-        let vibrancy = saved.vibrancy;
         let opacity = saved.opacity;
         div()
             .flex()
             .flex_col()
             .flex_shrink_0()
             .w(px(260.))
-            .bg(colors.panel_bg(vibrancy, opacity))
+            .bg(colors.panel_bg(opacity))
             .border_r_1()
             .border_color(colors.hairline())
             .child(
@@ -773,9 +772,8 @@ impl SnippetsPage {
 impl Render for SnippetsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = &self.store.read(cx).current;
-        let colors = saved.theme.colors();
+        let colors = saved.theme.colors_for(saved.opacity);
         let language = saved.language;
-        let vibrancy = saved.vibrancy;
         let opacity = saved.opacity;
         let mut detail = div()
             .flex()
@@ -783,7 +781,7 @@ impl Render for SnippetsPage {
             .flex_1()
             .min_w_0()
             .min_h_0()
-            .bg(colors.content_bg(vibrancy, opacity));
+            .bg(colors.content_bg(opacity));
         if let Some(editor) = &self.editor {
             detail = detail.child(self.snippet_form(editor, colors, language, cx));
         } else {

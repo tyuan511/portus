@@ -6,7 +6,7 @@ use gpui_kit::{
 };
 
 pub const APP_LOGO_PATH: &str = "icons/app_logo.png";
-pub const APP_LOGO_BYTES: &[u8] = include_bytes!("../assets/logo.png");
+pub const APP_LOGO_BYTES: &[u8] = include_bytes!("../assets/logo-ui.png");
 
 pub fn app_logo(size: Pixels) -> Img {
     img(APP_LOGO_PATH).size(size).flex_shrink_0()
@@ -47,7 +47,6 @@ pub enum Icon {
     Split,
     LayoutGrid,
     List,
-    Vault,
     Palette,
     Keyboard,
     Expand,
@@ -90,7 +89,6 @@ impl Icon {
             Self::Split => "icons/split.svg",
             Self::LayoutGrid => "icons/layout_grid.svg",
             Self::List => "icons/list.svg",
-            Self::Vault => "icons/vault.svg",
             Self::Palette => "icons/palette.svg",
             Self::Keyboard => "icons/keyboard.svg",
             Self::Expand => "icons/expand.svg",
@@ -111,7 +109,6 @@ impl Icon {
     /// Apple HIG / macOS System Settings squircle tile color for each icon.
     pub const fn macos_color(self) -> u32 {
         match self {
-            Self::Vault => 0x5856d6,      // Apple Indigo
             Self::Server => 0x007aff,     // Apple Blue
             Self::Key => 0xff9500,        // Apple Orange
             Self::Network => 0x34c759,    // Apple Green
@@ -271,9 +268,6 @@ impl Icon {
             ),
             "icons/expand.svg" => Some(
                 br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/></svg>"##,
-            ),
-            "icons/vault.svg" => Some(
-                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>"##,
             ),
             "icons/keyboard.svg" => Some(
                 br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01"/><path d="M10 10h.01"/><path d="M14 10h.01"/><path d="M18 10h.01"/><path d="M8 14h8"/></svg>"##,

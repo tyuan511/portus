@@ -200,7 +200,7 @@ impl QuickConnectPalette {
 impl Render for QuickConnectPalette {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = &self.store.read(cx).current;
-        let colors: Colors = saved.theme.colors();
+        let colors: Colors = saved.theme.colors_for(saved.opacity);
         let language: Language = saved.language;
         let items = self.items(cx);
         let selected = self.selected.min(items.len().saturating_sub(1));
@@ -387,6 +387,7 @@ impl Render for QuickConnectPalette {
 
         div()
             .id("quick-connect-backdrop")
+            .occlude()
             .absolute()
             .inset_0()
             .bg(colors.overlay_backdrop())
@@ -396,6 +397,7 @@ impl Render for QuickConnectPalette {
             .pt(px(72.))
             .pb(px(32.))
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|_, _, _, cx| cx.emit(QuickConnectEvent::Close)))
             .child(
                 div()

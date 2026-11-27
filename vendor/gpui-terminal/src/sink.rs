@@ -1,6 +1,7 @@
 //! The transport's side of a terminal: where its output and its exit go.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 
@@ -22,13 +23,17 @@ pub struct TerminalSink {
 }
 
 struct Shared {
-    grid:      Arc<Mutex<Grid>>,
-    on_output: Option<OutputHook>,
-    on_exit:   Option<ExitHook>,
-    exit:      Mutex<Option<ExitReport>>,
+    grid:             Arc<Mutex<Grid>>,
+    on_output:        Option<OutputHook>,
+    on_exit:          Option<ExitHook>,
+    exit:             Mutex<Option<ExitReport>>,
+    /// Ensures we wake the view at most once while DECSET 2026 sync output is
+    /// open (so the view can arm its safety fallback timer without repainting
+    /// partial frames on every intermediate chunk).
+    sync_wake_armed:  AtomicBool,
     /// Bounded to one: a wake already queued covers every report after it,
     /// since the pump drains everything each time it runs.
-    wake:      async_channel::Sender<()>,
+    wake:             async_channel::Sender<()>,
 }
 
 impl TerminalSink {
@@ -39,6 +44,7 @@ impl TerminalSink {
                                          on_output,
                                          on_exit,
                                          exit: Mutex::new(None),
+                                         sync_wake_armed: AtomicBool::new(false),
                                          wake }), }
     }
 
@@ -50,8 +56,20 @@ impl TerminalSink {
         if let Some(on_output) = &self.shared.on_output {
             on_output(bytes);
         }
-        self.shared.grid.lock().feed(bytes);
-        self.wake();
+        let in_sync = {
+            let mut grid = self.shared.grid.lock();
+            grid.feed(bytes);
+            grid.sync_update_active()
+        };
+        if in_sync {
+            if !self.shared.sync_wake_armed.swap(true, Ordering::AcqRel) {
+                self.wake();
+            }
+        }
+        else {
+            self.shared.sync_wake_armed.store(false, Ordering::Release);
+            self.wake();
+        }
     }
 
     /// Reports that the far end ended. Only the first report counts.

@@ -210,3 +210,49 @@ fn the_alternate_screen_has_no_scrollback_to_scroll() {
     assert!(!grid.scroll_display(5));
     assert_eq!(grid.row_text(0), "full screen");
 }
+
+#[test]
+fn custom_scrollback_limit_and_live_update() {
+    let mut grid = Grid::with_scrollback(GridSize { columns: 20,
+                                                    rows:    5, },
+                                         20);
+    for i in 0..60 {
+        grid.feed(format!("line {i}\r\n").as_bytes());
+    }
+    grid.scroll_display(1_000);
+    assert_eq!(grid.display_offset(), 20);
+
+    // Shrinking the scrollback limit trims existing history and clamps offset.
+    grid.set_scrollback(8);
+    assert_eq!(grid.display_offset(), 8);
+    assert!(!grid.scroll_display(5));
+
+    // Growing the limit allows subsequent output to retain more scrollback.
+    grid.scroll_to_bottom();
+    grid.set_scrollback(40);
+    for i in 60..120 {
+        grid.feed(format!("line {i}\r\n").as_bytes());
+    }
+    grid.scroll_display(1_000);
+    assert_eq!(grid.display_offset(), 40);
+}
+
+#[test]
+fn hidden_cursor_is_not_reported_in_view() {
+    let mut grid = grid(20, 5);
+    assert_eq!(grid.cursor_in_view(), Some((0, 0)));
+    grid.feed(b"\x1b[?25l");
+    assert_eq!(grid.cursor_in_view(), None);
+    grid.feed(b"\x1b[?25h");
+    assert_eq!(grid.cursor_in_view(), Some((0, 0)));
+}
+
+#[test]
+fn word_and_line_selection_capture_expected_text() {
+    let mut grid = grid(20, 5);
+    grid.feed(b"hello world");
+    grid.start_word_selection(7, 0);
+    assert_eq!(grid.selection_text().as_deref(), Some("world"));
+    grid.start_line_selection(2, 0);
+    assert_eq!(grid.selection_text().as_deref(), Some("hello world\n"));
+}

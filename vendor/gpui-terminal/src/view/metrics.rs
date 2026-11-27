@@ -23,8 +23,15 @@ impl CellMetrics {
         let font_id = text_system.resolve_font(&font(style.font_family.clone()));
         let width = text_system.em_advance(font_id, style.font_size)
                                .map_or(FALLBACK_CELL_WIDTH, f32::from);
-        let height = line_height(f32::from(text_system.ascent(font_id, style.font_size)),
-                                 f32::from(text_system.descent(font_id, style.font_size)));
+        let base_height = line_height(f32::from(text_system.ascent(font_id, style.font_size)),
+                                      f32::from(text_system.descent(font_id, style.font_size)));
+        let height = match style.line_height {
+            Some(factor) if factor.is_finite() && factor > 0. => {
+                (f32::from(style.font_size) * factor).ceil()
+                                                     .max(base_height)
+            }
+            _ => base_height,
+        };
         Self { width: width.max(1.),
                height }
     }

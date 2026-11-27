@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 
 use gpui_kit::{
@@ -13,7 +15,9 @@ use gpui_kit::{
     },
     div, px, rgb, rgba, transparent_black,
 };
+use gpui_terminal::TerminalProgress;
 
+use crate::agent_bus::{AgentBus, AgentControlCommand, AgentSessionSnapshot};
 use crate::file_drawer::{FileDrawer, FileDrawerEvent};
 use crate::icons::Icon;
 use crate::mcp::{McpRuntime, McpUiEvent};
@@ -23,16 +27,20 @@ use crate::preferences::{
     TunnelsPage,
 };
 use crate::quick_connect::{QuickConnectEvent, QuickConnectPalette};
-use crate::settings::{HostProfile, HostProtocol, Language, SettingsStore, Snippet};
+use crate::settings::{
+    HostProfile, HostProtocol, Language, SavedHostRef, SavedPane, SavedSession, SavedTab,
+    SettingsStore, Snippet,
+};
 use crate::sftp_view::{SftpView, SftpViewEvent};
 use crate::ssh::{ServerTelemetry, supports_sftp};
-use crate::terminal::TerminalSession;
+use crate::terminal::{AgentActivity, TerminalConfig, TerminalSession, TerminalSessionEvent};
 use crate::theme::{Colors, Theme};
 use crate::updater::{CURRENT_VERSION, UpdateManager, UpdateStatus, UpdateUiEvent};
 use crate::{
-    CheckForUpdates, CloseTab, CloseWindow, FindInTerminal, MinimizeWindow, NewTab, NextTab,
-    PreviousTab, SelectTab, ShowHosts, ShowSettings, ShowSnippets, ShowTunnels, ShowVault,
-    SplitPane, ToggleFilesDrawer, ToggleFullscreen, ToggleQuickConnect, ToggleSnippetsDrawer,
+    CheckForUpdates, CloseTab, CloseWindow, FindInTerminal, JumpNextAttention, JumpNextPrompt,
+    JumpPrevPrompt, MinimizeWindow, NewGitWorktree, NewTab, NextTab, PreviousTab, SelectTab,
+    ShowHosts, ShowSettings, ShowSnippets, ShowTunnels, ShowVault, SplitPane, ToggleFilesDrawer,
+    ToggleFullscreen, ToggleQuickConnect, ToggleSnippetsDrawer,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -79,6 +87,7 @@ struct DockerLogsState {
 struct TerminalPane {
     terminal: Entity<TerminalSession>,
     _updates: Subscription,
+    _events: Subscription,
 }
 
 enum TabKind {
@@ -109,16 +118,21 @@ pub struct Workspace {
     next_tab: u64,
     tab_scroll: ScrollHandle,
     settings: Entity<SettingsStore>,
-    hosts: Entity<HostsPage>,
-    keychain: Entity<KeychainPage>,
-    snippets: Entity<SnippetsPage>,
-    tunnels: Entity<TunnelsPage>,
+    hosts: Option<Entity<HostsPage>>,
+    keychain: Option<Entity<KeychainPage>>,
+    snippets: Option<Entity<SnippetsPage>>,
+    tunnels: Option<Entity<TunnelsPage>>,
     mcp_runtime: Arc<McpRuntime>,
+    agent_bus: Arc<AgentBus>,
     updater: Arc<UpdateManager>,
-    preferences: Entity<Preferences>,
-    quick_connect: Entity<QuickConnectPalette>,
-    file_drawer: Entity<FileDrawer>,
+    preferences: Option<Entity<Preferences>>,
+    quick_connect: Option<Entity<QuickConnectPalette>>,
+    file_drawer: Option<Entity<FileDrawer>>,
     quick_connect_open: bool,
+    worktree_modal_open: bool,
+    worktree_branch_input: Option<Entity<InputState>>,
+    worktree_repo_root: Option<PathBuf>,
+    _worktree_sub: Option<Subscription>,
     new_tab_menu_open: bool,
     new_tab_menu_pos: Option<Point<Pixels>>,
     right_drawer: Option<RightDrawer>,
@@ -127,16 +141,15 @@ pub struct Workspace {
     telemetry_open: bool,
     theme: Theme,
     font_family: String,
-    font_size: u8,
     language: Language,
     opacity: u8,
-    vibrancy: bool,
+    terminal_config: TerminalConfig,
     _settings_updates: Subscription,
-    _hosts_events: Subscription,
-    _snippets_events: Subscription,
-    _preferences_events: Subscription,
-    _quick_connect_events: Subscription,
-    _file_drawer_events: Subscription,
+    _hosts_events: Option<Subscription>,
+    _snippets_events: Option<Subscription>,
+    _preferences_events: Option<Subscription>,
+    _quick_connect_events: Option<Subscription>,
+    _file_drawer_events: Option<Subscription>,
     _window_bounds: Subscription,
 }
 
@@ -147,16 +160,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let saved = &settings.read(cx).current;
-        let (theme, font_family, font_size, language, opacity, vibrancy) = (
+        let terminal_config = TerminalConfig::from_settings(saved);
+        let (theme, font_family, language, opacity) = (
             saved.theme,
             saved.font_family.clone(),
-            saved.font_size,
             saved.language,
             saved.opacity,
-            saved.vibrancy,
         );
-        window.defer(cx, move |window, _| {
-            apply_window_style(window, opacity, vibrancy)
+        let dark = theme.colors().dark;
+        window.defer(cx, move |window, cx| {
+            apply_window_style(window, opacity, dark, cx)
         });
         let window_bounds = cx.observe_window_bounds(window, |_this, window, _| {
             hide_traffic_lights(window);
@@ -164,25 +177,20 @@ impl Workspace {
         let settings_updates = cx.observe_in(&settings, window, |this, settings, window, cx| {
             let saved = settings.read(cx).current.clone();
             this.mcp_runtime.sync_settings(saved.clone());
-            let (theme, font_family, font_size, language, opacity, vibrancy) = (
+            let next_terminal_config = TerminalConfig::from_settings(&saved);
+            let (theme, font_family, language, opacity) = (
                 saved.theme,
                 saved.font_family.clone(),
-                saved.font_size,
                 saved.language,
                 saved.opacity,
-                saved.vibrancy,
             );
-            if this.theme != theme
-                || this.language != language
-                || this.font_family != font_family
-                || this.font_size != font_size
-            {
-                this.theme = theme;
-                this.font_family = font_family.clone();
-                this.font_size = font_size;
-                this.language = language;
-                let palette = theme.palette();
-                let colors = theme.colors();
+            let prev_dark = this.theme.colors().dark;
+            let next_dark = theme.colors().dark;
+            this.theme = theme;
+            this.font_family = font_family;
+            this.language = language;
+            if this.terminal_config != next_terminal_config {
+                this.terminal_config = next_terminal_config.clone();
                 let terminals: Vec<_> = this
                     .tabs
                     .iter()
@@ -194,38 +202,36 @@ impl Workspace {
                     })
                     .collect();
                 for terminal in terminals {
-                    let ff = font_family.clone();
+                    let cfg = next_terminal_config.clone();
                     terminal.update(cx, |terminal, cx| {
-                        terminal.set_appearance(colors, palette, ff, font_size, language, cx);
+                        terminal.set_config(cfg, cx);
                     });
                 }
             }
-            if this.opacity != opacity || this.vibrancy != vibrancy {
+            if this.opacity != opacity || prev_dark != next_dark {
                 this.opacity = opacity;
-                this.vibrancy = vibrancy;
-                apply_window_style(window, opacity, vibrancy);
+                apply_window_style(window, opacity, next_dark, cx);
             }
             this.sync_file_drawer(window, cx);
             cx.notify();
         });
 
-        let hosts = cx.new(|cx| HostsPage::new(settings.clone(), window, cx));
-        let hosts_events = cx.subscribe_in(&hosts, window, |this, _, event, window, cx| {
-            match event {
-                HostsEvent::Connect(host) => this.connect_host(host.clone(), window, cx),
-                HostsEvent::OpenSftp(host) => this.open_sftp(host.clone(), window, cx),
-            }
-        });
-        let keychain = cx.new(|cx| KeychainPage::new(settings.clone(), window, cx));
-        let snippets = cx.new(|cx| SnippetsPage::new(settings.clone(), window, cx));
-        let snippets_events = cx.subscribe_in(&snippets, window, |this, _, event, window, cx| {
-            match event {
-                SnippetsEvent::Run(snippet) => this.run_snippet(snippet, window, cx),
-            }
-        });
-        let tunnels = cx.new(|cx| TunnelsPage::new(settings.clone(), window, cx));
+        let (agent_cmd_tx, agent_cmd_rx) = async_channel::unbounded::<AgentControlCommand>();
+        let agent_bus = AgentBus::start(agent_cmd_tx);
         let (mcp_tx, mcp_rx) = async_channel::unbounded::<McpUiEvent>();
         let mcp_runtime = McpRuntime::new(settings.read(cx).current.clone(), Some(mcp_tx));
+        mcp_runtime.attach_agent_bus(Arc::clone(&agent_bus));
+
+        cx.spawn_in(window, async move |ws, cx| {
+            while let Ok(cmd) = agent_cmd_rx.recv().await {
+                let _ = cx.update(|window, cx| {
+                    let _ = ws.update(cx, |this, cx| {
+                        this.handle_agent_command(cmd, window, cx);
+                    });
+                });
+            }
+        })
+        .detach();
         cx.spawn_in(window, async move |ws, cx| {
             while let Ok(ev) = mcp_rx.recv().await {
                 let _ = cx.update(|window, cx| {
@@ -247,7 +253,9 @@ impl Workspace {
                                 crate::notify::error(err, window, cx);
                             }
                         }
-                        this.preferences.update(cx, |p, cx| p.notify_mcp(cx));
+                        if let Some(preferences) = &this.preferences {
+                            preferences.update(cx, |p, cx| p.notify_mcp(cx));
+                        }
                         cx.notify();
                     });
                 });
@@ -358,7 +366,9 @@ impl Workspace {
                                 crate::notify::error(message, window, cx);
                             }
                         }
-                        this.preferences.update(cx, |p, cx| p.notify_updater(cx));
+                        if let Some(preferences) = &this.preferences {
+                            preferences.update(cx, |p, cx| p.notify_updater(cx));
+                        }
                         cx.notify();
                     });
                 });
@@ -368,73 +378,17 @@ impl Workspace {
 
         if auto_check_updates {
             let updater_bg = Arc::clone(&updater);
+            let delay = cx
+                .background_executor()
+                .timer(std::time::Duration::from_secs(3));
             cx.background_spawn(async move {
-                std::thread::sleep(std::time::Duration::from_secs(3));
+                delay.await;
                 updater_bg.check_for_updates(true);
             })
             .detach();
         }
 
-        let preferences = cx.new(|cx| {
-            Preferences::new(
-                settings.clone(),
-                Arc::clone(&mcp_runtime),
-                Arc::clone(&updater),
-                window,
-                cx,
-            )
-        });
-        let preferences_events =
-            cx.subscribe_in(&preferences, window, |this, _, event, window, cx| {
-                match event {
-                    PreferencesEvent::RestartToUpdate => {
-                        this.install_update_and_quit(window, cx);
-                    }
-                }
-            });
-        let quick_connect = cx.new(|cx| QuickConnectPalette::new(settings.clone(), window, cx));
-        let file_drawer = cx.new(|cx| FileDrawer::new(settings.clone(), window, cx));
-        let file_drawer_events =
-            cx.subscribe_in(&file_drawer, window, |this, _, event, window, cx| {
-                match event {
-                    FileDrawerEvent::InsertPath(path) => {
-                        if let Some(terminal) = this.active_terminal() {
-                            let escaped = shell_words::quote(&path).into_owned();
-                            let bytes = format!("{escaped} ").into_bytes();
-                            terminal.update(cx, |session, cx| {
-                                session.send_bytes(&bytes, cx);
-                                session.focus_handle().focus(window, cx);
-                            });
-                        }
-                    }
-                    FileDrawerEvent::OpenFullSftp(host) => {
-                        this.open_sftp(host.clone(), window, cx);
-                    }
-                    FileDrawerEvent::Close => {
-                        this.right_drawer = None;
-                        cx.notify();
-                    }
-                }
-            });
-        let quick_connect_events =
-            cx.subscribe_in(&quick_connect, window, |this, _, event, window, cx| {
-                this.quick_connect_open = false;
-                match event {
-                    QuickConnectEvent::ConnectHost(host) => {
-                        this.connect_host(host.clone(), window, cx);
-                    }
-                    QuickConnectEvent::RunSnippet(snippet) => {
-                        this.run_snippet(snippet, window, cx);
-                    }
-                    QuickConnectEvent::NewLocalTab => this.new_tab(window, cx),
-                    QuickConnectEvent::OpenHosts => this.open_hosts(None, window, cx),
-                    QuickConnectEvent::OpenSettings => this.open_settings(window, cx),
-                    QuickConnectEvent::Close => this.restore_active_focus(window, cx),
-                }
-                cx.notify();
-            });
-
-        let this = Self {
+        let mut this = Self {
             focus: cx.focus_handle(),
             in_vault: true,
             vault_section: VaultSection::Hosts,
@@ -444,16 +398,21 @@ impl Workspace {
             next_tab: 1,
             tab_scroll: ScrollHandle::new(),
             settings,
-            hosts,
-            keychain,
-            snippets,
-            tunnels,
+            hosts: None,
+            keychain: None,
+            snippets: None,
+            tunnels: None,
             mcp_runtime,
+            agent_bus,
             updater,
-            preferences,
-            quick_connect,
-            file_drawer,
+            preferences: None,
+            quick_connect: None,
+            file_drawer: None,
             quick_connect_open: false,
+            worktree_modal_open: false,
+            worktree_branch_input: None,
+            worktree_repo_root: None,
+            _worktree_sub: None,
             new_tab_menu_open: false,
             new_tab_menu_pos: None,
             right_drawer: None,
@@ -462,19 +421,168 @@ impl Workspace {
             telemetry_open: false,
             theme,
             font_family,
-            font_size,
             language,
             opacity,
-            vibrancy,
+            terminal_config,
             _settings_updates: settings_updates,
-            _hosts_events: hosts_events,
-            _snippets_events: snippets_events,
-            _preferences_events: preferences_events,
-            _quick_connect_events: quick_connect_events,
-            _file_drawer_events: file_drawer_events,
+            _hosts_events: None,
+            _snippets_events: None,
+            _preferences_events: None,
+            _quick_connect_events: None,
+            _file_drawer_events: None,
             _window_bounds: window_bounds,
         };
+        this.restore_session(window, cx);
+        this.sync_agent_bus(cx);
         this
+    }
+
+    fn snapshot_session(&self, cx: &Context<Self>) -> SavedSession {
+        let tabs = self
+            .tabs
+            .iter()
+            .filter_map(|tab| match &tab.kind {
+                TabKind::Terminal { panes, active_pane } => {
+                    let saved_panes: Vec<SavedPane> = panes
+                        .iter()
+                        .map(|pane| match pane.terminal.read(cx).host_profile() {
+                            Some(host) => SavedPane::Host {
+                                host: SavedHostRef::from_host(host),
+                            },
+                            None => SavedPane::Local,
+                        })
+                        .collect();
+                    if saved_panes.is_empty() {
+                        None
+                    } else {
+                        Some(SavedTab::Terminal {
+                            panes: saved_panes,
+                            active_pane: *active_pane,
+                        })
+                    }
+                }
+                TabKind::Sftp { view, .. } => Some(SavedTab::Sftp {
+                    host: SavedHostRef::from_host(view.read(cx).host_profile()),
+                }),
+            })
+            .collect();
+        SavedSession {
+            tabs,
+            active: self.active,
+            in_vault: self.in_vault,
+        }
+    }
+
+    fn save_session(&self, cx: &Context<Self>) {
+        let Some(dir) = self.settings.read(cx).config_dir().map(std::path::Path::to_path_buf)
+        else {
+            return;
+        };
+        let session = self.snapshot_session(cx);
+        let _ = session.save_to_dir(&dir);
+    }
+
+    fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dir) = self.settings.read(cx).config_dir().map(std::path::Path::to_path_buf)
+        else {
+            return;
+        };
+        let Some(saved) = SavedSession::load_from_dir(&dir) else {
+            return;
+        };
+        if saved.tabs.is_empty() {
+            return;
+        }
+
+        let settings_snapshot = self.settings.read(cx).current.clone();
+        let all_hosts: Vec<HostProfile> = settings_snapshot
+            .hosts
+            .iter()
+            .map(|h| settings_snapshot.resolve_host_auth(h))
+            .collect();
+        let terminal_config = self.terminal_config.clone();
+
+        for tab in saved.tabs {
+            match tab {
+                SavedTab::Terminal { panes, active_pane } => {
+                    let mut restored_panes = Vec::new();
+                    for pane in panes {
+                        let terminal = match pane {
+                            SavedPane::Local => {
+                                let cfg = terminal_config.clone();
+                                let shell = settings_snapshot.shell.clone();
+                                cx.new(|cx| TerminalSession::local(cfg, &shell, cx))
+                            }
+                            SavedPane::Host { host } => {
+                                let Some(host_profile) = host.resolve(&settings_snapshot.hosts)
+                                else {
+                                    continue;
+                                };
+                                let resolved = settings_snapshot.resolve_host_auth(&host_profile);
+                                let cfg = terminal_config.clone();
+                                let hosts_for_term = all_hosts.clone();
+                                cx.new(|cx| {
+                                    TerminalSession::ssh(cfg, resolved, hosts_for_term, window, cx)
+                                })
+                            }
+                        };
+                        let pane_entry = self.make_pane(terminal, window, cx);
+                        restored_panes.push(pane_entry);
+                    }
+                    if !restored_panes.is_empty() {
+                        let id = self.alloc_tab_id();
+                        let active_pane = active_pane.min(restored_panes.len() - 1);
+                        self.tabs.push(Tab {
+                            id,
+                            kind: TabKind::Terminal {
+                                panes: restored_panes,
+                                active_pane,
+                            },
+                        });
+                    }
+                }
+                SavedTab::Sftp { host } => {
+                    let Some(host_profile) = host.resolve(&settings_snapshot.hosts) else {
+                        continue;
+                    };
+                    if !supports_sftp(&host_profile, &settings_snapshot.hosts) {
+                        continue;
+                    }
+                    let resolved = settings_snapshot.resolve_host_auth(&host_profile);
+                    let host_name = resolved.name.clone();
+                    let view =
+                        cx.new(|cx| SftpView::new(self.settings.clone(), resolved, window, cx));
+                    let updates = cx.observe(&view, |_, _, cx| cx.notify());
+                    let events = cx.subscribe_in(&view, window, |this, _, event, window, cx| {
+                        match event {
+                            SftpViewEvent::ReturnToTerminal(host) => {
+                                this.return_to_terminal(host.clone(), window, cx);
+                            }
+                        }
+                    });
+                    let id = self.alloc_tab_id();
+                    self.tabs.push(Tab {
+                        id,
+                        kind: TabKind::Sftp {
+                            view,
+                            host_name,
+                            _updates: updates,
+                            _events: events,
+                        },
+                    });
+                }
+            }
+        }
+
+        if !self.tabs.is_empty() {
+            self.active = saved.active.min(self.tabs.len() - 1);
+            self.in_vault = saved.in_vault;
+            if !self.in_vault {
+                self.restore_active_focus(window, cx);
+                self.sync_file_drawer(window, cx);
+            }
+        }
+        self.save_session(cx);
     }
 
     fn alloc_tab_id(&mut self) -> u64 {
@@ -492,25 +600,224 @@ impl Workspace {
         }
     }
 
-    fn spawn_local_tab(&mut self, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let colors = self.theme.colors();
-        let palette = self.theme.palette();
-        let font_family = self.font_family.clone();
-        let font_size = self.font_size;
-        let language = self.language;
-        let shell = self.settings.read(cx).current.shell.clone();
-        let terminal = cx.new(|cx| {
-            TerminalSession::local(colors, palette, font_family, font_size, language, &shell, cx)
-        });
+    fn make_pane(
+        &self,
+        terminal: Entity<TerminalSession>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> TerminalPane {
         let updates = cx.observe(&terminal, |_, _, cx| cx.notify());
+        let events = cx.subscribe_in(&terminal, window, |this, term, event, window, cx| {
+            match event {
+                TerminalSessionEvent::Notification { title, body } => {
+                    this.on_terminal_notification(term, title.clone(), body.clone(), window, cx);
+                }
+                TerminalSessionEvent::CwdChanged => {
+                    if this.active_terminal().is_some_and(|a| a == *term) {
+                        this.sync_file_drawer(window, cx);
+                    }
+                    this.sync_agent_bus(cx);
+                }
+                TerminalSessionEvent::StateChanged => {
+                    this.sync_agent_bus(cx);
+                    cx.notify();
+                }
+                TerminalSessionEvent::OpenPath(path) => {
+                    this.right_drawer = Some(RightDrawer::Files);
+                    this.sync_file_drawer(window, cx);
+                    let path_owned = path.clone();
+                    this.ensure_file_drawer(window, cx)
+                        .update(cx, |drawer, cx| drawer.focus_path(&path_owned, cx));
+                    cx.notify();
+                }
+                TerminalSessionEvent::ToastInfo(msg) => {
+                    crate::notify::info(msg.clone(), window, cx);
+                }
+                TerminalSessionEvent::ToastError(msg) => {
+                    crate::notify::error(msg.clone(), window, cx);
+                }
+            }
+        });
+        TerminalPane {
+            terminal,
+            _updates: updates,
+            _events: events,
+        }
+    }
+
+    fn on_terminal_notification(
+        &mut self,
+        term: &Entity<TerminalSession>,
+        title: Option<String>,
+        body: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let is_focused = !self.in_vault
+            && self.active_terminal().is_some_and(|active| active == *term)
+            && crate::platform::is_app_active();
+        let display_title = title
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| term.read(cx).title().to_owned());
+        term.update(cx, |t, cx| {
+            t.apply_agent_notification(title, body.clone(), !is_focused, cx);
+        });
+        if !crate::platform::is_app_active() {
+            crate::platform::send_os_notification(&display_title, &body);
+        }
+        self.sync_agent_bus(cx);
+        cx.notify();
+    }
+
+    fn sync_agent_bus(&self, cx: &Context<Self>) {
+        let mut snapshots: Vec<AgentSessionSnapshot> = Vec::new();
+        for tab in &self.tabs {
+            if let TabKind::Terminal { panes, .. } = &tab.kind {
+                for pane in panes {
+                    snapshots.push(pane.terminal.read(cx).snapshot());
+                }
+            }
+        }
+        self.agent_bus.update_sessions(snapshots);
+    }
+
+    fn find_terminal_by_session_id(
+        &self,
+        session_id: Option<&str>,
+        cx: &Context<Self>,
+    ) -> Option<Entity<TerminalSession>> {
+        if let Some(id) = session_id {
+            for tab in &self.tabs {
+                if let TabKind::Terminal { panes, .. } = &tab.kind {
+                    for pane in panes {
+                        if pane.terminal.read(cx).session_id() == id {
+                            return Some(pane.terminal.clone());
+                        }
+                    }
+                }
+            }
+        }
+        self.active_terminal()
+    }
+
+    fn handle_agent_command(
+        &mut self,
+        cmd: AgentControlCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match cmd {
+            AgentControlCommand::Notify {
+                session_id,
+                title,
+                body,
+            } => {
+                if let Some(term) = self.find_terminal_by_session_id(session_id.as_deref(), cx) {
+                    self.on_terminal_notification(&term, title, body, window, cx);
+                } else {
+                    crate::platform::send_os_notification(
+                        title.as_deref().unwrap_or("Portus"),
+                        &body,
+                    );
+                }
+            }
+            AgentControlCommand::SetStatus {
+                session_id,
+                state,
+                message,
+                progress,
+            } => {
+                if let Some(term) = self.find_terminal_by_session_id(session_id.as_deref(), cx) {
+                    term.update(cx, |t, cx| {
+                        t.apply_agent_status(&state, message, progress, cx);
+                    });
+                    self.sync_agent_bus(cx);
+                    cx.notify();
+                }
+            }
+            AgentControlCommand::SplitPane { cwd } => {
+                self.open_split_pane_with_cwd(cwd.map(PathBuf::from), window, cx);
+            }
+            AgentControlCommand::OpenFile { path } => {
+                self.right_drawer = Some(RightDrawer::Files);
+                self.sync_file_drawer(window, cx);
+                self.ensure_file_drawer(window, cx)
+                    .update(cx, |drawer, cx| drawer.focus_path(&path, cx));
+                cx.notify();
+            }
+        }
+    }
+
+    fn unread_attention_count(&self, cx: &Context<Self>) -> usize {
+        self.tabs
+            .iter()
+            .map(|tab| match &tab.kind {
+                TabKind::Terminal { panes, .. } => panes
+                    .iter()
+                    .filter(|p| p.terminal.read(cx).unread_attention())
+                    .count(),
+                TabKind::Sftp { .. } => 0,
+            })
+            .sum()
+    }
+
+    fn jump_next_attention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let total = self.tabs.len();
+        let start = if self.in_vault { 0 } else { self.active };
+        for offset in 0..total {
+            let idx = (start + offset) % total;
+            if let TabKind::Terminal { panes, .. } = &self.tabs[idx].kind
+                && let Some(pidx) = panes
+                    .iter()
+                    .position(|p| p.terminal.read(cx).unread_attention())
+            {
+                self.active = idx;
+                self.in_vault = false;
+                self.telemetry_open = false;
+                let term = if let TabKind::Terminal { panes, active_pane } =
+                    &mut self.tabs[idx].kind
+                {
+                    *active_pane = pidx;
+                    panes.get(pidx).map(|p| p.terminal.clone())
+                } else {
+                    None
+                };
+                if let Some(term) = term {
+                    term.update(cx, |t, cx| {
+                        t.clear_attention(cx);
+                        t.focus_handle().focus(window, cx);
+                    });
+                }
+                self.sync_telemetry_active(cx);
+                self.sync_file_drawer(window, cx);
+                self.sync_agent_bus(cx);
+                self.save_session(cx);
+                cx.notify();
+                return;
+            }
+        }
+    }
+
+    fn spawn_local_tab_in_cwd(
+        &mut self,
+        cwd: Option<PathBuf>,
+        activate: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let cfg = self.terminal_config.clone();
+        let shell = self.settings.read(cx).current.shell.clone();
+        let terminal = cx.new(|cx| TerminalSession::local_with_cwd(cfg, &shell, cwd, cx));
+        let pane = self.make_pane(terminal.clone(), window, cx);
         let id = self.alloc_tab_id();
         self.tabs.push(Tab {
             id,
             kind: TabKind::Terminal {
-                panes: vec![TerminalPane {
-                    terminal: terminal.clone(),
-                    _updates: updates,
-                }],
+                panes: vec![pane],
                 active_pane: 0,
             },
         });
@@ -521,7 +828,13 @@ impl Workspace {
             terminal.read(cx).focus_handle().focus(window, cx);
             self.sync_file_drawer(window, cx);
         }
+        self.sync_agent_bus(cx);
+        self.save_session(cx);
         cx.notify();
+    }
+
+    fn spawn_local_tab(&mut self, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.spawn_local_tab_in_cwd(None, activate, window, cx);
     }
 
     fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -553,33 +866,14 @@ impl Workspace {
                 cx.notify();
             });
         }
-        let colors = self.theme.colors();
-        let palette = self.theme.palette();
-        let font_family = self.font_family.clone();
-        let font_size = self.font_size;
-        let language = self.language;
-        let terminal = cx.new(|cx| {
-            TerminalSession::ssh(
-                colors,
-                palette,
-                font_family,
-                font_size,
-                language,
-                resolved,
-                all_hosts,
-                window,
-                cx,
-            )
-        });
-        let updates = cx.observe(&terminal, |_, _, cx| cx.notify());
+        let cfg = self.terminal_config.clone();
+        let terminal = cx.new(|cx| TerminalSession::ssh(cfg, resolved, all_hosts, window, cx));
+        let pane = self.make_pane(terminal.clone(), window, cx);
         let id = self.alloc_tab_id();
         self.tabs.push(Tab {
             id,
             kind: TabKind::Terminal {
-                panes: vec![TerminalPane {
-                    terminal: terminal.clone(),
-                    _updates: updates,
-                }],
+                panes: vec![pane],
                 active_pane: 0,
             },
         });
@@ -588,6 +882,66 @@ impl Workspace {
         self.telemetry_open = false;
         terminal.read(cx).focus_handle().focus(window, cx);
         self.sync_file_drawer(window, cx);
+        self.sync_agent_bus(cx);
+        self.save_session(cx);
+        cx.notify();
+    }
+
+    fn open_split_pane_with_cwd(
+        &mut self,
+        preferred_cwd: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.in_vault {
+            return;
+        }
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let TabKind::Terminal { panes, .. } = &tab.kind else {
+            return;
+        };
+        if panes.len() >= 2 {
+            return;
+        }
+        let (host_opt, inherited_cwd) = panes
+            .first()
+            .map(|p| {
+                let t = p.terminal.read(cx);
+                (t.host_profile().cloned(), t.cwd().map(PathBuf::from))
+            })
+            .unwrap_or((None, None));
+        let cfg = self.terminal_config.clone();
+
+        let new_term = if let Some(host) = host_opt {
+            let resolved = self.settings.read(cx).current.resolve_host_auth(&host);
+            let all_hosts: Vec<HostProfile> = self
+                .settings
+                .read(cx)
+                .current
+                .hosts
+                .iter()
+                .map(|h| self.settings.read(cx).current.resolve_host_auth(h))
+                .collect();
+            cx.new(|cx| TerminalSession::ssh(cfg, resolved, all_hosts, window, cx))
+        } else {
+            let shell = self.settings.read(cx).current.shell.clone();
+            let cwd = preferred_cwd.or(inherited_cwd);
+            cx.new(|cx| TerminalSession::local_with_cwd(cfg, &shell, cwd, cx))
+        };
+        let pane = self.make_pane(new_term.clone(), window, cx);
+        if let Some(Tab {
+            kind: TabKind::Terminal { panes, active_pane },
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            panes.push(pane);
+            *active_pane = panes.len() - 1;
+        }
+        new_term.read(cx).focus_handle().focus(window, cx);
+        self.sync_agent_bus(cx);
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -610,70 +964,12 @@ impl Workspace {
             if let Some(first) = panes.first() {
                 first.terminal.read(cx).focus_handle().focus(window, cx);
             }
+            self.sync_agent_bus(cx);
+            self.save_session(cx);
             cx.notify();
             return;
         }
-
-        let host_opt = panes
-            .first()
-            .and_then(|p| p.terminal.read(cx).host_profile().cloned());
-        let colors = self.theme.colors();
-        let palette = self.theme.palette();
-        let font_family = self.font_family.clone();
-        let font_size = self.font_size;
-        let language = self.language;
-
-        let new_term = if let Some(host) = host_opt {
-            let resolved = self.settings.read(cx).current.resolve_host_auth(&host);
-            let all_hosts: Vec<HostProfile> = self
-                .settings
-                .read(cx)
-                .current
-                .hosts
-                .iter()
-                .map(|h| self.settings.read(cx).current.resolve_host_auth(h))
-                .collect();
-            cx.new(|cx| {
-                TerminalSession::ssh(
-                    colors,
-                    palette,
-                    font_family,
-                    font_size,
-                    language,
-                    resolved,
-                    all_hosts,
-                    window,
-                    cx,
-                )
-            })
-        } else {
-            let shell = self.settings.read(cx).current.shell.clone();
-            cx.new(|cx| {
-                TerminalSession::local(
-                    colors,
-                    palette,
-                    font_family,
-                    font_size,
-                    language,
-                    &shell,
-                    cx,
-                )
-            })
-        };
-        let updates = cx.observe(&new_term, |_, _, cx| cx.notify());
-        if let Some(Tab {
-            kind: TabKind::Terminal { panes, active_pane },
-            ..
-        }) = self.tabs.get_mut(self.active)
-        {
-            panes.push(TerminalPane {
-                terminal: new_term.clone(),
-                _updates: updates,
-            });
-            *active_pane = panes.len() - 1;
-        }
-        new_term.read(cx).focus_handle().focus(window, cx);
-        cx.notify();
+        self.open_split_pane_with_cwd(None, window, cx);
     }
 
     fn open_sftp(&mut self, host: HostProfile, window: &mut Window, cx: &mut Context<Self>) {
@@ -711,6 +1007,7 @@ impl Workspace {
         self.active = self.tabs.len() - 1;
         self.in_vault = false;
         self.telemetry_open = false;
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -733,6 +1030,7 @@ impl Workspace {
             self.in_vault = false;
             self.restore_active_focus(window, cx);
             self.sync_file_drawer(window, cx);
+            self.save_session(cx);
             cx.notify();
         } else {
             self.connect_host(host, window, cx);
@@ -762,10 +1060,23 @@ impl Workspace {
         cx.notify();
     }
 
+    fn sync_telemetry_active(&self, cx: &Context<Self>) {
+        for (idx, tab) in self.tabs.iter().enumerate() {
+            if let TabKind::Terminal { panes, .. } = &tab.kind {
+                let active = !self.in_vault && idx == self.active;
+                for pane in panes {
+                    pane.terminal.read(cx).set_telemetry_active(active);
+                }
+            }
+        }
+    }
+
     fn open_vault(&mut self, section: VaultSection, cx: &mut Context<Self>) {
         self.in_vault = true;
         self.vault_section = section;
         self.telemetry_open = false;
+        self.sync_telemetry_active(cx);
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -785,8 +1096,402 @@ impl Workspace {
         self.open_vault(VaultSection::Settings, cx);
     }
 
-    pub fn open_updates(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.preferences.update(cx, |p, cx| p.open_about_tab(cx));
+    fn ensure_hosts(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<HostsPage> {
+        if let Some(hosts) = &self.hosts {
+            return hosts.clone();
+        }
+        let hosts = cx.new(|cx| HostsPage::new(self.settings.clone(), window, cx));
+        let sub = cx.subscribe_in(&hosts, window, |this, _, event, window, cx| match event {
+            HostsEvent::Connect(host) => this.connect_host(host.clone(), window, cx),
+            HostsEvent::OpenSftp(host) => this.open_sftp(host.clone(), window, cx),
+        });
+        self.hosts = Some(hosts.clone());
+        self._hosts_events = Some(sub);
+        hosts
+    }
+
+    fn ensure_keychain(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<KeychainPage> {
+        if let Some(keychain) = &self.keychain {
+            return keychain.clone();
+        }
+        let keychain = cx.new(|cx| KeychainPage::new(self.settings.clone(), window, cx));
+        self.keychain = Some(keychain.clone());
+        keychain
+    }
+
+    fn ensure_snippets(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<SnippetsPage> {
+        if let Some(snippets) = &self.snippets {
+            return snippets.clone();
+        }
+        let snippets = cx.new(|cx| SnippetsPage::new(self.settings.clone(), window, cx));
+        let sub = cx.subscribe_in(&snippets, window, |this, _, event, window, cx| match event {
+            SnippetsEvent::Run(snippet) => this.run_snippet(snippet, window, cx),
+        });
+        self.snippets = Some(snippets.clone());
+        self._snippets_events = Some(sub);
+        snippets
+    }
+
+    fn ensure_tunnels(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TunnelsPage> {
+        if let Some(tunnels) = &self.tunnels {
+            return tunnels.clone();
+        }
+        let tunnels = cx.new(|cx| TunnelsPage::new(self.settings.clone(), window, cx));
+        self.tunnels = Some(tunnels.clone());
+        tunnels
+    }
+
+    fn ensure_preferences(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<Preferences> {
+        if let Some(preferences) = &self.preferences {
+            return preferences.clone();
+        }
+        let preferences = cx.new(|cx| {
+            Preferences::new(
+                self.settings.clone(),
+                Arc::clone(&self.mcp_runtime),
+                Arc::clone(&self.updater),
+                window,
+                cx,
+            )
+        });
+        let sub = cx.subscribe_in(&preferences, window, |this, _, event, window, cx| match event {
+            PreferencesEvent::RestartToUpdate => {
+                this.install_update_and_quit(window, cx);
+            }
+        });
+        self.preferences = Some(preferences.clone());
+        self._preferences_events = Some(sub);
+        preferences
+    }
+
+    fn ensure_quick_connect(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<QuickConnectPalette> {
+        if let Some(quick_connect) = &self.quick_connect {
+            return quick_connect.clone();
+        }
+        let quick_connect =
+            cx.new(|cx| QuickConnectPalette::new(self.settings.clone(), window, cx));
+        let sub = cx.subscribe_in(&quick_connect, window, |this, _, event, window, cx| {
+            this.quick_connect_open = false;
+            match event {
+                QuickConnectEvent::ConnectHost(host) => {
+                    this.connect_host(host.clone(), window, cx);
+                }
+                QuickConnectEvent::RunSnippet(snippet) => {
+                    this.run_snippet(snippet, window, cx);
+                }
+                QuickConnectEvent::NewLocalTab => this.new_tab(window, cx),
+                QuickConnectEvent::OpenHosts => this.open_hosts(None, window, cx),
+                QuickConnectEvent::OpenSettings => this.open_settings(window, cx),
+                QuickConnectEvent::Close => this.restore_active_focus(window, cx),
+            }
+            cx.notify();
+        });
+        self.quick_connect = Some(quick_connect.clone());
+        self._quick_connect_events = Some(sub);
+        quick_connect
+    }
+
+    fn open_worktree_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let base_dir = self
+            .active_terminal()
+            .and_then(|t| {
+                let term = t.read(cx);
+                if term.is_ssh() {
+                    None
+                } else {
+                    term.cwd().map(PathBuf::from)
+                }
+            })
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+
+        let repo_root = Command::new("git")
+            .arg("-C")
+            .arg(&base_dir)
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+
+        let Some(repo_root) = repo_root else {
+            crate::notify::warning(
+                self.language.text(
+                    "Current terminal directory is not inside a Git repository.",
+                    "当前本地终端目录不在 Git 仓库中，无法创建 Worktree。",
+                ),
+                window,
+                cx,
+            );
+            return;
+        };
+
+        self.worktree_repo_root = Some(repo_root);
+        self.worktree_modal_open = true;
+        if self.worktree_branch_input.is_none() {
+            let placeholder = self
+                .language
+                .text("Branch / task name, e.g. feat/agent-auth", "分支或任务名，例如 feat/agent-auth");
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+            let sub = cx.subscribe_in(&input, window, |this, _, event, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.create_git_worktree_tab(window, cx);
+                }
+            });
+            self.worktree_branch_input = Some(input);
+            self._worktree_sub = Some(sub);
+        }
+        if let Some(input) = &self.worktree_branch_input {
+            input.update(cx, |i, cx| {
+                i.set_value("", window, cx);
+                i.focus(window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    fn create_git_worktree_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo_root) = self.worktree_repo_root.clone() else {
+            return;
+        };
+        let branch = self
+            .worktree_branch_input
+            .as_ref()
+            .map(|i| i.read(cx).value().trim().to_owned())
+            .unwrap_or_default();
+        if branch.is_empty() {
+            return;
+        }
+        let safe_slug: String = branch
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .collect();
+        let repo_name = repo_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repo");
+        let parent = repo_root.parent().unwrap_or(&repo_root);
+        let target_dir = parent.join(format!("{repo_name}-{safe_slug}"));
+
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["worktree", "add", "-b", &branch])
+            .arg(&target_dir)
+            .output();
+
+        self.worktree_modal_open = false;
+        match output {
+            Ok(out) if out.status.success() => {
+                crate::notify::success(
+                    format!(
+                        "{} {}",
+                        self.language.text("Created Git worktree:", "已创建 Git Worktree："),
+                        target_dir.display()
+                    ),
+                    window,
+                    cx,
+                );
+                self.spawn_local_tab_in_cwd(Some(target_dir), true, window, cx);
+            }
+            Ok(out) => {
+                let err = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+                crate::notify::error(
+                    if err.is_empty() {
+                        "Failed to create git worktree.".to_owned()
+                    } else {
+                        err
+                    },
+                    window,
+                    cx,
+                );
+            }
+            Err(err) => {
+                crate::notify::error(err.to_string(), window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn render_worktree_modal(&self, colors: Colors, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        if !self.worktree_modal_open {
+            return None;
+        }
+        let input = self.worktree_branch_input.as_ref()?;
+        let repo_label = self
+            .worktree_repo_root
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let language = self.language;
+
+        Some(
+            div()
+                .id("worktree-modal-backdrop")
+                .absolute()
+                .inset_0()
+                .bg(rgb(0x000000).alpha(0.36))
+                .flex()
+                .items_start()
+                .justify_center()
+                .pt(px(110.))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.worktree_modal_open = false;
+                        this.restore_active_focus(window, cx);
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .id("worktree-modal-card")
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                            if event.keystroke.key == "escape" {
+                                this.worktree_modal_open = false;
+                                this.restore_active_focus(window, cx);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }))
+                        .w(px(460.))
+                        .rounded(px(12.))
+                        .bg(colors.popover_bg())
+                        .border_1()
+                        .border_color(colors.hairline_strong())
+                        .shadow_2xl()
+                        .p(px(14.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_size(px(13.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(colors.foreground))
+                                        .child(language.text(
+                                            "New Isolated Git Worktree",
+                                            "新建隔离 Git Worktree（并行 Agent）",
+                                        )),
+                                )
+                                .child(
+                                    Button::new("wt-close")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(Icon::Close)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.worktree_modal_open = false;
+                                            this.restore_active_focus(window, cx);
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(rgb(colors.secondary))
+                                .truncate()
+                                .child(format!(
+                                    "{} {repo_label}",
+                                    language.text("Repository:", "源仓库：")
+                                )),
+                        )
+                        .child(Input::new(input).small())
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap(px(6.))
+                                .child(
+                                    Button::new("wt-cancel")
+                                        .ghost()
+                                        .xsmall()
+                                        .label(language.text("Cancel", "取消"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.worktree_modal_open = false;
+                                            this.restore_active_focus(window, cx);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("wt-create")
+                                        .primary()
+                                        .xsmall()
+                                        .icon(Icon::Plus)
+                                        .label(language.text("Create & Open Tab", "创建并打开终端"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.create_git_worktree_tab(window, cx);
+                                        })),
+                                ),
+                        ),
+                ),
+        )
+    }
+
+    fn ensure_file_drawer(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<FileDrawer> {
+        if let Some(file_drawer) = &self.file_drawer {
+            return file_drawer.clone();
+        }
+        let file_drawer = cx.new(|cx| FileDrawer::new(self.settings.clone(), window, cx));
+        let sub = cx.subscribe_in(&file_drawer, window, |this, _, event, window, cx| match event {
+            FileDrawerEvent::InsertPath(path) => {
+                if let Some(terminal) = this.active_terminal() {
+                    let escaped = shell_words::quote(&path).into_owned();
+                    let bytes = format!("{escaped} ").into_bytes();
+                    terminal.update(cx, |session, cx| {
+                        session.send_bytes(&bytes, cx);
+                        session.focus_handle().focus(window, cx);
+                    });
+                }
+            }
+            FileDrawerEvent::OpenFullSftp(host) => {
+                this.open_sftp(host.clone(), window, cx);
+            }
+            FileDrawerEvent::Close => {
+                this.right_drawer = None;
+                cx.notify();
+            }
+        });
+        self.file_drawer = Some(file_drawer.clone());
+        self._file_drawer_events = Some(sub);
+        file_drawer
+    }
+
+    pub fn open_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_preferences(window, cx)
+            .update(cx, |p, cx| p.open_about_tab(cx));
         self.open_vault(VaultSection::Settings, cx);
     }
 
@@ -800,7 +1505,10 @@ impl Workspace {
         match self.updater.launch_installer_and_prepare_quit() {
             Ok(()) => {
                 if should_quit {
-                    self.tunnels.update(cx, |t, _| t.shutdown_all());
+                    self.save_session(cx);
+                    if let Some(tunnels) = &self.tunnels {
+                        tunnels.update(cx, |t, _| t.shutdown_all());
+                    }
                     for tab in &self.tabs {
                         if let TabKind::Terminal { panes, .. } = &tab.kind {
                             for pane in panes {
@@ -822,8 +1530,14 @@ impl Workspace {
             self.active = index;
             self.in_vault = false;
             self.telemetry_open = false;
+            if let Some(term) = self.active_terminal() {
+                term.update(cx, |t, cx| t.clear_attention(cx));
+            }
+            self.sync_telemetry_active(cx);
             self.restore_active_focus(window, cx);
             self.sync_file_drawer(window, cx);
+            self.sync_agent_bus(cx);
+            self.save_session(cx);
             cx.notify();
         }
     }
@@ -863,6 +1577,8 @@ impl Workspace {
                 self.sync_file_drawer(window, cx);
             }
         }
+        self.sync_telemetry_active(cx);
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -873,7 +1589,10 @@ impl Workspace {
     }
 
     fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.tunnels.update(cx, |t, _| t.shutdown_all());
+        self.save_session(cx);
+        if let Some(tunnels) = &self.tunnels {
+            tunnels.update(cx, |t, _| t.shutdown_all());
+        }
         for tab in &self.tabs {
             if let TabKind::Terminal { panes, .. } = &tab.kind {
                 for pane in panes {
@@ -887,7 +1606,7 @@ impl Workspace {
     fn toggle_quick_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.quick_connect_open = !self.quick_connect_open;
         if self.quick_connect_open {
-            self.quick_connect
+            self.ensure_quick_connect(window, cx)
                 .update(cx, |qc, cx| qc.focus_input(window, cx));
         } else {
             self.restore_active_focus(window, cx);
@@ -952,12 +1671,22 @@ impl Workspace {
             return;
         }
         let terminal = self.file_drawer_terminal(cx);
-        if terminal.is_none() {
+        let Some(terminal) = terminal else {
             self.right_drawer = None;
-        }
-        let host = terminal.and_then(|t| t.read(cx).host_profile().cloned());
-        self.file_drawer.update(cx, |drawer, cx| {
-            drawer.sync_target(host.as_ref(), window, cx);
+            if let Some(drawer) = &self.file_drawer {
+                drawer.update(cx, |drawer, cx| {
+                    drawer.sync_target(None, None, None, window, cx);
+                });
+            }
+            return;
+        };
+        let (host, cwd) = {
+            let t = terminal.read(cx);
+            (t.host_profile().cloned(), t.cwd().map(str::to_owned))
+        };
+        let ssh_session = host.is_some().then_some(terminal);
+        self.ensure_file_drawer(window, cx).update(cx, |drawer, cx| {
+            drawer.sync_target(host.as_ref(), cwd.as_deref(), ssh_session, window, cx);
         });
     }
 
@@ -973,7 +1702,6 @@ impl Workspace {
 
     fn titlebar(&self, colors: Colors, cx: &mut Context<Self>) -> impl IntoElement {
         let language = self.language;
-        let vibrancy = self.vibrancy;
 
         let traffic_lights = cfg!(target_os = "macos").then(|| {
             div()
@@ -1066,17 +1794,42 @@ impl Workspace {
             .gap(px(4.))
             .children(self.tabs.iter().enumerate().map(|(idx, tab)| {
                 let is_active = !self.in_vault && idx == self.active;
-                let (dot_color, label) = match &tab.kind {
+                let (dot_color, label, has_attention, tab_progress) = match &tab.kind {
                     TabKind::Terminal { panes, active_pane } => {
+                        let any_attention = panes
+                            .iter()
+                            .any(|p| p.terminal.read(cx).unread_attention());
+                        let any_running = panes
+                            .iter()
+                            .any(|p| p.terminal.read(cx).agent_activity() == AgentActivity::Running);
+                        let any_error = panes
+                            .iter()
+                            .any(|p| p.terminal.read(cx).agent_activity() == AgentActivity::Error);
+                        let active_prog = panes
+                            .iter()
+                            .map(|p| p.terminal.read(cx).progress())
+                            .find(|p| p.is_active())
+                            .unwrap_or(TerminalProgress::Hidden);
                         let term = panes
                             .get(*active_pane)
                             .or_else(|| panes.first())
                             .map(|p| p.terminal.read(cx));
-                        let (is_ssh, connected, title) = match term {
-                            Some(t) => (t.is_ssh(), t.is_connected(), t.title().to_owned()),
-                            None => (false, false, "Terminal".into()),
+                        let (is_ssh, connected, has_error, title) = match term {
+                            Some(t) => (
+                                t.is_ssh(),
+                                t.is_connected(),
+                                t.has_error(),
+                                t.title().to_owned(),
+                            ),
+                            None => (false, false, false, "Terminal".into()),
                         };
-                        let dot = if is_ssh && connected {
+                        let dot = if any_attention {
+                            colors.warning()
+                        } else if any_error || has_error {
+                            colors.danger
+                        } else if any_running {
+                            colors.accent
+                        } else if connected {
                             colors.success
                         } else if is_ssh {
                             colors.warning()
@@ -1084,13 +1837,44 @@ impl Workspace {
                             colors.muted
                         };
                         let split_suffix = if panes.len() > 1 { " · 2" } else { "" };
-                        (dot, format!("{title}{split_suffix}"))
+                        (dot, format!("{title}{split_suffix}"), any_attention, active_prog)
                     }
-                    TabKind::Sftp { host_name, .. } => (colors.accent, format!("SFTP · {host_name}")),
+                    TabKind::Sftp { host_name, .. } => (
+                        colors.accent,
+                        format!("SFTP · {host_name}"),
+                        false,
+                        TerminalProgress::Hidden,
+                    ),
                 };
+
+                let progress_bar = tab_progress.is_active().then(|| {
+                    let (bar_color, pct) = match tab_progress {
+                        TerminalProgress::Normal(p) => (colors.accent, (p as f32).clamp(8.0, 100.0)),
+                        TerminalProgress::Error(p) => (colors.danger, p.unwrap_or(100) as f32),
+                        TerminalProgress::Indeterminate => (colors.accent, 40.0),
+                        TerminalProgress::Paused(p) => (colors.warning(), p.unwrap_or(65) as f32),
+                        TerminalProgress::Hidden => (colors.accent, 0.0),
+                    };
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left(px(4.))
+                        .right(px(4.))
+                        .h(px(2.))
+                        .rounded_full()
+                        .bg(rgb(bar_color).alpha(0.22))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .h_full()
+                                .w(gpui_kit::relative(pct / 100.0))
+                                .bg(rgb(bar_color)),
+                        )
+                });
 
                 div()
                     .id(("session-tab", tab.id))
+                    .relative()
                     .h(px(26.))
                     .min_w(px(120.))
                     .max_w(px(210.))
@@ -1103,13 +1887,17 @@ impl Workspace {
                     .items_center()
                     .gap(px(7.))
                     .border_1()
-                    .border_color(if is_active {
+                    .border_color(if has_attention {
+                        rgb(colors.warning()).alpha(0.85)
+                    } else if is_active {
                         colors.hairline()
                     } else {
                         transparent_black().into()
                     })
                     .bg(if is_active {
                         colors.surface_active_glass()
+                    } else if has_attention {
+                        rgb(colors.warning()).alpha(0.11)
                     } else {
                         transparent_black().into()
                     })
@@ -1124,12 +1912,12 @@ impl Workspace {
                             .min_w_0()
                             .truncate()
                             .text_size(px(12.))
-                            .font_weight(if is_active {
+                            .font_weight(if is_active || has_attention {
                                 FontWeight::MEDIUM
                             } else {
                                 FontWeight::NORMAL
                             })
-                            .text_color(rgb(if is_active {
+                            .text_color(rgb(if is_active || has_attention {
                                 colors.foreground
                             } else {
                                 colors.secondary
@@ -1152,6 +1940,7 @@ impl Workspace {
                             }))
                             .child(Icon::Close.render(px(10.), colors.muted)),
                     )
+                    .children(progress_bar)
             }))
             .child(
                 div()
@@ -1264,12 +2053,49 @@ impl Workspace {
                     .child("⌘K"),
             );
 
+        let attention_count = self.unread_attention_count(cx);
+        let attention_pill = (attention_count > 0).then(|| {
+            div()
+                .id("titlebar-attention-pill")
+                .h(px(26.))
+                .flex_shrink_0()
+                .px(px(8.))
+                .rounded(px(7.))
+                .cursor_pointer()
+                .bg(rgb(colors.warning()).alpha(0.16))
+                .border_1()
+                .border_color(rgb(colors.warning()).alpha(0.75))
+                .hover(|s| s.bg(rgb(colors.warning()).alpha(0.24)))
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.jump_next_attention(window, cx);
+                }))
+                .child(
+                    div()
+                        .size(px(6.5))
+                        .rounded_full()
+                        .bg(rgb(colors.warning())),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(colors.foreground))
+                        .child(format!(
+                            "{attention_count} {} · ⇧⌘U",
+                            language.text("waiting", "待处理")
+                        )),
+                )
+        });
+
         div()
             .id("unified-titlebar")
             .h(px(38.))
             .w_full()
             .px(px(12.))
-            .bg(colors.titlebar_bg(vibrancy, self.opacity))
+            .bg(colors.titlebar_bg(self.opacity))
             .border_b_1()
             .border_color(colors.hairline())
             .flex()
@@ -1280,12 +2106,24 @@ impl Workspace {
             .child(vault_btn)
             .child(div().w(px(1.)).h(px(16.)).bg(colors.hairline()))
             .child(tabs_row)
+            .children(attention_pill)
             .child(cmdk_pill)
     }
 
     fn render_new_tab_menu(&self, colors: Colors, cx: &mut Context<Self>) -> impl IntoElement {
         let language = self.language;
         let hosts = self.settings.read(cx).current.hosts.clone();
+        let mono_font: SharedString = if self.font_family.trim().is_empty() {
+            if cfg!(target_os = "macos") {
+                "Menlo".into()
+            } else if cfg!(windows) {
+                "Consolas".into()
+            } else {
+                "DejaVu Sans Mono".into()
+            }
+        } else {
+            self.font_family.trim().to_owned().into()
+        };
         let left_x = self
             .new_tab_menu_pos
             .map(|p| (f32::from(p.x) - 18.0).max(12.0))
@@ -1296,10 +2134,10 @@ impl Workspace {
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .absolute()
-            .top(px(38.))
+            .top(px(40.))
             .left(px(left_x))
             .w(px(248.))
-            .max_h(px(360.))
+            .max_h(px(340.))
             .rounded(px(9.))
             .bg(colors.popover_bg())
             .border_1()
@@ -1312,8 +2150,9 @@ impl Workspace {
             .child(
                 div()
                     .id("new-tab-menu-local")
-                    .h(px(30.))
+                    .flex_shrink_0()
                     .px(px(8.))
+                    .py(px(6.))
                     .rounded(px(6.))
                     .cursor_pointer()
                     .hover(|s| s.bg(colors.accent_soft()))
@@ -1328,7 +2167,8 @@ impl Workspace {
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(12.5))
+                            .text_size(px(12.))
+                            .line_height(px(15.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(colors.foreground))
                             .child(language.text("Local Terminal", "本地终端")),
@@ -1336,11 +2176,53 @@ impl Workspace {
                     .child(
                         div()
                             .text_size(px(11.))
+                            .line_height(px(14.))
                             .text_color(rgb(colors.muted))
                             .child("⌘T"),
                     ),
             )
-            .child(div().h(px(1.)).my(px(3.)).bg(colors.hairline()))
+            .child(
+                div()
+                    .id("new-tab-menu-worktree")
+                    .flex_shrink_0()
+                    .px(px(8.))
+                    .py(px(6.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(colors.accent_soft()))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.new_tab_menu_open = false;
+                        this.open_worktree_modal(window, cx);
+                    }))
+                    .child(Icon::Split.render(px(14.), colors.success))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.))
+                            .line_height(px(15.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(colors.foreground))
+                            .child(language.text("New Git Worktree…", "新建 Git Worktree…")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .line_height(px(14.))
+                            .text_color(rgb(colors.muted))
+                            .child("⇧⌘G"),
+                    ),
+            )
+            .child(
+                div()
+                    .h(px(1.))
+                    .flex_shrink_0()
+                    .mx(px(4.))
+                    .my(px(3.))
+                    .bg(colors.hairline()),
+            )
             .child(
                 div()
                     .id("new-tab-menu-hosts-scroll")
@@ -1354,8 +2236,9 @@ impl Workspace {
                         vec![
                             div()
                                 .px(px(8.))
-                                .py(px(8.))
+                                .py(px(6.))
                                 .text_size(px(11.5))
+                                .line_height(px(15.))
                                 .text_color(rgb(colors.muted))
                                 .child(language.text("No saved hosts", "暂无已保存主机"))
                                 .into_any_element(),
@@ -1370,8 +2253,9 @@ impl Workspace {
                                 let icon = host.icon.icon();
                                 div()
                                     .id(("new-tab-menu-host", ix))
+                                    .flex_shrink_0()
                                     .px(px(8.))
-                                    .py(px(6.))
+                                    .py(px(5.))
                                     .rounded(px(6.))
                                     .cursor_pointer()
                                     .hover(|s| s.bg(colors.accent_soft()))
@@ -1393,6 +2277,7 @@ impl Workspace {
                                                 div()
                                                     .truncate()
                                                     .text_size(px(12.))
+                                                    .line_height(px(15.))
                                                     .font_weight(FontWeight::MEDIUM)
                                                     .text_color(rgb(colors.foreground))
                                                     .child(label),
@@ -1401,6 +2286,8 @@ impl Workspace {
                                                 div()
                                                     .truncate()
                                                     .text_size(px(10.5))
+                                                    .line_height(px(13.))
+                                                    .font_family(mono_font.clone())
                                                     .text_color(rgb(colors.muted))
                                                     .child(endpoint),
                                             ),
@@ -1428,7 +2315,6 @@ impl Workspace {
     fn vault_sidebar(&self, colors: Colors, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = &self.settings.read(cx).current;
         let language = saved.language;
-        let vibrancy = self.vibrancy;
         let hosts_count = saved.hosts.len();
         let kc_count = saved.keychain.len();
         let tunnels_count = saved.tunnels.len();
@@ -1448,7 +2334,7 @@ impl Workspace {
             .w(px(214.))
             .flex_shrink_0()
             .h_full()
-            .bg(colors.sidebar_bg(vibrancy, self.opacity))
+            .bg(colors.sidebar_bg(self.opacity))
             .border_r_1()
             .border_color(colors.hairline())
             .p(px(10.))
@@ -1495,10 +2381,11 @@ impl Workspace {
                             self.vault_section == VaultSection::Hosts && self.selected_group.is_none(),
                             colors,
                         )
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(cx.listener(|this, _, window, cx| {
                             this.vault_section = VaultSection::Hosts;
                             this.selected_group = None;
-                            this.hosts.update(cx, |h, cx| h.set_group_filter(None, cx));
+                            this.ensure_hosts(window, cx)
+                                .update(cx, |h, cx| h.set_group_filter(None, cx));
                             cx.notify();
                         })),
                     )
@@ -1579,7 +2466,7 @@ impl Workspace {
                                 transparent_black().into()
                             })
                             .hover(|s| s.bg(colors.surface_hover_glass()))
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 this.vault_section = VaultSection::Hosts;
                                 let next = if this.selected_group.as_deref() == Some(&group_click) {
                                     None
@@ -1587,7 +2474,8 @@ impl Workspace {
                                     Some(group_click.clone())
                                 };
                                 this.selected_group = next.clone();
-                                this.hosts.update(cx, |h, cx| h.set_group_filter(next, cx));
+                                this.ensure_hosts(window, cx)
+                                    .update(cx, |h, cx| h.set_group_filter(next, cx));
                                 cx.notify();
                             }))
                             .child(div().size(px(7.)).rounded_full().bg(rgb(dot)))
@@ -1743,14 +2631,15 @@ impl Workspace {
     }
 
     fn tunnels_drawer(
-        &self,
+        &mut self,
         host: &HostProfile,
         colors: Colors,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let language = self.language;
         let host_id = host.id;
-        let body = self.tunnels.update(cx, |tunnels, cx| {
+        let body = self.ensure_tunnels(window, cx).update(cx, |tunnels, cx| {
             tunnels.render_host_drawer_body(host, colors, language, cx)
         });
 
@@ -1785,7 +2674,7 @@ impl Workspace {
                                     .xsmall()
                                     .icon(Icon::Plus)
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.tunnels.update(cx, |t, cx| {
+                                        this.ensure_tunnels(window, cx).update(cx, |t, cx| {
                                             t.edit_rule_for_host(None, host_id, window, cx);
                                         });
                                         cx.notify();
@@ -2749,22 +3638,26 @@ impl Workspace {
 
     fn session_status_bar(&self, colors: Colors, cx: &mut Context<Self>) -> impl IntoElement {
         let language = self.language;
-        let vibrancy = self.vibrancy;
         let active_term = self.active_terminal();
         let can_sftp = self.file_drawer_terminal(cx).is_some();
-        let (is_ssh, connected, host_label, telemetry, is_split, tunnel_count, has_host) =
+        let (is_ssh, connected, has_error, host_label, telemetry, is_split, tunnel_count, has_host) =
             match active_term {
             Some(ref term_entity) => {
                 let t = term_entity.read(cx);
                 let is_ssh = t.is_ssh();
                 let connected = t.is_connected();
+                let has_error = t.has_error();
                 let host_opt = t.host_profile();
                 let label = match host_opt {
                     Some(h) => format!("{} · {}", h.protocol.label(), h.name),
                     None => language.text("Local · Shell", "本地终端").to_owned(),
                 };
-                let t_count = host_opt
-                    .map(|h| self.tunnels.read(cx).active_count_for_host(h.id, cx))
+                let t_count = self
+                    .tunnels
+                    .as_ref()
+                    .and_then(|tunnels| {
+                        host_opt.map(|h| tunnels.read(cx).active_count_for_host(h.id, cx))
+                    })
                     .unwrap_or(0);
                 let split = match self.tabs.get(self.active) {
                     Some(Tab {
@@ -2776,6 +3669,7 @@ impl Workspace {
                 (
                     is_ssh,
                     connected,
+                    has_error,
                     label,
                     t.telemetry().cloned(),
                     split,
@@ -2783,12 +3677,12 @@ impl Workspace {
                     host_opt.is_some(),
                 )
             }
-            None => (false, false, "SFTP".into(), None, false, 0, false),
+            None => (false, false, false, "SFTP".into(), None, false, 0, false),
         };
 
-        let dot_color = if is_ssh && connected {
+        let dot_color = if connected {
             colors.success
-        } else if is_ssh {
+        } else if is_ssh || has_error {
             colors.warning()
         } else {
             colors.muted
@@ -2876,7 +3770,7 @@ impl Workspace {
             .h(px(26.))
             .w_full()
             .px(px(12.))
-            .bg(colors.titlebar_bg(vibrancy, self.opacity))
+            .bg(colors.titlebar_bg(self.opacity))
             .border_t_1()
             .border_color(colors.hairline())
             .flex()
@@ -2944,7 +3838,7 @@ impl Workspace {
                             "sb-sftp",
                             Some(Icon::Folder),
                             Some(0x32ade6),
-                            language.text("SFTP", "文件传输"),
+                            language.text("Files", "文件"),
                             self.right_drawer == Some(RightDrawer::Files),
                             colors,
                         )
@@ -2983,17 +3877,16 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = self.theme.colors();
-        let vibrancy = self.vibrancy;
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = self.theme.colors_for(self.opacity);
 
         let body = if self.in_vault {
             let main_view = match self.vault_section {
-                VaultSection::Hosts => self.hosts.clone().into_any_element(),
-                VaultSection::Keychain => self.keychain.clone().into_any_element(),
-                VaultSection::Tunnels => self.tunnels.clone().into_any_element(),
-                VaultSection::Snippets => self.snippets.clone().into_any_element(),
-                VaultSection::Settings => self.preferences.clone().into_any_element(),
+                VaultSection::Hosts => self.ensure_hosts(window, cx).into_any_element(),
+                VaultSection::Keychain => self.ensure_keychain(window, cx).into_any_element(),
+                VaultSection::Tunnels => self.ensure_tunnels(window, cx).into_any_element(),
+                VaultSection::Snippets => self.ensure_snippets(window, cx).into_any_element(),
+                VaultSection::Settings => self.ensure_preferences(window, cx).into_any_element(),
             };
             div()
                 .flex_1()
@@ -3025,7 +3918,6 @@ impl Render for Workspace {
                         .min_h_0()
                         .bg(colors.term_bg_for(
                             self.theme.palette().background,
-                            vibrancy,
                             self.opacity,
                         ))
                         .flex()
@@ -3042,6 +3934,7 @@ impl Render for Workspace {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _, window, cx| {
+                                        let mut focused = false;
                                         if let Some(Tab {
                                             kind: TabKind::Terminal { panes, active_pane },
                                             ..
@@ -3049,11 +3942,18 @@ impl Render for Workspace {
                                         {
                                             *active_pane = pidx;
                                             if let Some(p) = panes.get(pidx) {
-                                                p.terminal
-                                                    .read(cx)
-                                                    .focus_handle()
-                                                    .focus(window, cx);
+                                                let term = p.terminal.clone();
+                                                term.update(cx, |t, cx| {
+                                                    t.clear_attention(cx);
+                                                    t.focus_handle().focus(window, cx);
+                                                });
                                             }
+                                            focused = true;
+                                        }
+                                        if focused {
+                                            this.sync_file_drawer(window, cx);
+                                            this.sync_agent_bus(cx);
+                                            this.save_session(cx);
                                             cx.notify();
                                         }
                                     }),
@@ -3077,13 +3977,16 @@ impl Render for Workspace {
                         .child(panes_row);
 
                     let drawer_content = match self.right_drawer {
-                        Some(RightDrawer::Files) => Some(self.file_drawer.clone().into_any_element()),
+                        Some(RightDrawer::Files) => {
+                            Some(self.ensure_file_drawer(window, cx).into_any_element())
+                        }
                         Some(RightDrawer::Snippets) => {
                             Some(self.snippets_drawer(colors, cx).into_any_element())
                         }
-                        Some(RightDrawer::Tunnels) => host_profile
-                            .as_ref()
-                            .map(|host| self.tunnels_drawer(host, colors, cx).into_any_element()),
+                        Some(RightDrawer::Tunnels) => host_profile.as_ref().map(|host| {
+                            self.tunnels_drawer(host, colors, window, cx)
+                                .into_any_element()
+                        }),
                         Some(RightDrawer::Docker) => {
                             let host_name = host_profile
                                 .as_ref()
@@ -3147,11 +4050,7 @@ impl Render for Workspace {
                         .overflow_hidden()
                         .child(main_row)
                         .children(tele_pop)
-                        .children(
-                            host_profile
-                                .is_some()
-                                .then(|| self.session_status_bar(colors, cx)),
-                        )
+                        .child(self.session_status_bar(colors, cx))
                         .into_any_element()
                 }
                 TabKind::Sftp { view, .. } => div()
@@ -3168,6 +4067,10 @@ impl Render for Workspace {
         let mut root = div()
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &NewTab, window, cx| this.new_tab(window, cx)))
+            .on_action(cx.listener(|this, _: &NewGitWorktree, window, cx| {
+                this.open_worktree_modal(window, cx);
+                cx.stop_propagation();
+            }))
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| this.close_active(window, cx)))
             .on_action(
                 cx.listener(|this, _: &NextTab, window, cx| this.step_tab(false, window, cx)),
@@ -3175,6 +4078,26 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, _: &PreviousTab, window, cx| this.step_tab(true, window, cx)),
             )
+            .on_action(cx.listener(|this, _: &JumpNextAttention, window, cx| {
+                this.jump_next_attention(window, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &JumpPrevPrompt, _, cx| {
+                if let Some(terminal) = this.active_terminal() {
+                    terminal.update(cx, |t, cx| {
+                        t.jump_to_prompt(true, cx);
+                    });
+                    cx.stop_propagation();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &JumpNextPrompt, _, cx| {
+                if let Some(terminal) = this.active_terminal() {
+                    terminal.update(cx, |t, cx| {
+                        t.jump_to_prompt(false, cx);
+                    });
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(cx.listener(|this, action: &SelectTab, window, cx| {
                 this.select_tab(action.index, window, cx)
             }))
@@ -3234,7 +4157,7 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .text_size(px(13.))
-            .bg(colors.window_bg(vibrancy, self.opacity))
+            .bg(colors.window_bg(self.opacity))
             .text_color(rgb(colors.foreground))
             .child(self.titlebar(colors, cx))
             .child(body);
@@ -3243,7 +4166,10 @@ impl Render for Workspace {
             root = root.child(self.render_new_tab_menu(colors, cx));
         }
         if self.quick_connect_open {
-            root = root.child(self.quick_connect.clone());
+            root = root.child(self.ensure_quick_connect(window, cx));
+        }
+        if let Some(wt_modal) = self.render_worktree_modal(colors, cx) {
+            root = root.child(wt_modal);
         }
         if let Some(logs_modal) = self.render_docker_logs_modal(colors, cx) {
             root = root.child(logs_modal);

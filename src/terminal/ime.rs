@@ -2,8 +2,7 @@ use std::ops::Range;
 
 use gpui_kit::{
     App, Bounds, Context, ElementInputHandler, EntityInputHandler, IntoElement, ParentElement as _,
-    Pixels, Point, Size, Styled as _, UTF16Selection, Window, canvas, div, font, point, px, rgb,
-    size,
+    Pixels, Point, Size, Styled as _, UTF16Selection, Window, canvas, div, point, px, rgb, size,
 };
 
 use super::{TerminalSession, TerminalStatus};
@@ -53,7 +52,7 @@ impl TerminalSession {
                     .font_family(style.font_family.clone())
                     .text_size(style.font_size)
                     .underline()
-                    .bg(rgb(self.palette.background))
+                    .bg(rgb(self.config.theme.palette().background))
                     .child(String::from_utf16_lossy(&self.composition.text)),
             );
         }
@@ -65,17 +64,13 @@ impl TerminalSession {
             return (point(px(0.), px(0.)), size(px(1.), px(1.)));
         };
         let view = view.read(cx);
-        let style = view.style();
-        let text = cx.text_system();
-        let face = text.resolve_font(&font(style.font_family.clone()));
-        let width = text.em_advance(face, style.font_size).unwrap_or(px(8.));
-        let height = px((f32::from(text.ascent(face, style.font_size))
-            + f32::from(text.descent(face, style.font_size)).abs())
-        .ceil());
-        let (column, row) = view.terminal().with_grid(|grid| grid.cursor());
+        let cell_size = view.cell_size(cx);
+        let (column, row) = view.terminal().with_grid(|grid| {
+            grid.cursor_in_view().unwrap_or_else(|| grid.cursor())
+        });
         (
-            point(width * column as f32, height * row as f32),
-            size(width, height),
+            point(cell_size.width * column as f32, cell_size.height * row as f32),
+            cell_size,
         )
     }
 }

@@ -41,6 +41,7 @@ pub struct SftpView {
     client: Option<SftpClient>,
     local_dir: PathBuf,
     local_entries: Vec<LocalEntry>,
+    local_scan_seq: u64,
     selected_local: Option<PathBuf>,
     remote_dir: String,
     remote_entries: Vec<RemoteEntry>,
@@ -62,7 +63,6 @@ impl SftpView {
         cx: &mut Context<Self>,
     ) -> Self {
         let local_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let local_entries = read_local_dir(&local_dir);
         let language = store.read(cx).current.language;
         let mkdir_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(language.text("New folder name…", "输入新建文件夹名称…"))
@@ -78,7 +78,8 @@ impl SftpView {
             host,
             client: None,
             local_dir,
-            local_entries,
+            local_entries: Vec::new(),
+            local_scan_seq: 0,
             selected_local: None,
             remote_dir: "/".into(),
             remote_entries: Vec::new(),
@@ -91,6 +92,7 @@ impl SftpView {
             _updates: updates,
             connected: false,
         };
+        view.reload_local(cx);
         view.connect(window, cx);
         view
     }
@@ -162,7 +164,7 @@ impl SftpView {
             SftpEvent::Status(msg) => {
                 self.status_text = Some(msg.clone());
                 crate::notify::success(msg, window, cx);
-                self.local_entries = read_local_dir(&self.local_dir);
+                self.reload_local(cx);
             }
             SftpEvent::Error(err) => {
                 self.prompt_sub = None;
@@ -185,16 +187,36 @@ impl SftpView {
         cx.notify();
     }
 
+    pub fn host_profile(&self) -> &HostProfile {
+        &self.host
+    }
+
+    fn reload_local(&mut self, cx: &mut Context<Self>) {
+        self.local_scan_seq = self.local_scan_seq.wrapping_add(1);
+        let seq = self.local_scan_seq;
+        let dir = self.local_dir.clone();
+        let bg = cx.background_executor().spawn(async move { read_local_dir(&dir) });
+        cx.spawn(async move |view, cx| {
+            let entries = bg.await;
+            let _ = view.update(cx, |this, cx| {
+                if this.local_scan_seq == seq {
+                    this.local_entries = entries;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     fn cd_local(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.local_dir = path;
-        self.local_entries = read_local_dir(&self.local_dir);
         self.selected_local = None;
+        self.reload_local(cx);
         cx.notify();
     }
 
     fn refresh_local(&mut self, cx: &mut Context<Self>) {
-        self.local_entries = read_local_dir(&self.local_dir);
-        cx.notify();
+        self.reload_local(cx);
     }
 
     fn cd_remote(&mut self, path: String, cx: &mut Context<Self>) {
@@ -310,9 +332,8 @@ impl SftpView {
 impl Render for SftpView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = &self.store.read(cx).current;
-        let colors = saved.theme.colors();
+        let colors = saved.theme.colors_for(saved.opacity);
         let language = saved.language;
-        let vibrancy = saved.vibrancy;
         let opacity = saved.opacity;
         let mono_font = saved.font_family.clone();
 
@@ -847,7 +868,7 @@ impl Render for SftpView {
             .h(px(26.))
             .w_full()
             .px(px(12.))
-            .bg(colors.titlebar_bg(vibrancy, opacity))
+            .bg(colors.titlebar_bg(opacity))
             .border_t_1()
             .border_color(colors.hairline())
             .flex()
@@ -879,7 +900,7 @@ impl Render for SftpView {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .bg(colors.content_bg(vibrancy, opacity))
+                    .bg(colors.content_bg(opacity))
                     .flex()
                     .child(local_pane)
                     .child(remote_pane),
@@ -993,27 +1014,16 @@ fn read_local_dir(dir: &Path) -> Vec<LocalEntry> {
             let meta = entry.metadata().ok()?;
             let is_dir = meta.is_dir();
             let path = entry.path();
-            let item_count = if is_dir {
-                fs::read_dir(&path)
-                    .ok()
-                    .map(|rd| rd.filter_map(|r| r.ok()).count())
-            } else {
-                None
-            };
             Some(LocalEntry {
                 name,
                 path,
                 is_dir,
                 size: meta.len(),
-                item_count,
+                item_count: None,
             })
         })
         .collect();
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase()));
     entries
 }
 

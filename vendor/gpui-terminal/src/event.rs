@@ -1,8 +1,9 @@
 //! What a terminal asks of the app hosting it.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{Error, ExitReport};
+use crate::{Error, ExitReport, ShellMark, TerminalProgress};
 
 /// Emitted by [`crate::TerminalView`]. Subscribe with `cx.subscribe`.
 #[derive(Debug, Clone)]
@@ -18,6 +19,24 @@ pub enum TerminalEvent {
     /// written by the view: whether a program may set the clipboard is the
     /// host's policy. Requests for the X11 primary selection are dropped.
     ClipboardStore(String),
+    /// The program reported a new working directory (OSC 7).
+    CwdChanged(String),
+    /// The program reported task progress (OSC 9;4).
+    Progress(TerminalProgress),
+    /// The program emitted a desktop notification (OSC 9 / 99 / 777).
+    Notification {
+        title: Option<String>,
+        body:  String,
+    },
+    /// Shell integration marker (OSC 133 A/B/C/D).
+    ShellMark(ShellMark),
+    /// The user Cmd+clicked a hyperlink (OSC 8) or detected URL.
+    OpenUrl(String),
+    /// The user triggered Paste while the clipboard contained no plain text
+    /// (typically a screenshot or image).
+    ImagePasteRequested,
+    /// One or more files were dragged and dropped onto the terminal.
+    FilesDropped(Vec<PathBuf>),
     /// The transport reported that the far end ended. Emitted once.
     Exited(ExitReport),
     /// A write, resize or terminate the view issued failed. The view has no

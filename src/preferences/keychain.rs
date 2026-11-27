@@ -11,7 +11,7 @@ use gpui_kit::{
 };
 
 use crate::icons::Icon;
-use crate::settings::{KeychainEntry, KeychainKind, Language, SettingsStore};
+use crate::settings::{HostProfile, KeychainEntry, KeychainKind, Language, SettingsStore};
 use crate::theme::Colors;
 use crate::vault::{decrypt_secret, encrypt_secret};
 
@@ -514,8 +514,7 @@ impl KeychainPage {
 impl Render for KeychainPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = &self.store.read(cx).current;
-        let colors = saved.theme.colors();
-        let vibrancy = saved.vibrancy;
+        let colors = saved.theme.colors_for(saved.opacity);
         let opacity = saved.opacity;
         let language = saved.language;
         let entries = saved.keychain.clone();
@@ -609,7 +608,7 @@ impl Render for KeychainPage {
                 )
                 .children(entries.into_iter().map(|entry| {
                     let id = entry.id;
-                    let linked_count = hosts.iter().filter(|h| h.keychain_id == Some(id)).count();
+                    let linked_count = linked_host_count(&hosts, id);
                     let kind_label = match entry.kind {
                         KeychainKind::SshKey => "SSH Key",
                         KeychainKind::Password => "Password",
@@ -722,12 +721,65 @@ impl Render for KeychainPage {
         div()
             .relative()
             .size_full()
-            .bg(colors.content_bg(vibrancy, opacity))
+            .bg(colors.content_bg(opacity))
             .text_color(rgb(colors.foreground))
             .flex()
             .flex_col()
             .child(header)
             .child(body)
             .children(self.editor.is_some().then(|| self.render_modal(colors, language, cx)))
+    }
+}
+
+fn linked_host_count(hosts: &[HostProfile], keychain_id: u64) -> usize {
+    hosts
+        .iter()
+        .filter(|host| host.references_keychain(keychain_id))
+        .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{HostIcon, HostProtocol};
+
+    fn sample_host(id: u64, keychain_id: Option<u64>, jump_relay_keychain_id: Option<u64>) -> HostProfile {
+        HostProfile {
+            id,
+            name: format!("host-{id}"),
+            protocol: HostProtocol::Ssh,
+            icon: HostIcon::Server,
+            address: "10.0.0.1".into(),
+            username: "ops".into(),
+            port: 22,
+            baud_rate: 115200,
+            keychain_id,
+            identity_file: String::new(),
+            password: String::new(),
+            jump_host: String::new(),
+            jump_host_id: None,
+            jump_relay_command: String::new(),
+            jump_relay_keychain_id,
+            jump_relay_password: String::new(),
+            group: String::new(),
+            tags: Vec::new(),
+            last_connected: None,
+        }
+    }
+
+    #[test]
+    fn linked_host_count_includes_jump_relay_password_references_without_double_counting() {
+        let hosts = vec![
+            sample_host(1, Some(10), None),
+            sample_host(2, None, Some(10)),
+            sample_host(3, Some(10), Some(10)),
+            sample_host(4, Some(20), Some(10)),
+            sample_host(5, Some(20), None),
+            sample_host(6, None, None),
+        ];
+
+        assert_eq!(linked_host_count(&hosts, 10), 4);
+        assert_eq!(linked_host_count(&hosts, 20), 2);
+        assert_eq!(linked_host_count(&hosts, 30), 0);
     }
 }

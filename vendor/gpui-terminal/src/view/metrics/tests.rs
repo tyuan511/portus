@@ -80,3 +80,23 @@ fn a_cell_fits_the_fonts_full_line_at_every_size(cx: &mut gpui_kit::TestAppConte
           }
       });
 }
+
+#[gpui_kit::test]
+fn line_height_factor_scales_cell_height(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(|cx| {
+          let compact = CellMetrics::measure(&TerminalStyle::new("Menlo", px(13.)).line_height(1.4),
+                                             cx);
+          let standard = CellMetrics::measure(&TerminalStyle::new("Menlo", px(13.)).line_height(1.6),
+                                              cx);
+          let relaxed = CellMetrics::measure(&TerminalStyle::new("Menlo", px(13.)).line_height(1.8),
+                                             cx);
+          assert!(compact.height < standard.height,
+                  "compact ({}) < standard ({})",
+                  compact.height,
+                  standard.height);
+          assert!(standard.height < relaxed.height,
+                  "standard ({}) < relaxed ({})",
+                  standard.height,
+                  relaxed.height);
+      });
+}

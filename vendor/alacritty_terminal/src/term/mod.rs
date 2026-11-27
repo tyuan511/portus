@@ -77,6 +77,7 @@ bitflags! {
         const REPORT_ALTERNATE_KEYS   = 1 << 20;
         const REPORT_ALL_KEYS_AS_ESC  = 1 << 21;
         const REPORT_ASSOCIATED_TEXT  = 1 << 22;
+        const SYNC_UPDATE             = 1 << 23;
         const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
                                       | Self::REPORT_EVENT_TYPES.bits()
@@ -1989,7 +1990,7 @@ impl<T: EventListener> Handler for Term<T> {
                 style.blinking = true;
                 self.event_proxy.send_event(Event::CursorBlinkingChange);
             },
-            NamedPrivateMode::SyncUpdate => (),
+            NamedPrivateMode::SyncUpdate => self.mode.insert(TermMode::SYNC_UPDATE),
         }
     }
 
@@ -2038,7 +2039,7 @@ impl<T: EventListener> Handler for Term<T> {
                 style.blinking = false;
                 self.event_proxy.send_event(Event::CursorBlinkingChange);
             },
-            NamedPrivateMode::SyncUpdate => (),
+            NamedPrivateMode::SyncUpdate => self.mode.remove(TermMode::SYNC_UPDATE),
         }
     }
 
@@ -2081,7 +2082,7 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedPrivateMode::BracketedPaste => {
                     self.mode.contains(TermMode::BRACKETED_PASTE).into()
                 },
-                NamedPrivateMode::SyncUpdate => ModeState::Reset,
+                NamedPrivateMode::SyncUpdate => self.mode.contains(TermMode::SYNC_UPDATE).into(),
                 NamedPrivateMode::ColumnMode => ModeState::NotSupported,
             },
             PrivateMode::Unknown(_) => ModeState::NotSupported,

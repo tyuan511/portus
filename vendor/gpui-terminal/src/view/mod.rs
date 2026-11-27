@@ -16,4 +16,5 @@ mod style;
 mod tests;
 
 pub use entity::TerminalView;
-pub use style::{TerminalPalette, TerminalStyle};
+pub(crate) use palette::rgb_for_index;
+pub use style::{TerminalCursorStyle, TerminalPalette, TerminalStyle};

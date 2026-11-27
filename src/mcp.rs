@@ -52,7 +52,7 @@ impl McpToolSpec {
     }
 }
 
-pub const MCP_TOOLS: [McpToolSpec; 9] = [
+pub const MCP_TOOLS: [McpToolSpec; 13] = [
     McpToolSpec {
         id: "list_hosts",
         risk: McpToolRisk::Low,
@@ -106,6 +106,30 @@ pub const MCP_TOOLS: [McpToolSpec; 9] = [
         risk: McpToolRisk::Low,
         desc_en: "Read the available snippets, including their commands and groups",
         desc_zh: "读取可用命令片段及其命令内容与分组",
+    },
+    McpToolSpec {
+        id: "list_terminal_sessions",
+        risk: McpToolRisk::Low,
+        desc_en: "List active local & SSH terminal sessions with Agent status and CWD",
+        desc_zh: "列出活跃的本地与 SSH 终端会话、Agent 状态及当前目录",
+    },
+    McpToolSpec {
+        id: "notify_session",
+        risk: McpToolRisk::Low,
+        desc_en: "Trigger a Portus Notification Ring and OS alert for a terminal session",
+        desc_zh: "向指定终端会话发送 Portus 通知光环与系统提醒",
+    },
+    McpToolSpec {
+        id: "set_session_status",
+        risk: McpToolRisk::Low,
+        desc_en: "Update an Agent terminal session's status badge and progress bar",
+        desc_zh: "更新 Agent 终端会话的运行状态徽标与进度条",
+    },
+    McpToolSpec {
+        id: "open_split_pane",
+        risk: McpToolRisk::Low,
+        desc_en: "Open a new split terminal pane in the active workspace tab",
+        desc_zh: "在当前终端标签中打开一个新的分屏会话",
     },
 ];
 
@@ -233,6 +257,7 @@ struct McpInner {
     active_sessions: HashMap<String, ActiveSessionEntry>,
     audit_sessions: Vec<McpAuditSession>,
     client_names: HashMap<String, String>,
+    agent_bus: Option<Arc<crate::agent_bus::AgentBus>>,
 }
 
 pub struct McpRuntime {
@@ -256,6 +281,7 @@ impl McpRuntime {
                 active_sessions: HashMap::new(),
                 audit_sessions: Vec::new(),
                 client_names: HashMap::new(),
+                agent_bus: None,
             }),
             events,
         });
@@ -263,6 +289,12 @@ impl McpRuntime {
             runtime.start_http_server();
         }
         runtime
+    }
+
+    pub fn attach_agent_bus(&self, bus: Arc<crate::agent_bus::AgentBus>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.agent_bus = Some(bus);
+        }
     }
 
     pub fn sync_settings(self: &Arc<Self>, settings: Settings) {
@@ -754,8 +786,99 @@ impl McpRuntime {
             "sftp_list" => self.tool_sftp_list(&settings, args).await,
             "sftp_read" => self.tool_sftp_read(&settings, args).await,
             "sftp_write" => self.tool_sftp_write(&settings, args, client_name).await,
+            "list_terminal_sessions" => self.tool_list_terminal_sessions(),
+            "notify_session" => self.tool_notify_session(args),
+            "set_session_status" => self.tool_set_session_status(args),
+            "open_split_pane" => self.tool_open_split_pane(args),
             _ => Err(format!("Unknown tool: {tool_name}")),
         }
+    }
+
+    fn tool_list_terminal_sessions(&self) -> Result<String, String> {
+        let bus = self
+            .inner
+            .lock()
+            .unwrap()
+            .agent_bus
+            .clone()
+            .ok_or_else(|| "Workspace agent bus is unavailable in stdio mode.".to_owned())?;
+        let sessions = bus.sessions_snapshot();
+        serde_json::to_string_pretty(&json!({ "sessions": sessions }))
+            .map_err(|e| format!("Serialization error: {e}"))
+    }
+
+    fn tool_notify_session(&self, args: Value) -> Result<String, String> {
+        let bus = self
+            .inner
+            .lock()
+            .unwrap()
+            .agent_bus
+            .clone()
+            .ok_or_else(|| "Workspace agent bus is unavailable in stdio mode.".to_owned())?;
+        let session_id = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let title = args.get("title").and_then(Value::as_str).map(str::to_owned);
+        let body = args
+            .get("body")
+            .or_else(|| args.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("Agent needs attention")
+            .to_owned();
+        bus.send_command(crate::agent_bus::AgentControlCommand::Notify {
+            session_id,
+            title,
+            body,
+        })?;
+        Ok(r#"{"ok":true}"#.to_owned())
+    }
+
+    fn tool_set_session_status(&self, args: Value) -> Result<String, String> {
+        let bus = self
+            .inner
+            .lock()
+            .unwrap()
+            .agent_bus
+            .clone()
+            .ok_or_else(|| "Workspace agent bus is unavailable in stdio mode.".to_owned())?;
+        let session_id = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let state = args
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("running")
+            .to_owned();
+        let message = args
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let progress = args
+            .get("progress")
+            .and_then(Value::as_u64)
+            .map(|v| v.min(100) as u8);
+        bus.send_command(crate::agent_bus::AgentControlCommand::SetStatus {
+            session_id,
+            state,
+            message,
+            progress,
+        })?;
+        Ok(r#"{"ok":true}"#.to_owned())
+    }
+
+    fn tool_open_split_pane(&self, args: Value) -> Result<String, String> {
+        let bus = self
+            .inner
+            .lock()
+            .unwrap()
+            .agent_bus
+            .clone()
+            .ok_or_else(|| "Workspace agent bus is unavailable in stdio mode.".to_owned())?;
+        let cwd = args.get("cwd").and_then(Value::as_str).map(str::to_owned);
+        bus.send_command(crate::agent_bus::AgentControlCommand::SplitPane { cwd })?;
+        Ok(r#"{"ok":true}"#.to_owned())
     }
 
     fn tool_list_hosts(&self, settings: &Settings) -> Result<String, String> {
@@ -2004,6 +2127,52 @@ fn tool_json_schema(id: &str) -> Value {
                 "required": ["session_id"]
             }
         }),
+        "list_terminal_sessions" => json!({
+            "name": "list_terminal_sessions",
+            "description": "List all open local and SSH terminal sessions in Portus with their Agent state, progress, and working directory.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }
+        }),
+        "notify_session" => json!({
+            "name": "notify_session",
+            "description": "Trigger a Portus Notification Ring and desktop alert for a terminal session.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Optional PORTUS_SESSION_ID; defaults to active session" },
+                    "title": { "type": "string" },
+                    "body": { "type": "string" }
+                },
+                "required": ["body"]
+            }
+        }),
+        "set_session_status" => json!({
+            "name": "set_session_status",
+            "description": "Update an Agent terminal session's visual state (running, waiting, idle, error) and optional progress percentage.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" },
+                    "state": { "type": "string", "enum": ["running", "waiting", "idle", "error"] },
+                    "message": { "type": "string" },
+                    "progress": { "type": "integer", "minimum": 0, "maximum": 100 }
+                },
+                "required": ["state"]
+            }
+        }),
+        "open_split_pane" => json!({
+            "name": "open_split_pane",
+            "description": "Open a new split terminal pane in the current Portus workspace tab.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "cwd": { "type": "string", "description": "Optional working directory for a local split pane" }
+                }
+            }
+        }),
         _ => json!({ "name": id, "inputSchema": { "type": "object" } }),
     }
 }
@@ -2385,7 +2554,8 @@ mod tests {
                 .await
                 .unwrap();
             let list = tools["result"]["tools"].as_array().unwrap();
-            assert_eq!(list.len(), 8); // sftp_write disabled by default
+            assert_eq!(list.len(), 12); // sftp_write disabled by default; 4 workspace agent tools included
+            assert!(list.iter().any(|t| t["name"] == "list_terminal_sessions"));
 
             let snippets = rt
                 .handle_jsonrpc(

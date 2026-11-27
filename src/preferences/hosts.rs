@@ -370,11 +370,6 @@ impl HostsPage {
         cx.notify();
     }
 
-    pub fn set_search_query(&mut self, query: String, cx: &mut Context<Self>) {
-        self.search_query = query;
-        cx.notify();
-    }
-
     pub fn open_new_host_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let saved = self.store.read(cx).current.clone();
         self.pending_click_gen = self.pending_click_gen.wrapping_add(1);
@@ -1471,8 +1466,7 @@ impl HostsPage {
 impl Render for HostsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = &self.store.read(cx).current;
-        let colors = saved.theme.colors();
-        let vibrancy = saved.vibrancy;
+        let colors = saved.theme.colors_for(saved.opacity);
         let opacity = saved.opacity;
         let language = saved.language;
         let keychain = saved.keychain.clone();
@@ -2105,7 +2099,7 @@ impl Render for HostsPage {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .bg(colors.content_bg(vibrancy, opacity))
+                    .bg(colors.content_bg(opacity))
                     .flex()
                     .flex_col()
                     .child(header)
