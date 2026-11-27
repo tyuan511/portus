@@ -12,6 +12,7 @@ mod settings;
 mod sftp;
 mod sftp_view;
 mod ssh;
+mod sync;
 mod terminal;
 mod theme;
 mod tunnel;

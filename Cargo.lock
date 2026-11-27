@@ -5884,10 +5884,13 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "async-channel",
+ "chrono",
  "data-encoding",
  "dirs 5.0.1",
  "gpui-kit",
  "gpui-terminal",
+ "hex",
+ "hmac 0.12.1",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -5898,10 +5901,12 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "sha2 0.10.9",
  "shell-words",
  "ssh2-config",
  "tempfile",
  "tokio",
+ "url",
 ]
 
 [[package]]

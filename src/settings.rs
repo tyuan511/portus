@@ -667,7 +667,118 @@ impl McpSettings {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncProvider {
+    #[default]
+    None,
+    S3,
+    WebDav,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncConflictStrategy {
+    #[default]
+    Overwrite,
+    Merge,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct S3SyncConfig {
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub access_key_id: String,
+    /// Encrypted locally via `vault::encrypt_secret`.
+    pub secret_access_key: String,
+    pub object_key: String,
+    pub path_style: bool,
+}
+
+impl Default for S3SyncConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            region: "us-east-1".to_owned(),
+            bucket: String::new(),
+            access_key_id: String::new(),
+            secret_access_key: String::new(),
+            object_key: "portus/config.json".to_owned(),
+            path_style: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WebDavSyncConfig {
+    pub endpoint: String,
+    pub username: String,
+    /// Encrypted locally via `vault::encrypt_secret`.
+    pub password: String,
+    pub remote_path: String,
+}
+
+impl Default for WebDavSyncConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            username: String::new(),
+            password: String::new(),
+            remote_path: "portus-config.json".to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SyncSettings {
+    pub provider: SyncProvider,
+    pub auto_sync: bool,
+    pub conflict_strategy: SyncConflictStrategy,
+    /// Optional E2EE passphrase (encrypted locally via `vault::encrypt_secret`).
+    pub encryption_passphrase: String,
+    pub s3: S3SyncConfig,
+    pub webdav: WebDavSyncConfig,
+    pub last_sync_at: Option<u64>,
+    pub last_sync_hash: String,
+    pub device_id: String,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            provider: SyncProvider::None,
+            auto_sync: false,
+            conflict_strategy: SyncConflictStrategy::Overwrite,
+            encryption_passphrase: String::new(),
+            s3: S3SyncConfig::default(),
+            webdav: WebDavSyncConfig::default(),
+            last_sync_at: None,
+            last_sync_hash: String::new(),
+            device_id: String::new(),
+        }
+    }
+}
+
+impl SyncSettings {
+    pub fn is_configured(&self) -> bool {
+        match self.provider {
+            SyncProvider::None => false,
+            SyncProvider::S3 => {
+                !self.s3.endpoint.trim().is_empty()
+                    && !self.s3.bucket.trim().is_empty()
+                    && !self.s3.access_key_id.trim().is_empty()
+                    && !self.s3.secret_access_key.is_empty()
+            }
+            SyncProvider::WebDav => !self.webdav.endpoint.trim().is_empty(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Settings {
     pub theme: Theme,
@@ -708,6 +819,7 @@ pub struct Settings {
     pub collapsed_groups: Vec<String>,
     pub sidebar_width: f32,
     pub mcp: McpSettings,
+    pub sync: SyncSettings,
 }
 
 impl Default for Settings {
@@ -751,11 +863,20 @@ impl Default for Settings {
             collapsed_groups: Vec::new(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             mcp: McpSettings::default(),
+            sync: SyncSettings::default(),
         }
     }
 }
 
 impl Settings {
+    pub fn normalize(&mut self) {
+        self.opacity = self.opacity.clamp(MIN_OPACITY, 100);
+        self.font_size = self.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        self.sidebar_width = clamp_sidebar_width(self.sidebar_width);
+        if self.mcp.port < MIN_MCP_PORT {
+            self.mcp.port = DEFAULT_MCP_PORT;
+        }
+    }
     pub fn resolve_host_auth(&self, host: &HostProfile) -> HostProfile {
         let mut resolved = host.clone();
         if let Some(kc_id) = host.keychain_id
@@ -866,12 +987,7 @@ impl SettingsStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => (Settings::default(), false),
             Err(error) => return Err(error),
         };
-        current.opacity = current.opacity.clamp(MIN_OPACITY, 100);
-        current.font_size = current.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
-        current.sidebar_width = clamp_sidebar_width(current.sidebar_width);
-        if current.mcp.port < MIN_MCP_PORT {
-            current.mcp.port = DEFAULT_MCP_PORT;
-        }
+        current.normalize();
         // Seed installations created before built-in snippets existed. Once a
         // snippet ID has been allocated, an intentionally empty list remains
         // empty so deleting all snippets is respected.

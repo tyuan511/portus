@@ -824,6 +824,7 @@ impl FileDrawer {
             .children((!changes.is_empty()).then(|| {
                 div()
                     .id("git-changes-list")
+                    .flex_shrink_0()
                     .max_h(px(190.))
                     .overflow_y_scroll()
                     .flex()
@@ -842,6 +843,7 @@ impl FileDrawer {
                         let mono = mono_font.clone();
                         div()
                             .id(("git-change-row", ix))
+                            .flex_shrink_0()
                             .h(px(26.))
                             .px(px(7.))
                             .rounded(px(5.))
@@ -904,6 +906,7 @@ impl FileDrawer {
                     .overflow_hidden()
                     .child(
                         div()
+                            .flex_shrink_0()
                             .px(px(8.))
                             .py(px(4.))
                             .border_b_1()
@@ -916,60 +919,89 @@ impl FileDrawer {
                     )
                     .child(
                         div()
-                            .id("git-diff-scroll")
+                            .id(("git-diff-scroll", self.diff_seq))
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
+                            .overflow_scroll()
                             .p(px(6.))
                             .font_family(mono)
                             .text_size(px(10.5))
-                            .flex()
-                            .flex_col()
-                            .gap(px(1.))
-                            .children(if self.diff_loading {
-                                vec![
-                                    div()
-                                        .text_color(rgb(colors.muted))
-                                        .child(language.text("Loading diff…", "正在加载 Diff…"))
-                                        .into_any_element(),
-                                ]
-                            } else if diff_lines.is_empty() {
-                                vec![
-                                    div()
-                                        .text_color(rgb(colors.muted))
-                                        .child(language.text("No diff preview", "无可展示的差异"))
-                                        .into_any_element(),
-                                ]
-                            } else {
-                                diff_lines
-                                    .into_iter()
-                                    .map(|line| {
-                                        let (fg, bg) = if line.starts_with('+')
-                                            && !line.starts_with("+++")
-                                        {
-                                            (colors.success, Some(rgb(colors.success).alpha(0.11)))
-                                        } else if line.starts_with('-')
-                                            && !line.starts_with("---")
-                                        {
-                                            (colors.danger, Some(rgb(colors.danger).alpha(0.11)))
-                                        } else if line.starts_with("@@") {
-                                            (colors.accent, Some(rgb(colors.accent).alpha(0.10)))
-                                        } else {
-                                            (colors.secondary, None)
-                                        };
-                                        let mut row = div()
-                                            .px(px(3.))
-                                            .rounded(px(2.))
-                                            .text_color(rgb(fg))
-                                            .truncate()
-                                            .child(line);
-                                        if let Some(bg) = bg {
-                                            row = row.bg(bg);
-                                        }
-                                        row.into_any_element()
-                                    })
-                                    .collect()
-                            }),
+                            .line_height(px(16.))
+                            .child(
+                                div()
+                                    .min_w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(1.))
+                                    .children(if self.diff_loading {
+                                        vec![
+                                            div()
+                                                .flex_shrink_0()
+                                                .text_color(rgb(colors.muted))
+                                                .child(language.text(
+                                                    "Loading diff…",
+                                                    "正在加载 Diff…",
+                                                ))
+                                                .into_any_element(),
+                                        ]
+                                    } else if diff_lines.is_empty() {
+                                        vec![
+                                            div()
+                                                .flex_shrink_0()
+                                                .text_color(rgb(colors.muted))
+                                                .child(language.text(
+                                                    "No diff preview",
+                                                    "无可展示的差异",
+                                                ))
+                                                .into_any_element(),
+                                        ]
+                                    } else {
+                                        diff_lines
+                                            .into_iter()
+                                            .map(|line| {
+                                                let (fg, bg) = if line.starts_with('+')
+                                                    && !line.starts_with("+++")
+                                                {
+                                                    (
+                                                        colors.success,
+                                                        Some(rgb(colors.success).alpha(0.11)),
+                                                    )
+                                                } else if line.starts_with('-')
+                                                    && !line.starts_with("---")
+                                                {
+                                                    (
+                                                        colors.danger,
+                                                        Some(rgb(colors.danger).alpha(0.11)),
+                                                    )
+                                                } else if line.starts_with("@@") {
+                                                    (
+                                                        colors.accent,
+                                                        Some(rgb(colors.accent).alpha(0.10)),
+                                                    )
+                                                } else {
+                                                    (colors.secondary, None)
+                                                };
+                                                let mut row = div()
+                                                    .flex_shrink_0()
+                                                    .min_h(px(18.))
+                                                    .px(px(4.))
+                                                    .py(px(1.))
+                                                    .rounded(px(2.))
+                                                    .text_color(rgb(fg))
+                                                    .whitespace_nowrap()
+                                                    .child(if line.is_empty() {
+                                                        " ".to_owned()
+                                                    } else {
+                                                        line
+                                                    });
+                                                if let Some(bg) = bg {
+                                                    row = row.bg(bg);
+                                                }
+                                                row.into_any_element()
+                                            })
+                                            .collect()
+                                    }),
+                            ),
                     )
             }))
     }
@@ -1165,6 +1197,7 @@ impl Render for FileDrawer {
 
                     div()
                         .group(row_group.clone())
+                        .flex_shrink_0()
                         .h(px(28.))
                         .px(px(8.))
                         .rounded(px(6.))

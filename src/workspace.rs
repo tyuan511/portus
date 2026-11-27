@@ -4,10 +4,10 @@ use std::process::Command;
 use std::sync::Arc;
 
 use gpui_kit::{
-    AppContext as _, ClipboardItem, Context, ElementId, Entity, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Pixels,
-    Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window,
+    AppContext as _, ClipboardItem, Context, DragMoveEvent, ElementId, Entity, FocusHandle,
+    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement as _, Pixels, Point, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window,
     component::{
         Sizable as _,
         button::{Button, ButtonVariants as _},
@@ -33,6 +33,7 @@ use crate::settings::{
 };
 use crate::sftp_view::{SftpView, SftpViewEvent};
 use crate::ssh::{ServerTelemetry, supports_sftp};
+use crate::sync::{SyncManager, SyncUiEvent, apply_remote_settings, compute_snapshot_hash};
 use crate::terminal::{AgentActivity, TerminalConfig, TerminalSession, TerminalSessionEvent};
 use crate::theme::{Colors, Theme};
 use crate::updater::{CURRENT_VERSION, UpdateManager, UpdateStatus, UpdateUiEvent};
@@ -108,6 +109,57 @@ struct Tab {
     kind: TabKind,
 }
 
+#[derive(Clone)]
+struct DraggedTab {
+    tab_id: u64,
+    label: SharedString,
+    dot_color: u32,
+    colors: Colors,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .h(px(26.))
+            .min_w(px(120.))
+            .max_w(px(210.))
+            .pl(px(10.))
+            .pr(px(10.))
+            .rounded(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(7.))
+            .bg(self.colors.surface_active_glass())
+            .border_1()
+            .border_color(self.colors.hairline_strong())
+            .shadow_md()
+            .opacity(0.92)
+            .child(
+                div()
+                    .size(px(6.))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(rgb(self.dot_color)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(self.colors.foreground))
+                    .child(self.label.clone()),
+            )
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TabDropTarget {
+    target_id: u64,
+    insert_after: bool,
+}
+
 pub struct Workspace {
     focus: FocusHandle,
     in_vault: bool,
@@ -117,6 +169,8 @@ pub struct Workspace {
     active: usize,
     next_tab: u64,
     tab_scroll: ScrollHandle,
+    dragging_tab_id: Option<u64>,
+    tab_drop_target: Option<TabDropTarget>,
     settings: Entity<SettingsStore>,
     hosts: Option<Entity<HostsPage>>,
     keychain: Option<Entity<KeychainPage>>,
@@ -125,6 +179,8 @@ pub struct Workspace {
     mcp_runtime: Arc<McpRuntime>,
     agent_bus: Arc<AgentBus>,
     updater: Arc<UpdateManager>,
+    sync_manager: Arc<SyncManager>,
+    auto_sync_gen: u64,
     preferences: Option<Entity<Preferences>>,
     quick_connect: Option<Entity<QuickConnectPalette>>,
     file_drawer: Option<Entity<FileDrawer>>,
@@ -213,6 +269,34 @@ impl Workspace {
                 apply_window_style(window, opacity, next_dark, cx);
             }
             this.sync_file_drawer(window, cx);
+            if saved.sync.auto_sync && saved.sync.is_configured() {
+                let current_hash = compute_snapshot_hash(&saved);
+                if current_hash != saved.sync.last_sync_hash {
+                    this.auto_sync_gen = this.auto_sync_gen.wrapping_add(1);
+                    let expected_gen = this.auto_sync_gen;
+                    let delay = cx
+                        .background_executor()
+                        .timer(std::time::Duration::from_secs(5));
+                    cx.spawn_in(window, async move |ws, cx| {
+                        delay.await;
+                        let _ = cx.update(|_, cx| {
+                            let _ = ws.update(cx, |this, cx| {
+                                if this.auto_sync_gen != expected_gen {
+                                    return;
+                                }
+                                let latest = this.settings.read(cx).current.clone();
+                                if latest.sync.auto_sync
+                                    && latest.sync.is_configured()
+                                    && compute_snapshot_hash(&latest) != latest.sync.last_sync_hash
+                                {
+                                    this.sync_manager.push(latest, true);
+                                }
+                            });
+                        });
+                    })
+                    .detach();
+                }
+            }
             cx.notify();
         });
 
@@ -388,6 +472,148 @@ impl Workspace {
             .detach();
         }
 
+        let (sync_tx, sync_rx) = async_channel::unbounded::<SyncUiEvent>();
+        let sync_manager = SyncManager::new(Some(sync_tx));
+        let initial_sync_settings = settings.read(cx).current.clone();
+        cx.spawn_in(window, async move |ws, cx| {
+            while let Ok(ev) = sync_rx.recv().await {
+                let _ = cx.update(|window, cx| {
+                    let _ = ws.update(cx, |this, cx| {
+                        let lang = this.language;
+                        match ev {
+                            SyncUiEvent::Changed => {}
+                            SyncUiEvent::TestSucceeded { message } => {
+                                crate::notify::success(message, window, cx);
+                            }
+                            SyncUiEvent::TestFailed { message } => {
+                                crate::notify::error(message, window, cx);
+                            }
+                            SyncUiEvent::Pushed {
+                                timestamp,
+                                content_hash,
+                                device_id,
+                                silent,
+                            } => {
+                                let _ = this.settings.update(cx, |store, cx| {
+                                    let res = store.update(|s| {
+                                        s.sync.last_sync_at = Some(timestamp);
+                                        s.sync.last_sync_hash = content_hash;
+                                        s.sync.device_id = device_id;
+                                    });
+                                    if res.is_ok() {
+                                        cx.notify();
+                                    }
+                                });
+                                if !silent {
+                                    crate::notify::success(
+                                        lang.text(
+                                            "Configuration uploaded to cloud.",
+                                            "配置已上传至云端。",
+                                        ),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
+                            SyncUiEvent::Pulled {
+                                settings: remote,
+                                timestamp,
+                                content_hash: _,
+                                device_id,
+                                strategy,
+                                silent,
+                            } => {
+                                let mut apply_result = Ok(Default::default());
+                                let save_res = this.settings.update(cx, |store, cx| {
+                                    let res = store.update(|s| {
+                                        apply_result = apply_remote_settings(s, *remote, strategy);
+                                        if apply_result.is_ok() {
+                                            s.sync.last_sync_at = Some(timestamp);
+                                            s.sync.last_sync_hash = compute_snapshot_hash(s);
+                                            s.sync.device_id = device_id;
+                                        }
+                                    });
+                                    if res.is_ok() && apply_result.is_ok() {
+                                        cx.notify();
+                                    }
+                                    res
+                                });
+                                match (save_res, apply_result) {
+                                    (Ok(()), Ok(stats)) => {
+                                        if let Some(preferences) = &this.preferences {
+                                            preferences.update(cx, |p, cx| {
+                                                p.sync_from_store(window, cx);
+                                            });
+                                        }
+                                        if !silent {
+                                            let msg = match lang {
+                                                Language::English => format!(
+                                                    "Synced from cloud ({} hosts, {} snippets, {} tunnels).",
+                                                    stats.hosts, stats.snippets, stats.tunnels
+                                                ),
+                                                Language::ChineseSimplified => format!(
+                                                    "已从云端拉取配置（{} 台主机、{} 个片段、{} 条隧道）。",
+                                                    stats.hosts, stats.snippets, stats.tunnels
+                                                ),
+                                            };
+                                            crate::notify::success(msg, window, cx);
+                                        }
+                                    }
+                                    (Err(err), _) | (_, Err(err)) => {
+                                        if !silent {
+                                            crate::notify::error(err, window, cx);
+                                        }
+                                    }
+                                }
+                            }
+                            SyncUiEvent::UpToDate { timestamp, silent } => {
+                                let _ = this.settings.update(cx, |store, cx| {
+                                    let res = store.update(|s| {
+                                        s.sync.last_sync_at = Some(timestamp);
+                                    });
+                                    if res.is_ok() {
+                                        cx.notify();
+                                    }
+                                });
+                                if !silent {
+                                    crate::notify::info(
+                                        lang.text(
+                                            "Configuration is already up to date.",
+                                            "配置已是最新，无需同步。",
+                                        ),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
+                            SyncUiEvent::Failed { message, silent } => {
+                                if !silent {
+                                    crate::notify::error(message, window, cx);
+                                }
+                            }
+                        }
+                        if let Some(preferences) = &this.preferences {
+                            preferences.update(cx, |p, cx| p.notify_sync(cx));
+                        }
+                        cx.notify();
+                    });
+                });
+            }
+        })
+        .detach();
+
+        if initial_sync_settings.sync.auto_sync && initial_sync_settings.sync.is_configured() {
+            let sync_bg = Arc::clone(&sync_manager);
+            let delay = cx
+                .background_executor()
+                .timer(std::time::Duration::from_secs(2));
+            cx.background_spawn(async move {
+                delay.await;
+                sync_bg.sync_now(initial_sync_settings, true);
+            })
+            .detach();
+        }
+
         let mut this = Self {
             focus: cx.focus_handle(),
             in_vault: true,
@@ -397,6 +623,8 @@ impl Workspace {
             active: 0,
             next_tab: 1,
             tab_scroll: ScrollHandle::new(),
+            dragging_tab_id: None,
+            tab_drop_target: None,
             settings,
             hosts: None,
             keychain: None,
@@ -405,6 +633,8 @@ impl Workspace {
             mcp_runtime,
             agent_bus,
             updater,
+            sync_manager,
+            auto_sync_gen: 0,
             preferences: None,
             quick_connect: None,
             file_drawer: None,
@@ -1166,6 +1396,7 @@ impl Workspace {
                 self.settings.clone(),
                 Arc::clone(&self.mcp_runtime),
                 Arc::clone(&self.updater),
+                Arc::clone(&self.sync_manager),
                 window,
                 cx,
             )
@@ -1558,6 +1789,8 @@ impl Workspace {
         if index >= self.tabs.len() {
             return;
         }
+        self.dragging_tab_id = None;
+        self.tab_drop_target = None;
         let removed = self.tabs.remove(index);
         match removed.kind {
             TabKind::Terminal { panes, .. } => {
@@ -1586,6 +1819,52 @@ impl Workspace {
         if !self.in_vault && !self.tabs.is_empty() {
             self.close_tab(self.active, window, cx);
         }
+    }
+
+    fn reorder_tab(
+        &mut self,
+        dragged_id: u64,
+        target_id: u64,
+        insert_after: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.dragging_tab_id = None;
+        self.tab_drop_target = None;
+        let Some(from) = self.tabs.iter().position(|t| t.id == dragged_id) else {
+            cx.notify();
+            return;
+        };
+        let Some(target) = self.tabs.iter().position(|t| t.id == target_id) else {
+            cx.notify();
+            return;
+        };
+        let dest = reorder_destination(from, target, insert_after);
+        if dest == from {
+            cx.notify();
+            return;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(dest, tab);
+        self.active = active_after_move(self.active, from, dest);
+        self.save_session(cx);
+        cx.notify();
+    }
+
+    fn tab_drop_target_for(
+        &self,
+        dragged_id: u64,
+        target_id: u64,
+        insert_after: bool,
+    ) -> Option<TabDropTarget> {
+        let from = self.tabs.iter().position(|t| t.id == dragged_id)?;
+        let target = self.tabs.iter().position(|t| t.id == target_id)?;
+        if reorder_destination(from, target, insert_after) == from {
+            return None;
+        }
+        Some(TabDropTarget {
+            target_id,
+            insert_after,
+        })
     }
 
     fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1783,6 +2062,10 @@ impl Workspace {
             ))
             .child(language.text("Workspace", "工作台"));
 
+        let has_tab_drag = cx.has_active_drag();
+        let dragging_tab_id = has_tab_drag.then_some(self.dragging_tab_id).flatten();
+        let tab_drop_target = has_tab_drag.then_some(self.tab_drop_target).flatten();
+
         let tabs_row = div()
             .id("session-tabs-strip")
             .flex_1()
@@ -1792,8 +2075,41 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(px(4.))
+            .on_drag_move::<DraggedTab>(cx.listener(
+                |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                    let dragged_id = event.drag(cx).tab_id;
+                    let mut changed = false;
+                    if this.dragging_tab_id != Some(dragged_id) {
+                        this.dragging_tab_id = Some(dragged_id);
+                        changed = true;
+                    }
+                    if !event.bounds.contains(&event.event.position)
+                        && this.tab_drop_target.is_some()
+                    {
+                        this.tab_drop_target = None;
+                        changed = true;
+                    }
+                    if changed {
+                        cx.notify();
+                    }
+                },
+            ))
+            .on_drop::<DraggedTab>(cx.listener(|this, drag: &DraggedTab, _, cx| {
+                if let Some(target) = this.tab_drop_target {
+                    this.reorder_tab(drag.tab_id, target.target_id, target.insert_after, cx);
+                } else {
+                    this.dragging_tab_id = None;
+                    this.tab_drop_target = None;
+                    cx.notify();
+                }
+            }))
             .children(self.tabs.iter().enumerate().map(|(idx, tab)| {
+                let tab_id = tab.id;
                 let is_active = !self.in_vault && idx == self.active;
+                let is_dragging = dragging_tab_id == Some(tab_id);
+                let drop_side = tab_drop_target
+                    .filter(|t| t.target_id == tab_id)
+                    .map(|t| t.insert_after);
                 let (dot_color, label, has_attention, tab_progress) = match &tab.kind {
                     TabKind::Terminal { panes, active_pane } => {
                         let any_attention = panes
@@ -1872,8 +2188,30 @@ impl Workspace {
                         )
                 });
 
+                let drop_indicator = drop_side.map(|insert_after| {
+                    let bar = div()
+                        .absolute()
+                        .top(px(4.))
+                        .bottom(px(4.))
+                        .w(px(2.))
+                        .rounded_full()
+                        .bg(rgb(colors.accent));
+                    if insert_after {
+                        bar.right_0()
+                    } else {
+                        bar.left_0()
+                    }
+                });
+
+                let drag_payload = DraggedTab {
+                    tab_id,
+                    label: SharedString::from(label.clone()),
+                    dot_color,
+                    colors,
+                };
+
                 div()
-                    .id(("session-tab", tab.id))
+                    .id(("session-tab", tab_id))
                     .relative()
                     .h(px(26.))
                     .min_w(px(120.))
@@ -1901,7 +2239,44 @@ impl Workspace {
                     } else {
                         transparent_black().into()
                     })
+                    .opacity(if is_dragging { 0.45 } else { 1.0 })
                     .hover(|s| s.bg(colors.surface_hover_glass()))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_drag(drag_payload, |drag, _offset, _, cx| {
+                        cx.new(|_| drag.clone())
+                    })
+                    .on_drag_move::<DraggedTab>(cx.listener(
+                        move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                            if !event.bounds.contains(&event.event.position) {
+                                return;
+                            }
+                            let dragged_id = event.drag(cx).tab_id;
+                            let insert_after = event.event.position.x >= event.bounds.center().x;
+                            let next_target =
+                                this.tab_drop_target_for(dragged_id, tab_id, insert_after);
+                            if this.tab_drop_target != next_target
+                                || this.dragging_tab_id != Some(dragged_id)
+                            {
+                                this.dragging_tab_id = Some(dragged_id);
+                                this.tab_drop_target = next_target;
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .on_drop::<DraggedTab>(cx.listener(move |this, drag: &DraggedTab, _, cx| {
+                        let insert_after = this
+                            .tab_drop_target
+                            .filter(|t| t.target_id == tab_id)
+                            .map(|t| t.insert_after)
+                            .unwrap_or_else(|| {
+                                let from = this.tabs.iter().position(|t| t.id == drag.tab_id);
+                                let target = this.tabs.iter().position(|t| t.id == tab_id);
+                                matches!((from, target), (Some(f), Some(t)) if f < t)
+                            });
+                        this.reorder_tab(drag.tab_id, tab_id, insert_after, cx);
+                    }))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_tab(idx, window, cx);
                     }))
@@ -1926,7 +2301,7 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .id(("tab-close", tab.id))
+                            .id(("tab-close", tab_id))
                             .size(px(16.))
                             .flex_shrink_0()
                             .rounded(px(4.))
@@ -1934,6 +2309,9 @@ impl Workspace {
                             .items_center()
                             .justify_center()
                             .hover(|s| s.bg(colors.surface_hover_glass()))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.close_tab(idx, window, cx);
@@ -1941,6 +2319,7 @@ impl Workspace {
                             .child(Icon::Close.render(px(10.), colors.muted)),
                     )
                     .children(progress_bar)
+                    .children(drop_indicator)
             }))
             .child(
                 div()
@@ -1964,6 +2343,34 @@ impl Workspace {
                         transparent_black().into()
                     })
                     .hover(|s| s.bg(colors.surface_hover_glass()))
+                    .on_drag_move::<DraggedTab>(cx.listener(
+                        |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                            if !event.bounds.contains(&event.event.position) {
+                                return;
+                            }
+                            let dragged_id = event.drag(cx).tab_id;
+                            let next_target = this
+                                .tabs
+                                .last()
+                                .and_then(|last| this.tab_drop_target_for(dragged_id, last.id, true));
+                            if this.tab_drop_target != next_target
+                                || this.dragging_tab_id != Some(dragged_id)
+                            {
+                                this.dragging_tab_id = Some(dragged_id);
+                                this.tab_drop_target = next_target;
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .on_drop::<DraggedTab>(cx.listener(|this, drag: &DraggedTab, _, cx| {
+                        if let Some(last_id) = this.tabs.last().map(|t| t.id) {
+                            this.reorder_tab(drag.tab_id, last_id, true, cx);
+                        } else {
+                            this.dragging_tab_id = None;
+                            this.tab_drop_target = None;
+                            cx.notify();
+                        }
+                    }))
                     .on_click(cx.listener(|this, event: &gpui_kit::ClickEvent, _, cx| {
                         this.new_tab_menu_open = !this.new_tab_menu_open;
                         this.new_tab_menu_pos = Some(event.position());
@@ -4364,9 +4771,26 @@ fn active_after_close(active: usize, removed: usize, remaining: usize) -> usize 
     }
 }
 
+fn reorder_destination(from: usize, target: usize, insert_after: bool) -> usize {
+    let slot = if insert_after { target + 1 } else { target };
+    if slot > from { slot - 1 } else { slot }
+}
+
+fn active_after_move(active: usize, from: usize, to: usize) -> usize {
+    if active == from {
+        to
+    } else if from < active && active <= to {
+        active - 1
+    } else if to <= active && active < from {
+        active + 1
+    } else {
+        active
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::active_after_close;
+    use super::{active_after_close, active_after_move, reorder_destination};
 
     #[test]
     fn closing_tabs_preserves_the_active_session_or_selects_a_neighbor() {
@@ -4374,5 +4798,30 @@ mod tests {
         assert_eq!(active_after_close(1, 3, 3), 1);
         assert_eq!(active_after_close(1, 1, 3), 1);
         assert_eq!(active_after_close(3, 3, 3), 2);
+    }
+
+    #[test]
+    fn reordering_tabs_computes_insertion_index_and_tracks_active_tab() {
+        // [A, B, C, D]: drag A before C -> [B, A, C, D]
+        assert_eq!(reorder_destination(0, 2, false), 1);
+        // [A, B, C, D]: drag A after C -> [B, C, A, D]
+        assert_eq!(reorder_destination(0, 2, true), 2);
+        // [A, B, C, D]: drag C before A -> [C, A, B, D]
+        assert_eq!(reorder_destination(2, 0, false), 0);
+        // [A, B, C, D]: drag C after A -> [A, C, B, D]
+        assert_eq!(reorder_destination(2, 0, true), 1);
+        // No-op adjacent drops stay in place
+        assert_eq!(reorder_destination(1, 0, true), 1);
+        assert_eq!(reorder_destination(1, 2, false), 1);
+        assert_eq!(reorder_destination(1, 1, false), 1);
+        assert_eq!(reorder_destination(1, 1, true), 1);
+
+        // Active tab index updates across all move directions
+        assert_eq!(active_after_move(1, 1, 3), 3);
+        assert_eq!(active_after_move(1, 0, 2), 0);
+        assert_eq!(active_after_move(1, 0, 1), 0);
+        assert_eq!(active_after_move(1, 3, 0), 2);
+        assert_eq!(active_after_move(1, 3, 1), 2);
+        assert_eq!(active_after_move(1, 3, 2), 1);
     }
 }

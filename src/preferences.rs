@@ -2,6 +2,7 @@ mod hosts;
 mod keychain;
 mod mcp;
 mod snippets;
+mod sync;
 mod tunnels;
 
 use std::sync::Arc;
@@ -29,6 +30,7 @@ use crate::settings::{
     MAX_FONT_SIZE, MIN_FONT_SIZE, MIN_OPACITY, ScrollbackLimit, Settings, SettingsStore,
     SftpConflictPolicy, ShellSettings, default_shortcuts,
 };
+use crate::sync::SyncManager;
 use crate::theme::{Colors, Theme, ThemeMode};
 use crate::updater::{
     UpdateManager, UpdateStatus, format_bytes, open_external_path, open_external_url,
@@ -38,6 +40,7 @@ pub(crate) use hosts::{HostsEvent, HostsPage};
 pub(crate) use keychain::KeychainPage;
 pub(crate) use mcp::McpPage;
 pub(crate) use snippets::{SnippetsEvent, SnippetsPage};
+pub(crate) use sync::SyncPage;
 pub(crate) use tunnels::TunnelsPage;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -47,16 +50,18 @@ enum SettingsTab {
     Terminal,
     Connection,
     Mcp,
+    Sync,
     Security,
     Shortcuts,
 }
 
 impl SettingsTab {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Appearance,
         Self::Terminal,
         Self::Connection,
         Self::Mcp,
+        Self::Sync,
         Self::Security,
         Self::Shortcuts,
     ];
@@ -67,6 +72,7 @@ impl SettingsTab {
             Self::Terminal => language.text("Terminal & Shell", "终端与 Shell"),
             Self::Connection => language.text("Connection & SFTP", "连接与传输"),
             Self::Mcp => language.text("MCP Server", "MCP 服务"),
+            Self::Sync => language.text("Cloud Sync", "云同步"),
             Self::Security => language.text("Security & Vault", "安全与备份"),
             Self::Shortcuts => language.text("Shortcuts & About", "快捷键与关于"),
         }
@@ -78,6 +84,7 @@ impl SettingsTab {
             Self::Terminal => Icon::Terminal,
             Self::Connection => Icon::Network,
             Self::Mcp => Icon::Mcp,
+            Self::Sync => Icon::Cloud,
             Self::Security => Icon::Lock,
             Self::Shortcuts => Icon::Keyboard,
         }
@@ -89,6 +96,7 @@ impl SettingsTab {
             Self::Terminal => 0x2c2c2e,
             Self::Connection => 0x34c759,
             Self::Mcp => 0x5856d6,
+            Self::Sync => 0x30b0c7,
             Self::Security => 0xff3b30,
             Self::Shortcuts => 0x636366,
         }
@@ -223,6 +231,7 @@ pub struct Preferences {
     mcp_runtime: Arc<McpRuntime>,
     updater: Arc<UpdateManager>,
     mcp_page: Entity<McpPage>,
+    sync_page: Entity<SyncPage>,
     _subs: Vec<Subscription>,
 }
 
@@ -239,6 +248,7 @@ impl Preferences {
         store: Entity<SettingsStore>,
         mcp_runtime: Arc<McpRuntime>,
         updater: Arc<UpdateManager>,
+        sync_manager: Arc<SyncManager>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -439,6 +449,7 @@ impl Preferences {
         }
 
         let mcp_page = cx.new(|cx| McpPage::new(store.clone(), Arc::clone(&mcp_runtime), window, cx));
+        let sync_page = cx.new(|cx| SyncPage::new(store.clone(), sync_manager, window, cx));
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -463,6 +474,7 @@ impl Preferences {
             mcp_runtime,
             updater,
             mcp_page,
+            sync_page,
             _subs: vec![
                 opacity_sub,
                 font_size_sub,
@@ -479,6 +491,53 @@ impl Preferences {
 
     pub fn notify_mcp(&mut self, cx: &mut Context<Self>) {
         self.mcp_page.update(cx, |_, cx| cx.notify());
+        cx.notify();
+    }
+
+    pub fn notify_sync(&mut self, cx: &mut Context<Self>) {
+        self.sync_page.update(cx, |_, cx| cx.notify());
+        cx.notify();
+    }
+
+    pub fn sync_from_store(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.store.read(cx).current.clone();
+        self.theme_mode = current.theme.mode();
+        match self.theme_mode {
+            ThemeMode::Dark => self.last_dark = current.theme,
+            ThemeMode::Light => self.last_light = current.theme,
+        }
+        self.login_shell = current.shell.login;
+        let shell_exec = current.shell.executable.clone();
+        self.shell_path
+            .update(cx, |input, cx| input.set_value(shell_exec, window, cx));
+        let dl_dir = current.sftp_download_dir.clone();
+        self.sftp_download_dir
+            .update(cx, |input, cx| input.set_value(dl_dir, window, cx));
+        self.opacity_slider
+            .update(cx, |s, cx| s.set_value(f32::from(current.opacity), window, cx));
+        self.font_size_slider
+            .update(cx, |s, cx| s.set_value(f32::from(current.font_size), window, cx));
+        let language = current.language;
+        self.font_select.update(cx, |select, cx| {
+            select.set_items(font_select_items(language), window, cx);
+            select.set_selected_value(&current.font_family, window, cx);
+        });
+        self.scrollback_select.update(cx, |select, cx| {
+            select.set_items(scrollback_select_items(language), window, cx);
+            select.set_selected_value(&current.scrollback, window, cx);
+        });
+        self.keep_alive_select.update(cx, |select, cx| {
+            select.set_items(keep_alive_select_items(language), window, cx);
+            select.set_selected_value(&current.keep_alive_secs, window, cx);
+        });
+        self.connect_timeout_select.update(cx, |select, cx| {
+            select.set_items(connect_timeout_select_items(language), window, cx);
+            select.set_selected_value(&current.connect_timeout_secs, window, cx);
+        });
+        self.auto_lock_select.update(cx, |select, cx| {
+            select.set_items(auto_lock_select_items(language), window, cx);
+            select.set_selected_value(&current.auto_lock_mins, window, cx);
+        });
         cx.notify();
     }
 
@@ -989,6 +1048,14 @@ impl Render for Preferences {
                 .overflow_hidden()
                 .child(self.mcp_page.clone())
                 .into_any_element()
+        } else if self.active_tab == SettingsTab::Sync {
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .overflow_hidden()
+                .child(self.sync_page.clone())
+                .into_any_element()
         } else {
             let pane_content = match self.active_tab {
                 SettingsTab::Appearance => self.render_appearance(&saved, colors, language, cx),
@@ -996,7 +1063,7 @@ impl Render for Preferences {
                 SettingsTab::Connection => self.render_connection(&saved, colors, language, cx),
                 SettingsTab::Security => self.render_security(&saved, colors, language, cx),
                 SettingsTab::Shortcuts => self.render_shortcuts(&saved, colors, language, cx),
-                SettingsTab::Mcp => unreachable!(),
+                SettingsTab::Mcp | SettingsTab::Sync => unreachable!(),
             };
             div()
                 .id("settings-scroll")
@@ -2794,7 +2861,7 @@ fn eval_passphrase_strength(
     }
 }
 
-fn group_title(text: &'static str, colors: Colors) -> gpui_kit::Div {
+pub(crate) fn group_title(text: &'static str, colors: Colors) -> gpui_kit::Div {
     div()
         .pl(px(2.))
         .mb(px(-8.))
@@ -2804,7 +2871,7 @@ fn group_title(text: &'static str, colors: Colors) -> gpui_kit::Div {
         .child(text.to_uppercase())
 }
 
-fn inset_card(colors: Colors) -> gpui_kit::Div {
+pub(crate) fn inset_card(colors: Colors) -> gpui_kit::Div {
     div()
         .w_full()
         .rounded(px(10.))
@@ -2816,7 +2883,7 @@ fn inset_card(colors: Colors) -> gpui_kit::Div {
         .flex_col()
 }
 
-fn inset_row(with_top_border: bool, colors: Colors) -> gpui_kit::Div {
+pub(crate) fn inset_row(with_top_border: bool, colors: Colors) -> gpui_kit::Div {
     let mut row = div()
         .px(px(14.))
         .py(px(12.))
@@ -2830,7 +2897,7 @@ fn inset_row(with_top_border: bool, colors: Colors) -> gpui_kit::Div {
     row
 }
 
-fn inset_col_row(with_top_border: bool, colors: Colors) -> gpui_kit::Div {
+pub(crate) fn inset_col_row(with_top_border: bool, colors: Colors) -> gpui_kit::Div {
     let mut row = div()
         .px(px(14.))
         .py(px(12.))
@@ -2843,7 +2910,7 @@ fn inset_col_row(with_top_border: bool, colors: Colors) -> gpui_kit::Div {
     row
 }
 
-fn row_text(title: &'static str, desc: &'static str, colors: Colors) -> gpui_kit::Div {
+pub(crate) fn row_text(title: &'static str, desc: &'static str, colors: Colors) -> gpui_kit::Div {
     div()
         .flex_1()
         .min_w_0()
@@ -2865,7 +2932,7 @@ fn row_text(title: &'static str, desc: &'static str, colors: Colors) -> gpui_kit
         )
 }
 
-fn value_pill(text: impl Into<SharedString>, colors: Colors) -> gpui_kit::Div {
+pub(crate) fn value_pill(text: impl Into<SharedString>, colors: Colors) -> gpui_kit::Div {
     div()
         .px(px(8.))
         .py(px(2.))
@@ -2881,9 +2948,9 @@ fn dot(color: u32) -> gpui_kit::Div {
     div().size(px(5.5)).rounded_full().bg(rgb(color))
 }
 
-type SegHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+pub(crate) type SegHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-fn seg_item(
+pub(crate) fn seg_item(
     id: &'static str,
     active: bool,
     label: &'static str,
@@ -2892,7 +2959,7 @@ fn seg_item(
     (id, active, label, Box::new(handler))
 }
 
-fn segmented_control<I>(colors: Colors, items: I) -> gpui_kit::Div
+pub(crate) fn segmented_control<I>(colors: Colors, items: I) -> gpui_kit::Div
 where
     I: IntoIterator<Item = (&'static str, bool, &'static str, SegHandler)>,
 {
