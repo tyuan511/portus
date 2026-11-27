@@ -19,7 +19,8 @@ use crate::icons::Icon;
 use crate::mcp::{McpRuntime, McpUiEvent};
 use crate::platform::{apply_window_style, drag_window, hide_traffic_lights};
 use crate::preferences::{
-    HostsEvent, HostsPage, KeychainPage, Preferences, SnippetsEvent, SnippetsPage, TunnelsPage,
+    HostsEvent, HostsPage, KeychainPage, Preferences, PreferencesEvent, SnippetsEvent, SnippetsPage,
+    TunnelsPage,
 };
 use crate::quick_connect::{QuickConnectEvent, QuickConnectPalette};
 use crate::settings::{HostProfile, HostProtocol, Language, SettingsStore, Snippet};
@@ -27,10 +28,11 @@ use crate::sftp_view::{SftpView, SftpViewEvent};
 use crate::ssh::{ServerTelemetry, supports_sftp};
 use crate::terminal::TerminalSession;
 use crate::theme::{Colors, Theme};
+use crate::updater::{CURRENT_VERSION, UpdateManager, UpdateStatus, UpdateUiEvent};
 use crate::{
-    CloseTab, CloseWindow, FindInTerminal, MinimizeWindow, NewTab, NextTab, PreviousTab,
-    SelectTab, ShowHosts, ShowSettings, ShowSnippets, ShowTunnels, ShowVault, SplitPane,
-    ToggleFilesDrawer, ToggleFullscreen, ToggleQuickConnect, ToggleSnippetsDrawer,
+    CheckForUpdates, CloseTab, CloseWindow, FindInTerminal, MinimizeWindow, NewTab, NextTab,
+    PreviousTab, SelectTab, ShowHosts, ShowSettings, ShowSnippets, ShowTunnels, ShowVault,
+    SplitPane, ToggleFilesDrawer, ToggleFullscreen, ToggleQuickConnect, ToggleSnippetsDrawer,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -102,7 +104,6 @@ pub struct Workspace {
     in_vault: bool,
     vault_section: VaultSection,
     selected_group: Option<String>,
-    vault_search: Entity<InputState>,
     tabs: Vec<Tab>,
     active: usize,
     next_tab: u64,
@@ -113,6 +114,7 @@ pub struct Workspace {
     snippets: Entity<SnippetsPage>,
     tunnels: Entity<TunnelsPage>,
     mcp_runtime: Arc<McpRuntime>,
+    updater: Arc<UpdateManager>,
     preferences: Entity<Preferences>,
     quick_connect: Entity<QuickConnectPalette>,
     file_drawer: Entity<FileDrawer>,
@@ -132,9 +134,9 @@ pub struct Workspace {
     _settings_updates: Subscription,
     _hosts_events: Subscription,
     _snippets_events: Subscription,
+    _preferences_events: Subscription,
     _quick_connect_events: Subscription,
     _file_drawer_events: Subscription,
-    _search_events: Subscription,
     _window_bounds: Subscription,
 }
 
@@ -252,9 +254,144 @@ impl Workspace {
             }
         })
         .detach();
+        let (update_tx, update_rx) = async_channel::unbounded::<UpdateUiEvent>();
+        let updater = UpdateManager::new(Some(update_tx));
+        let auto_check_updates = settings.read(cx).current.auto_check_updates;
+        cx.spawn_in(window, async move |ws, cx| {
+            while let Ok(ev) = update_rx.recv().await {
+                let ws_for_action = ws.clone();
+                let _ = cx.update(|window, cx| {
+                    let _ = ws.update(cx, |this, cx| {
+                        let lang = this.language;
+                        match ev {
+                            UpdateUiEvent::Changed => {}
+                            UpdateUiEvent::UpdateFound { release, silent } => {
+                                let viewing_settings =
+                                    this.in_vault && this.vault_section == VaultSection::Settings;
+                                if silent || !viewing_settings {
+                                    let title = lang.text("Update Available", "发现新版本");
+                                    let message = match lang {
+                                        Language::English => format!(
+                                            "Portus {} is available (current v{CURRENT_VERSION}).",
+                                            release.tag_name
+                                        ),
+                                        Language::ChineseSimplified => format!(
+                                            "Portus {} 已发布（当前 v{CURRENT_VERSION}）。",
+                                            release.tag_name
+                                        ),
+                                    };
+                                    let action_label = lang.text("View Update", "查看更新");
+                                    let ws_action = ws_for_action.clone();
+                                    crate::notify::update_action(
+                                        title,
+                                        message,
+                                        action_label,
+                                        move |window, cx| {
+                                            let _ = ws_action.update(cx, |ws, cx| {
+                                                ws.open_updates(window, cx);
+                                            });
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
+                            UpdateUiEvent::UpToDate { silent } => {
+                                if !silent {
+                                    let msg = match lang {
+                                        Language::English => {
+                                            format!("Up to date: Portus v{CURRENT_VERSION}")
+                                        }
+                                        Language::ChineseSimplified => {
+                                            format!("检查完成：当前已是最新版本 v{CURRENT_VERSION}")
+                                        }
+                                    };
+                                    crate::notify::info(msg, window, cx);
+                                }
+                            }
+                            UpdateUiEvent::ReadyToRestart { release } => {
+                                let title = lang.text("Update Ready", "更新已就绪");
+                                let message = match lang {
+                                    Language::English => format!(
+                                        "Portus {} has been downloaded and is ready to install.",
+                                        release.tag_name
+                                    ),
+                                    Language::ChineseSimplified => format!(
+                                        "Portus {} 已下载完成，重启应用即可完成安装。",
+                                        release.tag_name
+                                    ),
+                                };
+                                let action_label = lang.text("Restart to Update", "重启并安装");
+                                let ws_action = ws_for_action.clone();
+                                crate::notify::update_action(
+                                    title,
+                                    message,
+                                    action_label,
+                                    move |window, cx| {
+                                        let _ = ws_action.update(cx, |ws, cx| {
+                                            ws.install_update_and_quit(window, cx);
+                                        });
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            }
+                            UpdateUiEvent::InstallerDownloaded { release } => {
+                                let msg = match lang {
+                                    Language::English => format!(
+                                        "Downloaded {} installer and opened it in Finder.",
+                                        release.tag_name
+                                    ),
+                                    Language::ChineseSimplified => format!(
+                                        "已下载 {} 安装包并在访达中打开。",
+                                        release.tag_name
+                                    ),
+                                };
+                                crate::notify::success(msg, window, cx);
+                            }
+                            UpdateUiEvent::CheckFailed { message, silent } => {
+                                if !silent {
+                                    crate::notify::error(message, window, cx);
+                                }
+                            }
+                            UpdateUiEvent::InstallFailed { message } => {
+                                crate::notify::error(message, window, cx);
+                            }
+                        }
+                        this.preferences.update(cx, |p, cx| p.notify_updater(cx));
+                        cx.notify();
+                    });
+                });
+            }
+        })
+        .detach();
+
+        if auto_check_updates {
+            let updater_bg = Arc::clone(&updater);
+            cx.background_spawn(async move {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                updater_bg.check_for_updates(true);
+            })
+            .detach();
+        }
+
         let preferences = cx.new(|cx| {
-            Preferences::new(settings.clone(), Arc::clone(&mcp_runtime), window, cx)
+            Preferences::new(
+                settings.clone(),
+                Arc::clone(&mcp_runtime),
+                Arc::clone(&updater),
+                window,
+                cx,
+            )
         });
+        let preferences_events =
+            cx.subscribe_in(&preferences, window, |this, _, event, window, cx| {
+                match event {
+                    PreferencesEvent::RestartToUpdate => {
+                        this.install_update_and_quit(window, cx);
+                    }
+                }
+            });
         let quick_connect = cx.new(|cx| QuickConnectPalette::new(settings.clone(), window, cx));
         let file_drawer = cx.new(|cx| FileDrawer::new(settings.clone(), window, cx));
         let file_drawer_events =
@@ -297,25 +434,11 @@ impl Workspace {
                 cx.notify();
             });
 
-        let vault_search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(language.text(
-                "Search hosts, IP, tags…",
-                "搜索主机、IP、标签…",
-            ))
-        });
-        let search_events = cx.subscribe(&vault_search, |this, input, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                let q = input.read(cx).value().to_string();
-                this.hosts.update(cx, |h, cx| h.set_search_query(q, cx));
-            }
-        });
-
         let this = Self {
             focus: cx.focus_handle(),
             in_vault: true,
             vault_section: VaultSection::Hosts,
             selected_group: None,
-            vault_search,
             tabs: Vec::new(),
             active: 0,
             next_tab: 1,
@@ -326,6 +449,7 @@ impl Workspace {
             snippets,
             tunnels,
             mcp_runtime,
+            updater,
             preferences,
             quick_connect,
             file_drawer,
@@ -345,9 +469,9 @@ impl Workspace {
             _settings_updates: settings_updates,
             _hosts_events: hosts_events,
             _snippets_events: snippets_events,
+            _preferences_events: preferences_events,
             _quick_connect_events: quick_connect_events,
             _file_drawer_events: file_drawer_events,
-            _search_events: search_events,
             _window_bounds: window_bounds,
         };
         this
@@ -661,6 +785,38 @@ impl Workspace {
         self.open_vault(VaultSection::Settings, cx);
     }
 
+    pub fn open_updates(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.preferences.update(cx, |p, cx| p.open_about_tab(cx));
+        self.open_vault(VaultSection::Settings, cx);
+    }
+
+    pub fn open_updates_and_check(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_updates(window, cx);
+        self.updater.check_for_updates(false);
+    }
+
+    pub fn install_update_and_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let should_quit = matches!(self.updater.status(), UpdateStatus::ReadyToRestart { .. });
+        match self.updater.launch_installer_and_prepare_quit() {
+            Ok(()) => {
+                if should_quit {
+                    self.tunnels.update(cx, |t, _| t.shutdown_all());
+                    for tab in &self.tabs {
+                        if let TabKind::Terminal { panes, .. } = &tab.kind {
+                            for pane in panes {
+                                pane.terminal.update(cx, |t, cx| t.shutdown(cx));
+                            }
+                        }
+                    }
+                    cx.quit();
+                }
+            }
+            Err(err) => {
+                crate::notify::error(err, window, cx);
+            }
+        }
+    }
+
     fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if index < self.tabs.len() {
             self.active = index;
@@ -889,7 +1045,14 @@ impl Workspace {
                 this.telemetry_open = false;
                 cx.notify();
             }))
-            .child(crate::icons::app_logo(px(18.)))
+            .child(Icon::Home.render(
+                px(14.),
+                if self.in_vault {
+                    colors.foreground
+                } else {
+                    colors.secondary
+                },
+            ))
             .child(language.text("Workspace", "工作台"));
 
         let tabs_row = div()
@@ -929,7 +1092,9 @@ impl Workspace {
                 div()
                     .id(("session-tab", tab.id))
                     .h(px(26.))
+                    .min_w(px(120.))
                     .max_w(px(210.))
+                    .flex_shrink_0()
                     .pl(px(10.))
                     .pr(px(6.))
                     .rounded(px(6.))
@@ -975,6 +1140,7 @@ impl Workspace {
                         div()
                             .id(("tab-close", tab.id))
                             .size(px(16.))
+                            .flex_shrink_0()
                             .rounded(px(4.))
                             .flex()
                             .items_center()
@@ -1290,12 +1456,21 @@ impl Workspace {
             .flex_col()
             .gap(px(12.))
             .child(
-                Input::new(&self.vault_search)
-                    .h(px(30.))
-                    .py(px(1.))
-                    .text_size(px(12.5))
-                    .line_height(px(22.))
-                    .prefix(Icon::Search.render(px(12.5), colors.muted)),
+                div()
+                    .px(px(6.))
+                    .pt(px(2.))
+                    .pb(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(9.))
+                    .child(crate::icons::app_logo(px(26.)))
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(colors.foreground))
+                            .child("Portus"),
+                    ),
             )
             .child(
                 div()
@@ -1451,7 +1626,10 @@ impl Workspace {
                             "vnav-settings",
                             Icon::Settings,
                             language.text("Settings", "设置"),
-                            None,
+                            self.updater
+                                .status()
+                                .has_pending_update()
+                                .then(|| "↑".to_owned()),
                             self.vault_section == VaultSection::Settings,
                             colors,
                         )
@@ -3030,6 +3208,10 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| {
                 this.open_settings(window, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| {
+                this.open_updates_and_check(window, cx);
                 cx.stop_propagation();
             }))
             .on_action(cx.listener(|this, _: &ToggleQuickConnect, window, cx| {

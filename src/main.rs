@@ -14,6 +14,7 @@ mod ssh;
 mod terminal;
 mod theme;
 mod tunnel;
+mod updater;
 mod vault;
 mod workspace;
 
@@ -36,6 +37,7 @@ actions!(
         ShowSnippets,
         ShowTunnels,
         ShowSettings,
+        CheckForUpdates,
         ShowVault,
         SplitPane,
         ToggleQuickConnect,
@@ -143,6 +145,15 @@ fn main() {
                 });
                 cx.on_action({
                     let workspace = workspace.clone();
+                    move |_: &CheckForUpdates, cx| {
+                        let _ = main_window.update(cx, |_, window, cx| {
+                            workspace.update(cx, |ws, cx| ws.open_updates_and_check(window, cx));
+                            window.activate_window();
+                        });
+                    }
+                });
+                cx.on_action({
+                    let workspace = workspace.clone();
                     move |_: &ShowHosts, cx| {
                         let _ = main_window.update(cx, |_, window, cx| {
                             workspace.update(cx, |ws, cx| ws.open_hosts(None, window, cx));
@@ -192,6 +203,7 @@ fn set_menus(language: Language, cx: &mut App) {
             disabled: false,
             items: vec![
                 MenuItem::action(text("Settings…", "设置…"), ShowSettings),
+                MenuItem::action(text("Check for Updates…", "检查更新…"), CheckForUpdates),
                 MenuItem::action(text("Quit Portus", "退出 Portus"), Quit),
             ],
         },

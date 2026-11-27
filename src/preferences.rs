@@ -7,8 +7,8 @@ mod tunnels;
 use std::sync::Arc;
 
 use gpui_kit::{
-    App, AppContext as _, ClickEvent, Context, ElementId, Entity, FocusHandle, Focusable,
-    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
+    App, AppContext as _, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle,
+    Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
     PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, Window,
     component::{
@@ -19,7 +19,7 @@ use gpui_kit::{
         slider::{Slider, SliderEvent, SliderState},
         switch::Switch,
     },
-    div, prelude::FluentBuilder as _, px, rgb, transparent_black,
+    div, prelude::FluentBuilder as _, px, relative, rgb, transparent_black,
 };
 
 use crate::icons::Icon;
@@ -30,6 +30,9 @@ use crate::settings::{
     SftpConflictPolicy, ShellSettings, default_shortcuts,
 };
 use crate::theme::{Colors, Theme, ThemeMode};
+use crate::updater::{
+    UpdateManager, UpdateStatus, format_bytes, open_external_path, open_external_url,
+};
 use crate::vault::{export_vault, import_vault, merge_vault_into};
 pub(crate) use hosts::{HostsEvent, HostsPage};
 pub(crate) use keychain::KeychainPage;
@@ -193,6 +196,10 @@ fn selected_index<V: Clone + PartialEq + 'static>(
         .map(|row| IndexPath::default().row(row))
 }
 
+pub enum PreferencesEvent {
+    RestartToUpdate,
+}
+
 pub struct Preferences {
     focus_handle: FocusHandle,
     active_tab: SettingsTab,
@@ -214,9 +221,12 @@ pub struct Preferences {
     login_shell: bool,
     recording_shortcut_id: Option<String>,
     mcp_runtime: Arc<McpRuntime>,
+    updater: Arc<UpdateManager>,
     mcp_page: Entity<McpPage>,
     _subs: Vec<Subscription>,
 }
+
+impl EventEmitter<PreferencesEvent> for Preferences {}
 
 impl Focusable for Preferences {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -228,6 +238,7 @@ impl Preferences {
     pub fn new(
         store: Entity<SettingsStore>,
         mcp_runtime: Arc<McpRuntime>,
+        updater: Arc<UpdateManager>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -450,6 +461,7 @@ impl Preferences {
             login_shell,
             recording_shortcut_id: None,
             mcp_runtime,
+            updater,
             mcp_page,
             _subs: vec![
                 opacity_sub,
@@ -467,6 +479,16 @@ impl Preferences {
 
     pub fn notify_mcp(&mut self, cx: &mut Context<Self>) {
         self.mcp_page.update(cx, |_, cx| cx.notify());
+        cx.notify();
+    }
+
+    pub fn notify_updater(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
+    }
+
+    pub fn open_about_tab(&mut self, cx: &mut Context<Self>) {
+        self.active_tab = SettingsTab::Shortcuts;
+        self.recording_shortcut_id = None;
         cx.notify();
     }
 
@@ -942,6 +964,19 @@ impl Render for Preferences {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(rgb(colors.warning()))
                                 .child(pending.to_string())
+                        })
+                    }).flatten())
+                    .children((tab == SettingsTab::Shortcuts).then(|| {
+                        self.updater.status().has_pending_update().then(|| {
+                            div()
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded_full()
+                                .bg(colors.accent_soft())
+                                .text_size(px(10.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(colors.accent))
+                                .child("↑")
                         })
                     }).flatten())
             }));
@@ -2206,6 +2241,295 @@ impl Preferences {
             .unwrap_or_else(|| "Portus/settings.json".to_owned());
 
         let version = concat!("v", env!("CARGO_PKG_VERSION"));
+        let update_status = self.updater.status();
+
+        let update_action_btn = match &update_status {
+            UpdateStatus::Idle | UpdateStatus::UpToDate | UpdateStatus::Error(_) => {
+                secondary_button(
+                    "pref-check-updates",
+                    Some(Icon::Refresh),
+                    language.text("Check for Updates", "检查更新"),
+                    colors,
+                )
+                .on_click(cx.listener(|this, _, _, _| {
+                    this.updater.check_for_updates(false);
+                }))
+                .into_any_element()
+            }
+            UpdateStatus::Checking => secondary_button(
+                "pref-check-updates-busy",
+                None,
+                language.text("Checking…", "检查中…"),
+                colors,
+            )
+            .into_any_element(),
+            UpdateStatus::Available(release) => {
+                let release_click = release.clone();
+                let label = if release.asset.is_some() {
+                    language.text("Download & Update", "下载并更新")
+                } else {
+                    language.text("View Release", "前往发布页")
+                };
+                primary_button("pref-download-update", None, label, colors)
+                    .on_click(cx.listener(move |this, _, _, _| {
+                        this.updater.download_and_prepare(release_click.clone());
+                    }))
+                    .into_any_element()
+            }
+            UpdateStatus::Downloading { .. } => secondary_button(
+                "pref-cancel-update",
+                None,
+                language.text("Cancel", "取消"),
+                colors,
+            )
+            .on_click(cx.listener(|this, _, _, _| {
+                this.updater.cancel_download();
+            }))
+            .into_any_element(),
+            UpdateStatus::Preparing { .. } => secondary_button(
+                "pref-preparing-update",
+                None,
+                language.text("Preparing…", "准备中…"),
+                colors,
+            )
+            .into_any_element(),
+            UpdateStatus::ReadyToRestart { .. } => primary_button(
+                "pref-restart-update",
+                None,
+                language.text("Restart to Update", "重启并安装"),
+                colors,
+            )
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(PreferencesEvent::RestartToUpdate);
+            }))
+            .into_any_element(),
+            UpdateStatus::DownloadedInstaller { installer_path, .. } => {
+                let path = installer_path.clone();
+                primary_button(
+                    "pref-open-installer",
+                    None,
+                    language.text("Open Installer", "打开安装包"),
+                    colors,
+                )
+                .on_click(cx.listener(move |_, _, window, cx| {
+                    if let Err(err) = open_external_path(&path) {
+                        crate::notify::error(err, window, cx);
+                    }
+                }))
+                .into_any_element()
+            }
+        };
+
+        let update_detail_row = match &update_status {
+            UpdateStatus::Available(release) => {
+                let release_url = release.html_url.clone();
+                let size_text = release
+                    .asset
+                    .as_ref()
+                    .filter(|a| a.size > 0)
+                    .map(|a| format!(" · {}", format_bytes(a.size)))
+                    .unwrap_or_default();
+                let summary_notes = summarize_release_notes(&release.notes);
+                Some(
+                    inset_row(true, colors)
+                        .items_start()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.5))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(rgb(colors.foreground))
+                                                .child(format!(
+                                                    "{} {} → {}{}",
+                                                    language.text("New version available:", "发现新版本："),
+                                                    version,
+                                                    release.tag_name,
+                                                    size_text
+                                                )),
+                                        ),
+                                )
+                                .children(summary_notes.map(|notes| {
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(rgb(colors.secondary))
+                                        .child(notes)
+                                })),
+                        )
+                        .child(
+                            secondary_button(
+                                "pref-release-notes",
+                                None,
+                                language.text("Release Notes", "查看发布页"),
+                                colors,
+                            )
+                            .on_click(cx.listener(move |_, _, window, cx| {
+                                if let Err(err) = open_external_url(&release_url) {
+                                    crate::notify::error(err, window, cx);
+                                }
+                            })),
+                        )
+                        .into_any_element(),
+                )
+            }
+            UpdateStatus::Downloading {
+                release,
+                downloaded,
+                total,
+            } => {
+                let ratio = if *total > 0 {
+                    (*downloaded as f32 / *total as f32).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let pct = (ratio * 100.0).round() as u32;
+                let progress_label = if *total > 0 {
+                    format!(
+                        "{} / {} ({pct}%)",
+                        format_bytes(*downloaded),
+                        format_bytes(*total)
+                    )
+                } else {
+                    format_bytes(*downloaded)
+                };
+                Some(
+                    inset_row(true, colors)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(rgb(colors.foreground))
+                                                .child(format!(
+                                                    "{} {}…",
+                                                    language.text("Downloading Portus", "正在下载 Portus"),
+                                                    release.tag_name
+                                                )),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .text_color(rgb(colors.secondary))
+                                                .child(progress_label),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h(px(5.))
+                                        .rounded_full()
+                                        .bg(colors.surface_glass())
+                                        .overflow_hidden()
+                                        .child(
+                                            div()
+                                                .h_full()
+                                                .w(relative(ratio))
+                                                .rounded_full()
+                                                .bg(rgb(colors.accent)),
+                                        ),
+                                ),
+                        )
+                        .into_any_element(),
+                )
+            }
+            UpdateStatus::Preparing { release } => Some(
+                inset_row(true, colors)
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(colors.secondary))
+                            .child(format!(
+                                "{} {}…",
+                                language.text(
+                                    "Extracting and verifying Portus",
+                                    "正在解压并校验 Portus"
+                                ),
+                                release.tag_name
+                            )),
+                    )
+                    .into_any_element(),
+            ),
+            UpdateStatus::ReadyToRestart { release, .. } => Some(
+                inset_row(true, colors)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(12.))
+                            .text_color(rgb(colors.success))
+                            .child(match language {
+                                Language::English => format!(
+                                    "Portus {} is ready to install. Restart to apply the update.",
+                                    release.tag_name
+                                ),
+                                Language::ChineseSimplified => format!(
+                                    "Portus {} 已准备就绪，重启应用即可完成更新。",
+                                    release.tag_name
+                                ),
+                            }),
+                    )
+                    .into_any_element(),
+            ),
+            UpdateStatus::DownloadedInstaller { release, .. } => Some(
+                inset_row(true, colors)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(12.))
+                            .text_color(rgb(colors.secondary))
+                            .child(match language {
+                                Language::English => format!(
+                                    "Downloaded Portus {} installer. Open the DMG and drag Portus.app to Applications.",
+                                    release.tag_name
+                                ),
+                                Language::ChineseSimplified => format!(
+                                    "已下载 Portus {} 安装包，请打开 DMG 并将 Portus.app 拖入 Applications 完成更新。",
+                                    release.tag_name
+                                ),
+                            }),
+                    )
+                    .into_any_element(),
+            ),
+            UpdateStatus::Error(err) => Some(
+                inset_row(true, colors)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(11.5))
+                            .text_color(rgb(colors.danger))
+                            .child(format!(
+                                "{} {err}",
+                                language.text("Update error:", "更新失败：")
+                            )),
+                    )
+                    .into_any_element(),
+            ),
+            UpdateStatus::Idle | UpdateStatus::Checking | UpdateStatus::UpToDate => None,
+        };
 
         let about_card = inset_card(colors)
             .child(
@@ -2234,7 +2558,20 @@ impl Preferences {
                                             .text_color(rgb(colors.foreground))
                                             .child("Portus"),
                                     )
-                                    .child(value_pill(version.to_owned(), colors)),
+                                    .child(value_pill(version.to_owned(), colors))
+                                    .children(matches!(update_status, UpdateStatus::UpToDate).then(
+                                        || {
+                                            div()
+                                                .px(px(7.))
+                                                .py(px(1.))
+                                                .rounded(px(999.))
+                                                .bg(rgb(colors.success).alpha(0.14))
+                                                .text_color(rgb(colors.success))
+                                                .text_size(px(10.5))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(language.text("Up to date", "已是最新"))
+                                        },
+                                    )),
                             )
                             .child(
                                 div()
@@ -2243,24 +2580,9 @@ impl Preferences {
                                     .child("macOS Native SSH / SFTP / Terminal Client · Apple Silicon (GPUI)"),
                             ),
                     )
-                    .child(
-                        secondary_button(
-                            "pref-check-updates",
-                            None,
-                            language.text("Check for Updates", "检查更新"),
-                            colors,
-                        )
-                        .on_click(cx.listener(move |_, _, window, cx| {
-                            let msg = match language {
-                                Language::English => format!("Up to date: Portus {version}"),
-                                Language::ChineseSimplified => {
-                                    format!("检查完成：当前已是最新版本 {version}")
-                                }
-                            };
-                            crate::notify::info(msg, window, cx);
-                        })),
-                    ),
+                    .child(update_action_btn),
             )
+            .children(update_detail_row)
             .child(
                 inset_row(true, colors)
                     .child(row_text(
@@ -2373,6 +2695,26 @@ impl Preferences {
                 colors,
             ))
             .child(about_card)
+    }
+}
+
+fn summarize_release_notes(notes: &str) -> Option<String> {
+    let lines: Vec<&str> = notes
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(4)
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let joined = lines.join(" · ");
+    let mut chars = joined.chars();
+    let truncated: String = chars.by_ref().take(240).collect();
+    if chars.next().is_some() {
+        Some(format!("{truncated}…"))
+    } else {
+        Some(truncated)
     }
 }
 

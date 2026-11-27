@@ -632,7 +632,7 @@ impl client::Handler for ClientHandler {
                     },
                 )
                 .await;
-                if answer.as_deref() == Some("trust") {
+                if matches!(answer.as_deref(), Some("trust" | "yes")) {
                     if let Some(home) = dirs::home_dir() {
                         let _ = std::fs::create_dir_all(home.join(".ssh"));
                     }
@@ -3019,5 +3019,21 @@ mod tests {
             .expect("framed logs");
         assert!(logs.contains("INFO starting"));
         assert!(logs.contains("ERROR failed"));
+    }
+
+    #[test]
+    fn loads_pem_rsa_private_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key_path = dir.path().join("id_rsa.pem");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-t", "rsa", "-b", "2048", "-m", "PEM", "-N", "", "-q", "-f"])
+            .arg(&key_path)
+            .status()
+            .expect("run ssh-keygen");
+        assert!(status.success(), "ssh-keygen failed");
+        let pem = std::fs::read_to_string(&key_path).expect("read pem");
+        assert!(pem.starts_with("-----BEGIN RSA PRIVATE KEY-----"));
+        let key = load_secret_key(&key_path, None).expect("load PEM RSA key");
+        assert!(key.algorithm().is_rsa());
     }
 }

@@ -9,7 +9,6 @@ use gpui_kit::{
         Sizable as _,
         button::{Button, ButtonVariants as _},
         input::{Input, InputEvent, InputState},
-        notification::Notification,
     },
     div, px, rgb,
 };
@@ -410,25 +409,19 @@ impl TerminalSession {
                 let msg = status.message(self.language, true);
                 self.status = Some(status);
                 let session = cx.entity().downgrade();
+                let title = self.language.text("SSH Connection Failed", "SSH 连接失败");
                 let reconnect_label = self.language.text("Reconnect", "重新连接");
-                use gpui_kit::component::WindowExt as _;
-                let note = Notification::error(msg)
-                    .autohide(false)
-                    .action(move |_, _, cx| {
-                        let session = session.clone();
-                        Button::new("ssh-reconnect")
-                            .primary()
-                            .xsmall()
-                            .h(px(24.))
-                            .px(px(8.))
-                            .icon(Icon::Refresh)
-                            .label(reconnect_label)
-                            .on_click(cx.listener(move |note, _, window, cx| {
-                                let _ = session.update(cx, |this, cx| this.reconnect(window, cx));
-                                note.dismiss(window, cx);
-                            }))
-                    });
-                window.push_notification(note, cx);
+                crate::notify::error_action(
+                    title,
+                    msg,
+                    reconnect_label,
+                    Some(Icon::Refresh),
+                    move |window, cx| {
+                        let _ = session.update(cx, |this, cx| this.reconnect(window, cx));
+                    },
+                    window,
+                    cx,
+                );
             }
         }
         cx.notify();

@@ -17,11 +17,13 @@ use gpui_kit::{
 };
 use tokio::sync::oneshot;
 
+use crate::icons::Icon;
 use crate::settings::Language;
 use crate::ssh::{SshPrompt, SshPromptKind};
 
 struct SshPromptNotification;
 struct TransientToast;
+struct UpdateNotification;
 
 static NEXT_PROMPT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -42,6 +44,94 @@ pub fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App
     window.push_notification(Notification::error(message), cx);
 }
 
+pub fn error_action(
+    title: impl Into<SharedString>,
+    message: impl Into<SharedString>,
+    action_label: impl Into<SharedString>,
+    action_icon: Option<Icon>,
+    on_action: impl Fn(&mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let message = message.into();
+    let action_label = action_label.into();
+    let on_action = Rc::new(on_action);
+    let note = Notification::new()
+        .with_type(NotificationType::Error)
+        .title(title)
+        .autohide(false)
+        .content(move |_, _, cx| {
+            let on_action = on_action.clone();
+            let mut btn = Button::new("error-notification-action")
+                .primary()
+                .xsmall()
+                .h(px(24.))
+                .px(px(8.))
+                .label(action_label.clone())
+                .on_click(cx.listener(move |note, _, window, cx| {
+                    on_action(window, cx);
+                    note.dismiss(window, cx);
+                }));
+            if let Some(icon) = action_icon {
+                btn = btn.icon(icon);
+            }
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .pt(px(4.))
+                .w_full()
+                .child(div().w_full().text_size(px(12.)).child(message.clone()))
+                .child(div().flex().items_center().justify_end().child(btn))
+                .into_any_element()
+        });
+    window.push_notification(note, cx);
+}
+
+pub fn update_action(
+    title: impl Into<SharedString>,
+    message: impl Into<SharedString>,
+    action_label: impl Into<SharedString>,
+    on_action: impl Fn(&mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let message = message.into();
+    let action_label = action_label.into();
+    let on_action = Rc::new(on_action);
+    let note = Notification::new()
+        .with_type(NotificationType::Info)
+        .id::<UpdateNotification>()
+        .title(title)
+        .autohide(false)
+        .content(move |_, _, cx| {
+            let on_action = on_action.clone();
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .pt(px(4.))
+                .w_full()
+                .child(div().w_full().text_size(px(12.)).child(message.clone()))
+                .child(
+                    div().flex().items_center().justify_end().child(
+                        Button::new("update-notification-action")
+                            .primary()
+                            .xsmall()
+                            .h(px(24.))
+                            .px(px(8.))
+                            .label(action_label.clone())
+                            .on_click(cx.listener(move |note, _, window, cx| {
+                                on_action(window, cx);
+                                note.dismiss(window, cx);
+                            })),
+                    ),
+                )
+                .into_any_element()
+        });
+    window.push_notification(note, cx);
+}
+
 pub fn confirm(
     title: impl Into<SharedString>,
     message: impl Into<SharedString>,
@@ -50,23 +140,37 @@ pub fn confirm(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let message = message.into();
     let confirm_label = confirm_label.into();
     let on_confirm = Rc::new(on_confirm);
-    let note = Notification::warning(message)
+    let note = Notification::new()
+        .with_type(NotificationType::Warning)
         .title(title)
         .autohide(false)
-        .action(move |_, _, cx| {
+        .content(move |_, _, cx| {
             let on_confirm = on_confirm.clone();
-            Button::new("confirm-notification-action")
-                .danger()
-                .xsmall()
-                .h(px(24.))
-                .px(px(8.))
-                .label(confirm_label.clone())
-                .on_click(cx.listener(move |note, _, window, cx| {
-                    on_confirm(window, cx);
-                    note.dismiss(window, cx);
-                }))
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .pt(px(4.))
+                .w_full()
+                .child(div().w_full().text_size(px(12.)).child(message.clone()))
+                .child(
+                    div().flex().items_center().justify_end().child(
+                        Button::new("confirm-notification-action")
+                            .danger()
+                            .xsmall()
+                            .h(px(24.))
+                            .px(px(8.))
+                            .label(confirm_label.clone())
+                            .on_click(cx.listener(move |note, _, window, cx| {
+                                on_confirm(window, cx);
+                                note.dismiss(window, cx);
+                            })),
+                    ),
+                )
+                .into_any_element()
         });
     window.push_notification(note, cx);
 }
@@ -206,7 +310,7 @@ pub fn push_ssh_prompt(
                                     let answer = input_submit
                                         .as_ref()
                                         .map(|i| i.read(cx).value().to_string())
-                                        .unwrap_or_else(|| "yes".to_owned());
+                                        .unwrap_or_else(|| "trust".to_owned());
                                     let _ = tx.send(Some(answer));
                                 }
                                 note.dismiss(window, cx);

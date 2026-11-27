@@ -7,9 +7,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Stateful, Div, Styled as _, Subscription, Window,
     component::{
         Sizable as _,
-        button::{Button, ButtonVariants as _},
         input::{Input, InputEvent, InputState},
-        notification::Notification,
     },
     div, px, rgb, transparent_black,
 };
@@ -169,24 +167,19 @@ impl SftpView {
             SftpEvent::Error(err) => {
                 self.prompt_sub = None;
                 let view = cx.entity().downgrade();
-                let reconnect_label = language.text("Reconnect", "重连");
-                use gpui_kit::component::WindowExt as _;
-                let note = Notification::error(err)
-                    .autohide(false)
-                    .action(move |_, _, cx| {
-                        let view = view.clone();
-                        Button::new("sftp-reconnect")
-                            .primary()
-                            .xsmall()
-                            .h(px(24.))
-                            .px(px(8.))
-                            .label(reconnect_label)
-                            .on_click(cx.listener(move |note, _, window, cx| {
-                                let _ = view.update(cx, |this, cx| this.connect(window, cx));
-                                note.dismiss(window, cx);
-                            }))
-                    });
-                window.push_notification(note, cx);
+                let title = language.text("SFTP Connection Failed", "SFTP 连接失败");
+                let reconnect_label = language.text("Reconnect", "重新连接");
+                crate::notify::error_action(
+                    title,
+                    err,
+                    reconnect_label,
+                    Some(Icon::Refresh),
+                    move |window, cx| {
+                        let _ = view.update(cx, |this, cx| this.connect(window, cx));
+                    },
+                    window,
+                    cx,
+                );
             }
         }
         cx.notify();
