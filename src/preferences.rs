@@ -1405,7 +1405,7 @@ impl Preferences {
                         ),
                         colors,
                     ))
-                    .child(div().w(px(210.)).child(Select::new(&self.font_select))),
+                    .child(div().w(px(210.)).child(Select::new(&self.font_select).text_xs())),
             )
             .child(
                 inset_col_row(true, colors)
@@ -1615,7 +1615,7 @@ impl Preferences {
                         ),
                         colors,
                     ))
-                    .child(div().w(px(140.)).child(Select::new(&self.scrollback_select))),
+                    .child(div().w(px(140.)).child(Select::new(&self.scrollback_select).text_xs())),
             );
 
         let shell_card = inset_card(colors)
@@ -1732,7 +1732,7 @@ impl Preferences {
                         ),
                         colors,
                     ))
-                    .child(div().w(px(130.)).child(Select::new(&self.keep_alive_select))),
+                    .child(div().w(px(130.)).child(Select::new(&self.keep_alive_select).text_xs())),
             )
             .child(
                 inset_row(true, colors)
@@ -1744,7 +1744,7 @@ impl Preferences {
                         ),
                         colors,
                     ))
-                    .child(div().w(px(130.)).child(Select::new(&self.connect_timeout_select))),
+                    .child(div().w(px(130.)).child(Select::new(&self.connect_timeout_select).text_xs())),
             )
             .child(
                 inset_row(true, colors)
@@ -1983,7 +1983,7 @@ impl Preferences {
                         ),
                         colors,
                     ))
-                    .child(div().w(px(130.)).child(Select::new(&self.auto_lock_select))),
+                    .child(div().w(px(130.)).child(Select::new(&self.auto_lock_select).text_xs())),
             )
             .child(
                 inset_row(true, colors)
@@ -2731,7 +2731,7 @@ pub(crate) fn input_field(
     let mut input = Input::new(field)
         .h(px(34.))
         .py(px(2.))
-        .text_size(px(13.))
+        .text_xs()
         .line_height(px(24.));
     if let Some(icon) = icon {
         input = input.prefix(icon.render(px(14.), colors.muted));
@@ -2748,7 +2748,7 @@ pub(crate) fn primary_button(
     let label = label.into();
     let mut btn = Button::new(id)
         .primary()
-        .small()
+        .xsmall()
         .h(px(28.))
         .px(px(10.))
         .label(label);
@@ -2767,7 +2767,7 @@ pub(crate) fn secondary_button(
     let label = label.into();
     let mut btn = Button::new(id)
         .outline()
-        .small()
+        .xsmall()
         .h(px(28.))
         .px(px(10.))
         .label(label);
@@ -2786,7 +2786,7 @@ pub(crate) fn danger_button(
 ) -> Button {
     let label = label.into();
     let mut btn = Button::new(id)
-        .small()
+        .xsmall()
         .h(px(28.))
         .px(px(10.))
         .label(label);

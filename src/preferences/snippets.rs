@@ -334,7 +334,7 @@ impl SnippetsPage {
                     .ghost()
                     .relative()
                     .w_full()
-                    .h(px(52.))
+                    .h(px(46.))
                     .px(px(10.))
                     .rounded_lg()
                     .border_1()
@@ -362,7 +362,7 @@ impl SnippetsPage {
                     }))
                     .child(
                         div()
-                            .size(px(30.))
+                            .size(px(26.))
                             .rounded_lg()
                             .flex_shrink_0()
                             .flex()
@@ -390,6 +390,7 @@ impl SnippetsPage {
                                 div()
                                     .w_full()
                                     .truncate()
+                                    .text_size(px(12.5))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(rgb(colors.foreground))
                                     .child(snippet.name.clone()),
@@ -398,7 +399,7 @@ impl SnippetsPage {
                                 div()
                                     .w_full()
                                     .truncate()
-                                    .text_size(px(11.5))
+                                    .text_size(px(11.))
                                     .text_color(rgb(colors.muted))
                                     .child(preview),
                             ),
@@ -576,7 +577,7 @@ impl SnippetsPage {
                 .child(
                     Button::new("run-snippet")
                         .ghost()
-                        .small()
+                        .xsmall()
                         .h(px(28.))
                         .px(px(10.))
                         .rounded_lg()
@@ -650,7 +651,7 @@ impl SnippetsPage {
                             .max_w(px(620.))
                             .child(
                                 div()
-                                    .text_size(px(18.))
+                                    .text_size(px(17.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(rgb(colors.foreground))
                                     .child(title),

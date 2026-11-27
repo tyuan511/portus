@@ -968,7 +968,7 @@ impl McpPage {
                                             )),
                                     ),
                             )
-                            .child(div().w(px(160.)).child(Select::new(&self.client_select).small())),
+                            .child(div().w(px(160.)).child(Select::new(&self.client_select).small().text_xs())),
                     )
                     .child(
                         div()
@@ -1530,7 +1530,7 @@ impl McpPage {
                                             )),
                                     ),
                             )
-                            .child(div().w(px(130.)).child(Select::new(&self.ttl_select).small())),
+                            .child(div().w(px(130.)).child(Select::new(&self.ttl_select).small().text_xs())),
                     )
                     .child(
                         div()

@@ -699,6 +699,7 @@ impl TunnelsPage {
                                     div()
                                         .w_full()
                                         .truncate()
+                                        .text_size(px(12.5))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(rgb(colors.foreground))
                                         .child(rule.name.clone()),
@@ -909,7 +910,7 @@ impl TunnelsPage {
             left = left.child(
                 Button::new("run-tunnel-btn")
                     .ghost()
-                    .small()
+                    .xsmall()
                     .h(px(28.))
                     .px(px(10.))
                     .rounded_lg()
@@ -1003,7 +1004,7 @@ impl TunnelsPage {
                             .child(language.text("Forwarding Type", "转发类型")),
                     )
                     .child(
-                        Select::new(&editor.kind_select),
+                        Select::new(&editor.kind_select).text_xs(),
                     ),
             )
             .child(
@@ -1018,7 +1019,7 @@ impl TunnelsPage {
                             .text_color(rgb(colors.secondary))
                             .child(language.text("SSH Host", "SSH 跳板/目标主机")),
                     )
-                    .child(Select::new(&editor.host_select)),
+                    .child(Select::new(&editor.host_select).text_xs()),
             )
             .child(
                 div()
@@ -1114,7 +1115,7 @@ impl TunnelsPage {
                             .max_w(px(580.))
                             .child(
                                 div()
-                                    .text_size(px(18.))
+                                    .text_size(px(17.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(rgb(colors.foreground))
                                     .child(title),
@@ -1209,7 +1210,7 @@ impl TunnelsPage {
                                 .text_color(rgb(colors.secondary))
                                 .child(language.text("Type", "转发类型")),
                         )
-                        .child(Select::new(&editor.kind_select).small()),
+                        .child(Select::new(&editor.kind_select).small().text_xs()),
                 )
                 .child(
                     div()

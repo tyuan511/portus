@@ -425,6 +425,7 @@ impl Render for QuickConnectPalette {
                                 div().flex_1().min_w_0().child(
                                     Input::new(&self.query)
                                         .appearance(false)
+                                        .text_xs()
                                         .prefix(Icon::Search.render(px(16.), colors.accent))
                                         .cleanable(true),
                                 ),

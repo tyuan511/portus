@@ -2384,7 +2384,9 @@ impl Workspace {
                             .child(
                                 Button::new("dk-log-retry")
                                     .secondary()
-                                    .small()
+                                    .xsmall()
+                                    .h(px(24.))
+                                    .px(px(8.))
                                     .icon(Icon::Refresh)
                                     .label(language.text("Retry", "重试"))
                                     .on_click(cx.listener(|this, _, window, cx| {

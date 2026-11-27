@@ -58,10 +58,50 @@ jobs:
           cargo +stable test --locked --release --target "$RUST_TARGET" --bin Portus
           cargo +stable build --locked --release --target "$RUST_TARGET" --bin Portus
 
+      - name: Import Apple Developer certificate
+        if: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          keychain="$RUNNER_TEMP/portus-signing.keychain-db"
+          keychain_pass=$(openssl rand -base64 24)
+          cert_path="$RUNNER_TEMP/certificate.p12"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$cert_path"
+
+          security create-keychain -p "$keychain_pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_pass" "$keychain"
+          security import "$cert_path" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pass" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          security default-keychain -s "$keychain"
+          rm -f "$cert_path"
+          security find-identity -v -p codesigning "$keychain"
+
+          if [[ -n "$APPLE_API_KEY_P8" ]]; then
+            api_key_path="$RUNNER_TEMP/AuthKey.p8"
+            echo "$APPLE_API_KEY_P8" | base64 --decode > "$api_key_path"
+            echo "APPLE_API_KEY_PATH=$api_key_path" >> "$GITHUB_ENV"
+          fi
+
       - name: Build disk image
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: scripts/package-macos.sh "target/$RUST_TARGET/release/Portus" "$VERSION" target/dist
+
+      - name: Clean up signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/portus-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/certificate.p8" "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/AuthKey.p8"
 
       - name: Publish GitHub Release
         env:

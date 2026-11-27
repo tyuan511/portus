@@ -177,7 +177,9 @@ impl SftpView {
                         let view = view.clone();
                         Button::new("sftp-reconnect")
                             .primary()
-                            .small()
+                            .xsmall()
+                            .h(px(24.))
+                            .px(px(8.))
                             .label(reconnect_label)
                             .on_click(cx.listener(move |note, _, window, cx| {
                                 let _ = view.update(cx, |this, cx| this.connect(window, cx));
@@ -649,7 +651,7 @@ impl Render for SftpView {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(Input::new(&self.mkdir_input).small()),
+                            .child(Input::new(&self.mkdir_input).small().text_xs()),
                     )
                     .child(
                         pane_action_btn(

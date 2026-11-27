@@ -59,7 +59,9 @@ pub fn confirm(
             let on_confirm = on_confirm.clone();
             Button::new("confirm-notification-action")
                 .danger()
-                .small()
+                .xsmall()
+                .h(px(24.))
+                .px(px(8.))
                 .label(confirm_label.clone())
                 .on_click(cx.listener(move |note, _, window, cx| {
                     on_confirm(window, cx);
@@ -169,7 +171,7 @@ pub fn push_ssh_prompt(
                 .child(div().text_size(px(12.)).child(detail.clone()));
 
             if let Some(input) = &input_for_content {
-                col = col.child(Input::new(input).small().mask_toggle());
+                col = col.child(Input::new(input).small().text_xs().mask_toggle());
             }
 
             col = col.child(
@@ -181,7 +183,9 @@ pub fn push_ssh_prompt(
                     .child(
                         Button::new(("ssh-prompt-cancel", prompt_id as usize))
                             .secondary()
-                            .small()
+                            .xsmall()
+                            .h(px(24.))
+                            .px(px(8.))
                             .label(cancel_label)
                             .on_click(cx.listener(move |note, _, window, cx| {
                                 if let Some(tx) = reply_cancel.borrow_mut().take() {
@@ -193,7 +197,9 @@ pub fn push_ssh_prompt(
                     .child(
                         Button::new(("ssh-prompt-ok", prompt_id as usize))
                             .primary()
-                            .small()
+                            .xsmall()
+                            .h(px(24.))
+                            .px(px(8.))
                             .label(confirm_label)
                             .on_click(cx.listener(move |note, _, window, cx| {
                                 if let Some(tx) = reply_submit.borrow_mut().take() {

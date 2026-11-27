@@ -418,7 +418,9 @@ impl TerminalSession {
                         let session = session.clone();
                         Button::new("ssh-reconnect")
                             .primary()
-                            .small()
+                            .xsmall()
+                            .h(px(24.))
+                            .px(px(8.))
                             .icon(Icon::Refresh)
                             .label(reconnect_label)
                             .on_click(cx.listener(move |note, _, window, cx| {
@@ -648,7 +650,7 @@ impl TerminalSession {
                     }
                 }))
                 .child(Icon::Search.render(px(13.5), colors.muted))
-                .child(div().w(px(184.)).child(Input::new(input).small()))
+                .child(div().w(px(184.)).child(Input::new(input).small().text_xs()))
                 .child(
                     div()
                         .text_size(px(11.5))

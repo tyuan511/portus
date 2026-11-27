@@ -681,7 +681,7 @@ impl Render for FileDrawer {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(Input::new(&self.mkdir_input).small()),
+                                    .child(Input::new(&self.mkdir_input).small().text_xs()),
                             )
                             .child(
                                 Button::new("fd-mkdir-btn")

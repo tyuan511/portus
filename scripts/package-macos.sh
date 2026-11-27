@@ -72,11 +72,39 @@ cat > "$contents/Info.plist" <<PLIST
 PLIST
 
 plutil -lint "$contents/Info.plist"
-codesign --force --sign - "$app"
-codesign --verify --strict "$app"
+if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$app"
+else
+  codesign --force --sign - "$app"
+fi
+codesign --verify --deep --strict "$app"
 
 name="Portus-v${version}-macos-arm64.dmg"
 hdiutil create -quiet -srcfolder "$image_root" -volname Portus -fs HFS+ -format UDZO "$staging/$name"
 hdiutil verify -quiet "$staging/$name"
+
+if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$staging/$name"
+  codesign --verify --strict "$staging/$name"
+fi
+
+if [[ -n "${APPLE_API_KEY_PATH:-}" && -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER_ID:-}" ]]; then
+  xcrun notarytool submit "$staging/$name" \
+    --key "$APPLE_API_KEY_PATH" \
+    --key-id "$APPLE_API_KEY_ID" \
+    --issuer "$APPLE_API_ISSUER_ID" \
+    --wait
+  xcrun stapler staple "$staging/$name"
+  xcrun stapler validate "$staging/$name"
+elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_ID_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
+  xcrun notarytool submit "$staging/$name" \
+    --apple-id "$APPLE_ID" \
+    --password "$APPLE_ID_PASSWORD" \
+    --team-id "$APPLE_TEAM_ID" \
+    --wait
+  xcrun stapler staple "$staging/$name"
+  xcrun stapler validate "$staging/$name"
+fi
+
 mv -f "$staging/$name" "$output_dir/$name"
 printf 'Created %s\n' "$output_dir/$name"

@@ -1167,7 +1167,7 @@ impl HostsPage {
                                 .text_color(rgb(colors.secondary))
                                 .child(language.text("Keychain Credential", "密钥库凭证")),
                         )
-                        .child(Select::new(&editor.keychain_select)),
+                        .child(Select::new(&editor.keychain_select).text_xs()),
                 )
                 .children((!using_keychain).then(|| {
                     div()
@@ -1235,7 +1235,7 @@ impl HostsPage {
                                 .text_color(rgb(colors.secondary))
                                 .child(language.text("Jump Host / Bastion", "跳板机")),
                         )
-                        .child(Select::new(&editor.jump_select)),
+                        .child(Select::new(&editor.jump_select).text_xs()),
                 )
                 .children((!matches!(editor.jump_choice, JumpChoice::None)).then(|| {
                     let using_relay_kc =
@@ -1274,7 +1274,7 @@ impl HostsPage {
                                             "中继密码凭证（密钥库）",
                                         )),
                                 )
-                                .child(Select::new(&editor.jump_relay_keychain_select)),
+                                .child(Select::new(&editor.jump_relay_keychain_select).text_xs()),
                         )
                         .children((!using_relay_kc).then(|| {
                             div()
