@@ -59,12 +59,15 @@ jobs:
           cargo +stable build --locked --release --target "$RUST_TARGET" --bin Portus
 
       - name: Import Apple Developer certificate
-        if: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
+          if [[ -z "$APPLE_CERTIFICATE_P12" ]]; then
+            echo "No APPLE_CERTIFICATE_P12 secret configured; skipping Developer ID import."
+            exit 0
+          fi
           keychain="$RUNNER_TEMP/portus-signing.keychain-db"
           keychain_pass=$(openssl rand -base64 24)
           cert_path="$RUNNER_TEMP/certificate.p12"
