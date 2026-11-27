@@ -68,7 +68,6 @@ pub enum SyncUiEvent {
     Pulled {
         settings: Box<Settings>,
         timestamp: u64,
-        content_hash: String,
         device_id: String,
         strategy: SyncConflictStrategy,
         silent: bool,
@@ -1084,7 +1083,6 @@ impl SyncManager {
                         manager.emit(SyncUiEvent::Pulled {
                             settings: Box::new(opened.settings),
                             timestamp: ts,
-                            content_hash: opened.content_hash,
                             device_id,
                             strategy,
                             silent,
@@ -1169,7 +1167,6 @@ impl SyncManager {
                                 manager.emit(SyncUiEvent::Pulled {
                                     settings: Box::new(opened.settings),
                                     timestamp: ts,
-                                    content_hash: opened.content_hash,
                                     device_id,
                                     strategy: sync.conflict_strategy,
                                     silent,

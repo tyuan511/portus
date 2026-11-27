@@ -518,7 +518,6 @@ impl Workspace {
                             SyncUiEvent::Pulled {
                                 settings: remote,
                                 timestamp,
-                                content_hash: _,
                                 device_id,
                                 strategy,
                                 silent,
